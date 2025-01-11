@@ -49,7 +49,7 @@ if (!isset($_SESSION["loggedin"]) || $_SESSION["loggedin"] !== true) {
         <section>
             <h2>Kontak Kami</h2>
             <p>
-                <a href="https://www.instagram.com/rutan.samarinda/" target="_blank">
+                <a href="https://www.instagram.com/(masukkan nama ig)" target="_blank">
                     <img src="ig.png" alt="Instagram Logo" width="50" height="50">
                 </a>
             </p>
