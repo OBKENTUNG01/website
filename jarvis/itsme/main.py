@@ -36,8 +36,16 @@ class App:
         self.histories = {}  # chat_id -> list[message]
         self.chat_locks = {}  # chat_id -> asyncio.Lock (jaga konsistensi riwayat)
         self.pending = {}  # confirm id -> asyncio.Future
+        # Referensi ke task yang sedang jalan; tanpa ini asyncio boleh
+        # membuangnya (garbage collect) di tengah pekerjaan.
+        self._tasks = set()
 
     # --- util ---------------------------------------------------------------
+    def _spawn(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
     def _lock(self, chat_id):
         if chat_id not in self.chat_locks:
             self.chat_locks[chat_id] = asyncio.Lock()
@@ -88,8 +96,9 @@ class App:
         instruksi = (instruksi or "").strip()
         if not instruksi:
             return "Instruksi tugas latar kosong."
-        asyncio.run_coroutine_threadsafe(
-            self._run_background(chat_id, instruksi), self.loop
+        # Dipanggil dari thread worker: serahkan ke event loop untuk dibuat task.
+        self.loop.call_soon_threadsafe(
+            self._spawn, self._run_background(chat_id, instruksi)
         )
         return f"Oke, aku kerjakan di latar: {instruksi}"
 
@@ -106,15 +115,17 @@ class App:
         user_id = message.get("from", {}).get("id")
         text = message.get("text", "")
 
+        if text.startswith("/id"):
+            # Aman dijawab ke siapa pun: hanya memberi tahu id pengirim sendiri.
+            await self.tg.send(chat_id, f"User id kamu: {user_id}")
+            return
+
         if user_id != config.OWNER_ID:
             # Bukan pemilik — abaikan diam-diam (keamanan).
             return
 
         if text.startswith("/start") or text.startswith("/help"):
             await self.tg.send(chat_id, HELP)
-            return
-        if text.startswith("/id"):
-            await self.tg.send(chat_id, f"User id kamu: {user_id}")
             return
         if text.startswith("/reset"):
             self.histories.pop(chat_id, None)
@@ -163,7 +174,7 @@ class App:
             while True:
                 updates = await self.tg.get_updates()
                 for update in updates:
-                    asyncio.create_task(self._dispatch(update))
+                    self._spawn(self._dispatch(update))
         finally:
             await self.tg.close()
 

@@ -30,7 +30,9 @@ OWNER_ID = int(_get("OWNER_TELEGRAM_ID", "0") or "0")
 ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY")
 MODEL = _get("ITSME_MODEL", "claude-opus-5-5")
 EFFORT = _get("ITSME_EFFORT", "max")
-MAX_TOKENS = int(_get("ITSME_MAX_TOKENS", "16000"))
+# Proses berpikir ikut dihitung di sini, dan effort max berpikir panjang —
+# jadi dibuat lega. Aman karena permintaan ke Claude memakai streaming.
+MAX_TOKENS = int(_get("ITSME_MAX_TOKENS", "64000"))
 # Batas langkah tool dalam satu giliran, supaya tidak berputar tanpa henti.
 MAX_STEPS = int(_get("ITSME_MAX_STEPS", "16"))
 

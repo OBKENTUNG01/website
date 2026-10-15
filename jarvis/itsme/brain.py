@@ -8,7 +8,7 @@ satu loop.
 from anthropic import Anthropic
 
 from . import config
-from .tools import ALL_TOOLS, handle_tool
+from .tools import ALL_TOOLS, handle_tool, validate_input
 
 _client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -88,15 +88,28 @@ def run_agent(messages, ctx):
         if msg.stop_reason == "tool_use":
             results = []
             for block in msg.content:
-                if getattr(block, "type", None) == "tool_use":
-                    out = handle_tool(block.name, block.input or {}, ctx)
+                if getattr(block, "type", None) != "tool_use":
+                    continue
+                tool_input = block.input if isinstance(block.input, dict) else {}
+                problem = validate_input(block.name, tool_input)
+                if problem:
                     results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": str(out),
+                            "content": problem,
+                            "is_error": True,
                         }
                     )
+                    continue
+                out = handle_tool(block.name, tool_input, ctx)
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": str(out),
+                    }
+                )
             if results:
                 messages.append({"role": "user", "content": results})
                 continue

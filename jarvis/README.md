@@ -14,15 +14,17 @@ Telegram**, jadi bisa langsung kamu pakai dari HP. Otaknya **Claude
 - **Edit & deploy website lewat Git** — It's Me mengubah kode lalu `git push`;
   kalau Hostinger diatur auto-deploy, website langsung terbarui.
 - **Ingat** hal penting yang kamu beri tahu (memori jangka panjang).
-- **Aman** — hanya kamu (pemilik) yang bisa memerintah; aksi berisiko minta
-  konfirmasi satu tombol, dan setelah kamu tekan "Ya" langsung dijalankan.
+- **Aman** — hanya kamu (pemilik) yang bisa memerintah. Perintah yang hanya
+  membaca (`ls`, `cat`, `git status`, …) langsung jalan; menulis berkas,
+  perintah lain, dan deploy minta konfirmasi satu tombol, dan setelah kamu
+  tekan "Ya" langsung dijalankan.
 
 ## Yang perlu kamu siapkan
 
 1. **Token bot Telegram** — chat [@BotFather](https://t.me/BotFather), kirim
    `/newbot`, salin token-nya.
-2. **User id Telegram-mu** — chat [@userinfobot](https://t.me/userinfobot),
-   atau jalankan bot ini lalu kirim `/id`.
+2. **User id Telegram-mu** — chat [@userinfobot](https://t.me/userinfobot).
+   Setelah bot jalan, kirim `/id` ke bot untuk memastikan angkanya sama.
 3. **API key Anthropic** — dari <https://console.anthropic.com>.
 
 ## Cara menjalankan (di komputer / server)
@@ -78,7 +80,7 @@ Buka Telegram, cari bot-mu, kirim `/start`.
 |---|---|---|
 | `ITSME_MODEL` | `claude-opus-5-5` | Model otak |
 | `ITSME_EFFORT` | `max` | Tingkat upaya: `low`/`medium`/`high`/`xhigh`/`max` |
-| `ITSME_MAX_TOKENS` | `16000` | Panjang jawaban maksimum |
+| `ITSME_MAX_TOKENS` | `64000` | Batas token per giliran (termasuk proses berpikir) |
 | `WEBSITE_REPO_DIR` | — | Folder repo website untuk fitur deploy |
 
 > Catatan: effort `max` adalah yang paling cerdas tapi paling lambat dan paling

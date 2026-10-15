@@ -36,7 +36,12 @@ class Telegram:
             # jaringan goyah — jeda sebentar lalu coba lagi di loop pemanggil
             await asyncio.sleep(3)
             return []
-        updates = data.get("result", []) if data.get("ok") else []
+        if not data.get("ok"):
+            # mis. token salah — beri jeda supaya tidak membanjiri API
+            print(f"[itsme] Telegram menolak: {data.get('description', data)}")
+            await asyncio.sleep(5)
+            return []
+        updates = data.get("result", [])
         if updates:
             self._offset = updates[-1]["update_id"] + 1
         return updates
