@@ -1,0 +1,11 @@
+# Rahasia — jangan pernah di-commit
+.env
+
+# Memori lokal (boleh dihapus baris ini kalau mau ikut tersimpan di repo)
+data/memory.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
