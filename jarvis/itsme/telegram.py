@@ -14,8 +14,8 @@ MAX_LEN = 4000  # batas aman di bawah 4096 milik Telegram
 
 
 class Telegram:
-    def __init__(self, token):
-        self._base = f"{API}/bot{token}"
+    def __init__(self, token, api=API):
+        self._base = f"{api.rstrip('/')}/bot{token}"
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(70.0))
         self._offset = None
 

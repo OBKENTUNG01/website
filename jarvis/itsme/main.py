@@ -30,7 +30,7 @@ HELP = (
 
 class App:
     def __init__(self):
-        self.tg = Telegram(config.TELEGRAM_TOKEN)
+        self.tg = Telegram(config.TELEGRAM_TOKEN, config.TELEGRAM_API_URL)
         self.memory = Memory(config.MEMORY_FILE)
         self.loop = None
         self.histories = {}  # chat_id -> list[message]

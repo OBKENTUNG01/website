@@ -20,6 +20,8 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from . import config
+
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/130.0 Safari/537.36 ItsMe/1.0"
@@ -40,8 +42,16 @@ def search(query, max_results=5):
     try:
         # Minta sedikit lebih banyak: sebagian hasil bisa berupa link pelacak
         # relatif (mis. "/clev?...") yang tidak bisa dibuka, dan dibuang.
-        results = DDGS().text(query, max_results=max_results + 3) or []
+        results = DDGS(timeout=10).text(
+            query,
+            region=config.SEARCH_REGION,
+            safesearch="moderate",
+            max_results=max_results + 3,
+        ) or []
     except Exception as exc:  # noqa: BLE001 - ddgs melempar banyak jenis error
+        if "No results found" in str(exc):
+            # ddgs juga memakai pesan ini saat mesin pencari sedang membatasi.
+            return "Tidak ada hasil (atau mesin pencari sedang membatasi). Coba kata kunci lain."
         return f"Pencarian gagal ({type(exc).__name__}): {exc}. Coba lagi sebentar."
     results = [
         r for r in results

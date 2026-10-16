@@ -86,6 +86,11 @@ def _call_ollama(body):
                 f"Model '{config.OLLAMA_MODEL}' belum diunduh. Jalankan di "
                 f"komputer: ollama pull {config.OLLAMA_MODEL}"
             )
+        if "does not support thinking" in str(detail):
+            return None, (
+                f"Model '{config.OLLAMA_MODEL}' tidak punya mode berpikir. "
+                "Ubah ITSME_OLLAMA_THINK=false di .env."
+            )
         return None, f"Ollama menolak permintaan ({resp.status_code}): {detail}"
     message = data.get("message")
     if not isinstance(message, dict):
@@ -124,7 +129,11 @@ def run_agent(messages, ctx):
             c for c in (message.get("tool_calls") or []) if isinstance(c, dict)
         ]
 
+        # Simpan giliran asisten seperti diterima (termasuk proses berpikir
+        # dan panggilan alat), sesuai anjuran dokumentasi Ollama.
         assistant = {"role": "assistant", "content": content}
+        if message.get("thinking"):
+            assistant["thinking"] = message["thinking"]
         if tool_calls:
             assistant["tool_calls"] = tool_calls
         messages.append(assistant)
@@ -139,6 +148,9 @@ def run_agent(messages, ctx):
             if problem is None:
                 problem = validate_input(name, args)
             out = problem or handle_tool(name, args, ctx)
-            messages.append({"role": "tool", "tool_name": name, "content": str(out)})
+            result = {"role": "tool", "tool_name": name, "content": str(out)}
+            if call.get("id"):  # Ollama >= 0.12.10 memberi id per panggilan
+                result["tool_call_id"] = call["id"]
+            messages.append(result)
 
     return "Langkahnya terlalu banyak, aku berhenti dulu. Lanjut?"

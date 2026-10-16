@@ -38,30 +38,85 @@ bot dari HP.
   (router, `localhost`, dll.) supaya bot tidak bisa diarahkan mengintip
   jaringan rumahmu.
 
-## Langkah 1 — Pasang Ollama dan unduh model
+## Cara paling gampang: satu perintah
 
-1. Unduh dan pasang Ollama dari <https://ollama.com/download>.
-   - **Windows / macOS:** jalankan installer-nya; Ollama lalu berjalan di
-     latar belakang.
-   - **Linux:** `curl -fsSL https://ollama.com/install.sh | sh`
-2. Unduh model (sekali saja, sekitar 5 GB):
+Skrip setup memasang semuanya sendiri — Python, Ollama, model AI, paket —
+menanyakan token bot (langsung dicek ke Telegram), **mendeteksi user id-mu
+otomatis**, lalu menyalakan It's Me dan mengaturnya agar menyala sendiri
+setiap komputer hidup. Kamu cukup menjawab 2–3 pertanyaan.
+
+**Sebelum mulai:** di Telegram, chat [@BotFather](https://t.me/BotFather),
+kirim `/newbot`, ikuti langkahnya, lalu siapkan token yang diberikan.
+
+**Windows** — klik Start, ketik `PowerShell`, buka, lalu tempel:
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; irm https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/setup.ps1 | iex
+```
+
+**macOS / Linux** — buka Terminal, lalu tempel:
+```bash
+curl -fsSL https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/setup.sh | bash
+```
+
+> Selama PR #1 belum di-merge, ganti `main` pada alamat di atas dengan
+> `refs/heads/claude/jarvis-iron-man-q0ud8c`.
+
+It's Me dipasang di `%USERPROFILE%\ItsMe` (Windows) atau `~/itsme`
+(macOS/Linux). Jalankan perintah yang sama lagi kapan saja untuk
+**memperbarui** — `.env` dan memori tidak ditimpa.
+
+**Ada masalah?** Jalankan pemeriksa dari folder It's Me — ia memberi tahu
+apa yang salah dan cara membetulkannya:
+- Windows: `.venv\Scripts\python -m itsme.doctor`
+- macOS/Linux: `.venv/bin/python -m itsme.doctor`
+
+### Biar Claude di komputermu yang memasang
+
+Kalau di komputer itu ada Claude Code / aplikasi Claude, kamu bisa
+memintanya menjalankan skrip setup. Karena Claude tidak bisa menjawab
+pertanyaan skrip untukmu, beri dia nilai-nilainya lewat variabel lingkungan:
+`TELEGRAM_BOT_TOKEN`, `OWNER_TELEGRAM_ID` (dari
+[@userinfobot](https://t.me/userinfobot)), dan di Windows `ITSME_NO_SLEEP`
+(`1` = cegah komputer tidur, `0` = biarkan).
+
+## Cara manual
+
+Kalau lebih suka memasang sendiri langkah demi langkah:
+
+### Langkah 1 — Pasang Ollama dan unduh model
+
+1. Pasang Ollama (butuh Windows 10 22H2+ / macOS 14+ / Linux):
+   - **Windows (PowerShell):** `irm https://ollama.com/install.ps1 | iex`
+   - **macOS / Linux:** `curl -fsSL https://ollama.com/install.sh | sh`
+   - atau unduh installer-nya dari <https://ollama.com/download>.
+2. Unduh model (sekali saja, sekitar 6,6 GB):
    ```bash
-   ollama pull qwen3:8b
+   ollama pull qwen3.5:9b
    ```
-3. Coba: `ollama run qwen3:8b "Halo, apa kabar?"` — kalau dijawab, otaknya siap.
+3. Coba: `ollama run qwen3.5:9b "Halo, apa kabar?"` — kalau dijawab, otaknya siap.
 
-> **RAM 16 GB:** `qwen3:8b` adalah pilihan bawaan yang pas — mendukung
-> pemanggilan alat (tools) dan bahasa Indonesia. Kalau terasa terlalu lambat,
-> pakai model yang lebih kecil (mis. `qwen3:4b`) dan ubah `ITSME_OLLAMA_MODEL`.
+### Model untuk RAM 16 GB
 
-## Langkah 2 — Siapkan bot Telegram
+| Model | Unduhan | Kapan dipakai |
+|---|---|---|
+| `qwen3.5:9b` (bawaan) | 6,6 GB | Paling pintar yang muat di 16 GB: skor multibahasa & pemanggilan alat tertinggi, ±8 GB RAM saat dipakai |
+| `qwen3.5:4b` | 3,3 GB | Komputer terasa lambat — sekitar 2× lebih cepat |
+| `qwen3:8b` | 5,2 GB | Alternatif yang paling teruji untuk pemanggilan alat |
+
+Ganti model lewat `ITSME_OLLAMA_MODEL` di `.env` (unduh dulu dengan
+`ollama pull <nama>`). Untuk melihat kecepatan di komputermu:
+`ollama run qwen3.5:9b --verbose` → lihat `eval rate` (token/detik).
+Pakai Ollama versi terbaru — versi lama kadang "menulis" panggilan alat
+sebagai teks alih-alih menjalankannya.
+
+### Langkah 2 — Siapkan bot Telegram
 
 1. **Token bot** — chat [@BotFather](https://t.me/BotFather), kirim `/newbot`,
    salin token-nya.
 2. **User id Telegram-mu** — chat [@userinfobot](https://t.me/userinfobot).
    Setelah bot jalan, kirim `/id` ke bot untuk memastikan angkanya sama.
 
-## Langkah 3 — Jalankan It's Me di komputer
+### Langkah 3 — Jalankan It's Me di komputer
 
 Butuh [Python](https://www.python.org/downloads/) 3.10 atau lebih baru.
 
@@ -86,8 +141,10 @@ nano .env           # isi TELEGRAM_BOT_TOKEN dan OWNER_TELEGRAM_ID
 python -m itsme.main
 ```
 
-Kalau berhasil, muncul tulisan `It's Me jalan. Otak: lokal qwen3:8b ...`.
-Buka Telegram di HP, cari bot-mu, kirim `/start`.
+Sebelum menyalakan, kamu bisa memeriksa semuanya dengan
+`python -m itsme.doctor`. Kalau berhasil menyala, muncul tulisan
+`It's Me jalan. Otak: lokal qwen3.5:9b ...`. Buka Telegram di HP, cari
+bot-mu, kirim `/start`.
 
 **Biar jalan terus:** biarkan jendela terminal itu tetap terbuka, dan matikan
 mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
@@ -115,11 +172,12 @@ mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 | Variabel | Bawaan | Fungsi |
 |---|---|---|
 | `ITSME_BACKEND` | `ollama` | Otak: `ollama` (lokal) atau `claude` |
-| `ITSME_OLLAMA_MODEL` | `qwen3:8b` | Model lokal yang dipakai |
+| `ITSME_OLLAMA_MODEL` | `qwen3.5:9b` | Model lokal yang dipakai |
 | `ITSME_OLLAMA_NUM_CTX` | `16384` | Panjang konteks; turunkan kalau RAM penuh |
 | `ITSME_OLLAMA_KEEP_ALIVE` | `30m` | Lama model tetap di RAM (`-1` = selamanya) |
-| `ITSME_OLLAMA_THINK` | — | `true`/`false`: mode berpikir (lebih teliti, lebih lambat) |
+| `ITSME_OLLAMA_THINK` | `false` | `true` = mode berpikir (lebih teliti, jauh lebih lambat); `default` = ikuti model |
 | `ITSME_OLLAMA_TIMEOUT` | `600` | Batas waktu satu jawaban (detik) |
+| `ITSME_SEARCH_REGION` | `id-id` | Wilayah pencarian web (`id-id`, `us-en`, …) |
 | `OLLAMA_URL` | `http://localhost:11434` | Alamat Ollama |
 | `WEBSITE_REPO_DIR` | — | Folder repo website untuk fitur deploy |
 

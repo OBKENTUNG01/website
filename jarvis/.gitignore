@@ -4,6 +4,12 @@
 # Memori lokal (boleh dihapus baris ini kalau mau ikut tersimpan di repo)
 data/memory.md
 
+# Dibuat oleh skrip setup saat It's Me dipasang
+start-itsme.cmd
+itsme.log
+itsme.pid
+ollama.log
+
 # Python
 __pycache__/
 *.pyc
