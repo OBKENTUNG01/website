@@ -18,6 +18,7 @@
 #   TELEGRAM_BOT_TOKEN   token bot (melewati pertanyaan)
 #   OWNER_TELEGRAM_ID    user id pemilik (melewati deteksi)
 #   OPENROUTER_API_KEY   key otak cloud OpenRouter (opsional, melewati pertanyaan)
+#   ITSME_OLLAMA_MODEL   model lokal (bawaan: qwen3.5:9b), ikut disimpan ke .env
 #   ITSME_NO_SLEEP       1 = cegah komputer tidur, 0 = jangan ubah (tanpa ditanya)
 #   ITSME_AUTOSTART=0    jangan pasang penyalaan otomatis
 #
@@ -369,14 +370,26 @@ function Wait-ItsMeOllama([int]$Seconds) {
     return $false
 }
 
+function Invoke-ItsMeOllamaInstaller {
+    # Pemasang resmi dari ollama.com (memasang baru atau memperbarui), dijalankan
+    # di proses terpisah supaya tidak bisa mengganggu skrip ini.
+    [void](Invoke-ItsMeProgram 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '"irm https://ollama.com/install.ps1 | iex"'))
+    Update-ItsMeSessionPath
+}
+
+function Start-ItsMeOllama([string]$Ollama) {
+    if (Test-ItsMeOllamaUp) { return }
+    Write-ItsMeInfo 'Menyalakan Ollama...'
+    if ($ItsMeOnWindows) { Start-Process -FilePath $Ollama -ArgumentList 'serve' -WindowStyle Hidden }
+    else { Start-Process -FilePath $Ollama -ArgumentList 'serve' }
+    if (-not (Wait-ItsMeOllama 30)) { throw 'Ollama tidak mau menyala. Buka aplikasi Ollama dari menu Start, lalu jalankan skrip ini lagi.' }
+}
+
 function Install-ItsMeOllama {
     $ollama = Find-ItsMeOllama
     if (-not $ollama) {
-        # Pemasang resmi dari ollama.com, dijalankan di proses terpisah supaya
-        # tidak bisa mengganggu skrip ini.
         Write-ItsMeInfo 'Memasang Ollama dengan pemasang resmi dari ollama.com...'
-        [void](Invoke-ItsMeProgram 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '"irm https://ollama.com/install.ps1 | iex"'))
-        Update-ItsMeSessionPath
+        Invoke-ItsMeOllamaInstaller
         $ollama = Find-ItsMeOllama
         if (-not $ollama -and (Get-Command winget -ErrorAction SilentlyContinue)) {
             Write-ItsMeInfo 'Mencoba lewat winget...'
@@ -387,12 +400,7 @@ function Install-ItsMeOllama {
         if (-not $ollama) { throw 'Ollama belum terpasang. Pasang dari https://ollama.com/download lalu jalankan skrip ini lagi.' }
     }
     Write-ItsMeInfo "Ollama: $ollama"
-    if (-not (Test-ItsMeOllamaUp)) {
-        Write-ItsMeInfo 'Menyalakan Ollama...'
-        if ($ItsMeOnWindows) { Start-Process -FilePath $ollama -ArgumentList 'serve' -WindowStyle Hidden }
-        else { Start-Process -FilePath $ollama -ArgumentList 'serve' }
-        if (-not (Wait-ItsMeOllama 30)) { throw 'Ollama tidak mau menyala. Buka aplikasi Ollama dari menu Start, lalu jalankan skrip ini lagi.' }
-    }
+    Start-ItsMeOllama $ollama
     return $ollama
 }
 
@@ -407,17 +415,48 @@ function Get-ItsMeModelName([string]$Vpy, [string]$Dir) {
     return $model
 }
 
-function Get-ItsMeModel([string]$Ollama, [string]$Model, [int]$Attempts) {
-    # Unduh model; kembalikan $true kalau berhasil. Unduhan yang rusak di
-    # perjalanan ("digest mismatch") dihapus Ollama sendiri, jadi cukup diulang.
+function Get-ItsMeModel([string]$Ollama, [string]$Model, [int]$Attempts, [string]$Vpy, [string]$Dir) {
+    # Unduh model; kembalikan $true kalau berhasil. Kalau gagal karena sebab
+    # yang jelas, alasannya disimpan di $script:ItsMeModelHint.
+    $script:ItsMeModelHint = ''
     $have = & $Ollama list | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ -eq $Model }
     if ($have) {
         Write-ItsMeInfo "Model $Model sudah ada."
         return $true
     }
+    Write-ItsMeInfo "Mengunduh $Model (beberapa GB, hanya sekali - silakan ditinggal)..."
+    # Pengunduh It's Me memeriksa setiap potongan & sha256 dan bisa melanjutkan
+    # unduhan yang terputus. Pengunduh bawaan Ollama kadang merusak unduhan
+    # besar ("digest mismatch"); dengan berkas yang sudah lengkap, ollama pull
+    # di bawah hanya mencatat modelnya dalam beberapa detik.
+    $code = Invoke-ItsMeProgram $Vpy @('-m', 'itsme.fetch_model', $Model) $Dir
+    if ($code -eq 3) {
+        # Model ini butuh Ollama yang lebih baru: perbarui, lalu coba lagi.
+        $updateHint = 'Ollama perlu diperbarui untuk model ini. Pasang versi terbaru dari https://ollama.com/download lalu jalankan setup ini lagi.'
+        Write-ItsMeInfo 'Memperbarui Ollama ke versi terbaru...'
+        try {
+            Invoke-ItsMeOllamaInstaller
+            [void](Wait-ItsMeOllama 60)
+            $found = Find-ItsMeOllama
+            if ($found) { $Ollama = $found }
+            Start-ItsMeOllama $Ollama
+        } catch {
+            $script:ItsMeModelHint = $updateHint
+            return $false
+        }
+        $code = Invoke-ItsMeProgram $Vpy @('-m', 'itsme.fetch_model', $Model) $Dir
+        if ($code -eq 3) {
+            $script:ItsMeModelHint = $updateHint
+            return $false
+        }
+    }
+    if ($code -eq 4) {
+        $script:ItsMeModelHint = 'Ruang disk tidak cukup untuk model (lihat pesan di atas). Kosongkan ruang lalu jalankan setup ini lagi.'
+        return $false
+    }
+    # Kode 0: berkas lengkap, ollama pull hanya mencatat. Kode lain: ollama pull biasa.
     for ($i = 1; $i -le $Attempts; $i++) {
-        if ($i -eq 1) { Write-ItsMeInfo "Mengunduh $Model (beberapa GB, hanya sekali - silakan ditinggal)..." }
-        else { Write-ItsMeWarn "Unduhan gagal atau rusak di perjalanan (biasanya koneksi tidak stabil). Mencoba lagi ($i/$Attempts)..." }
+        if ($i -gt 1) { Write-ItsMeWarn "Unduhan gagal atau rusak di perjalanan (biasanya koneksi tidak stabil). Mencoba lagi ($i/$Attempts)..." }
         if ((Invoke-ItsMeProgram $Ollama @('pull', $Model)) -eq 0) { return $true }
     }
     return $false
@@ -492,6 +531,10 @@ function Install-ItsMe {
         Write-ItsMeStep '4/7 Memasang paket Python'
         $vpy = Install-ItsMePackages $python $dir
 
+        # Model pilihan lewat variabel lingkungan disimpan ke .env, supaya It's Me
+        # yang menyala sendiri nanti memakai model yang sama.
+        if ($env:ITSME_OLLAMA_MODEL) { Set-ItsMeEnvValue $envFile 'ITSME_OLLAMA_MODEL' $env:ITSME_OLLAMA_MODEL }
+
         # Dengan otak cloud, otak lokal hanya cadangan: kegagalannya tidak boleh
         # menghalangi It's Me menyala.
         $cloud = (Get-ItsMeEnvValue $envFile 'ITSME_BACKEND') -eq 'openrouter'
@@ -509,7 +552,8 @@ function Install-ItsMe {
         Write-ItsMeStep '6/7 Model AI'
         if ($cloud) {
             Write-ItsMeInfo "Otak cloud aktif - model lokal (cadangan) diunduh setelah It's Me menyala."
-        } elseif (-not (Get-ItsMeModel $ollama $model 3)) {
+        } elseif (-not (Get-ItsMeModel $ollama $model 3 $vpy $dir)) {
+            if ($script:ItsMeModelHint) { throw $script:ItsMeModelHint }
             throw ("Model $model gagal diunduh 3 kali - biasanya karena koneksi internet tidak stabil. " +
                 'Jalankan setup ini lagi nanti (bagian yang sudah beres tidak diulang), coba jaringan lain, ' +
                 'atau isi API key OpenRouter saat ditanya supaya It''s Me bisa memakai otak cloud.')
@@ -542,7 +586,7 @@ function Install-ItsMe {
         if ($cloud -and $ollama) {
             Write-ItsMeStep 'Tambahan: model cadangan untuk otak lokal'
             Write-ItsMeInfo "It's Me sudah bisa dipakai sekarang; unduhan ini berjalan sambil menunggu."
-            if (Get-ItsMeModel $ollama $model 2) {
+            if (Get-ItsMeModel $ollama $model 2 $vpy $dir) {
                 Write-ItsMeInfo 'Model cadangan siap. Kalau otak cloud bermasalah, otak lokal otomatis menjawab.'
             } else {
                 Write-ItsMeWarn ("Model cadangan $model belum berhasil diunduh. It's Me tetap jalan dengan otak cloud; " +

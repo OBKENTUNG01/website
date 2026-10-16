@@ -18,6 +18,7 @@
 #   TELEGRAM_BOT_TOKEN   token bot (melewati pertanyaan)
 #   OWNER_TELEGRAM_ID    user id pemilik (melewati deteksi)
 #   OPENROUTER_API_KEY   key otak cloud OpenRouter (opsional, melewati pertanyaan)
+#   ITSME_OLLAMA_MODEL   model lokal (bawaan: qwen3.5:9b), ikut disimpan ke .env
 #   ITSME_AUTOSTART=0    jangan pasang penyalaan otomatis
 
 set -euo pipefail
@@ -381,18 +382,41 @@ ensure_ollama() {
   fi
 }
 
-# pull_model PERCOBAAN → 0 kalau model siap. Unduhan yang rusak di perjalanan
-# ("digest mismatch") dihapus Ollama sendiri, jadi cukup diulang.
+# pull_model PERCOBAAN → 0 kalau model siap. Kalau gagal karena sebab yang
+# jelas, alasannya disimpan di MODEL_HINT.
 pull_model() {
-  local attempt
+  local attempt code=0
+  MODEL_HINT=""
   if "$OLLAMA_BIN" list 2>/dev/null | awk 'NR > 1 { print $1 }' | grep -qx "$MODEL"; then
     info "Model $MODEL sudah ada."
     return 0
   fi
+  info "Mengunduh $MODEL (beberapa GB, hanya sekali — silakan ditinggal)..."
+  # Pengunduh It's Me memeriksa setiap potongan & sha256 dan bisa melanjutkan
+  # unduhan yang terputus. Pengunduh bawaan Ollama kadang merusak unduhan
+  # besar ("digest mismatch"); dengan berkas yang sudah lengkap, ollama pull
+  # di bawah hanya mencatat modelnya dalam beberapa detik.
+  "$VPY" -m itsme.fetch_model "$MODEL" || code=$?
+  if [ "$code" = 3 ]; then
+    # Model ini butuh Ollama yang lebih baru: perbarui, lalu coba lagi.
+    info "Memperbarui Ollama ke versi terbaru (mungkin diminta password)..."
+    code=3
+    if curl -fsSL https://ollama.com/install.sh | sh && wait_ollama 60; then
+      code=0
+      "$VPY" -m itsme.fetch_model "$MODEL" || code=$?
+    fi
+    if [ "$code" = 3 ]; then
+      MODEL_HINT="Ollama perlu diperbarui untuk model ini. Pasang versi terbaru dari https://ollama.com/download lalu jalankan setup ini lagi."
+      return 1
+    fi
+  fi
+  if [ "$code" = 4 ]; then
+    MODEL_HINT="Ruang disk tidak cukup untuk model (lihat pesan di atas). Kosongkan ruang lalu jalankan setup ini lagi."
+    return 1
+  fi
+  # Kode 0: berkas lengkap, ollama pull hanya mencatat. Kode lain: ollama pull biasa.
   for attempt in $(seq 1 "$1"); do
-    if [ "$attempt" = 1 ]; then
-      info "Mengunduh $MODEL (beberapa GB, hanya sekali — silakan ditinggal)..."
-    else
+    if [ "$attempt" != 1 ]; then
       warn "Unduhan gagal atau rusak di perjalanan (biasanya koneksi tidak stabil). Mencoba lagi ($attempt/$1)..."
     fi
     "$OLLAMA_BIN" pull "$MODEL" && return 0
@@ -505,6 +529,10 @@ main() {
   step "4/7 Memasang paket Python"
   make_venv
 
+  # Model pilihan lewat variabel lingkungan disimpan ke .env, supaya It's Me
+  # yang menyala sendiri nanti memakai model yang sama.
+  if [ -n "${ITSME_OLLAMA_MODEL:-}" ]; then set_env ITSME_OLLAMA_MODEL "$ITSME_OLLAMA_MODEL"; fi
+
   # Dengan otak cloud, otak lokal hanya cadangan: kegagalannya tidak boleh
   # menghalangi It's Me menyala.
   CLOUD=0
@@ -519,6 +547,7 @@ main() {
   if [ "$CLOUD" = 1 ]; then
     info "Otak cloud aktif — model lokal (cadangan) diunduh setelah It's Me menyala."
   elif ! pull_model 3; then
+    [ -z "$MODEL_HINT" ] || die "$MODEL_HINT"
     die "Model $MODEL gagal diunduh 3 kali — biasanya karena koneksi internet tidak stabil. Jalankan setup ini lagi nanti (bagian yang sudah beres tidak diulang), coba jaringan lain, atau isi API key OpenRouter saat ditanya supaya It's Me bisa memakai otak cloud."
   fi
 

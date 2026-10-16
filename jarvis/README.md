@@ -129,6 +129,15 @@ Kalau lebih suka memasang sendiri langkah demi langkah:
    ```bash
    ollama pull qwen3.5:9b
    ```
+   Kalau gagal dengan **digest mismatch**, pengunduh bawaan Ollama menulis
+   potongan unduhan yang rusak. Pakai pengunduh It's Me yang memeriksa setiap
+   potongan dan sha256-nya, lalu tarik lagi (kali ini hanya beberapa detik).
+   Jalankan dari folder `jarvis/` dengan virtualenv dari Langkah 3 yang aktif:
+   ```bash
+   python -m itsme.fetch_model qwen3.5:9b
+   ollama pull qwen3.5:9b
+   ```
+   Skrip setup sudah melakukan ini otomatis.
 3. Coba: `ollama run qwen3.5:9b "Halo, apa kabar?"` — kalau dijawab, otaknya siap.
 
 ### Model untuk RAM 16 GB
