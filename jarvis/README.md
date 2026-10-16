@@ -229,6 +229,7 @@ mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 | `ITSME_FALLBACK_LOCAL` | `1` | Otak lokal menjawab kalau otak cloud gagal (`0` = matikan) |
 | `ITSME_OLLAMA_MODEL` | `qwen3.5:9b` | Model lokal yang dipakai |
 | `ITSME_OLLAMA_NUM_CTX` | `16384` | Panjang konteks; turunkan kalau RAM penuh |
+| `ITSME_OLLAMA_NUM_GPU` | otomatis | Lapisan model di GPU; `0` = CPU saja (kalau driver GPU bermasalah) |
 | `ITSME_OLLAMA_KEEP_ALIVE` | `30m` | Lama model tetap di RAM (`-1` = selamanya) |
 | `ITSME_OLLAMA_THINK` | `false` | `true` = mode berpikir (lebih teliti, jauh lebih lambat); `default` = ikuti model |
 | `ITSME_OLLAMA_TIMEOUT` | `600` | Batas waktu satu jawaban (detik) |
@@ -255,6 +256,11 @@ tapi butuh API key berbayar.
   paham. Selalu baca dulu apa yang akan dijalankan sebelum menekan "Ya".
 - **Kecepatan tergantung komputermu.** Tanpa kartu grafis, satu jawaban bisa
   butuh belasan detik sampai beberapa menit, apalagi kalau mode berpikir aktif.
+- **Kalau Ollama berhenti mendadak saat menjalankan model** (biasanya karena
+  driver atau memori GPU), It's Me otomatis mencoba lagi dengan konteks lebih
+  kecil, lalu dengan CPU saja, dan memberi tahu lewat catatan di jawabannya.
+  Penyebabnya tercatat di `%LOCALAPPDATA%\Ollama\server.log` (Windows);
+  memperbarui driver GPU biasanya menyelesaikannya.
 - **Model lokal lebih mudah tertipu** isi halaman web yang berisi perintah
   tersembunyi. Karena itu tombol konfirmasi untuk aksi yang mengubah sesuatu
   tetap aktif.

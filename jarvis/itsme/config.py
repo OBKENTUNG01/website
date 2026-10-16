@@ -75,6 +75,10 @@ OLLAMA_MODEL = _get("ITSME_OLLAMA_MODEL", "qwen3.5:9b")
 # Panjang konteks (token). Bawaan Ollama hanya 4096 di komputer tanpa GPU besar
 # — terlalu kecil untuk system prompt + daftar alat + riwayat obrolan.
 OLLAMA_NUM_CTX = int(_get("ITSME_OLLAMA_NUM_CTX", "16384"))
+# Jumlah lapisan model yang ditaruh di GPU. Kosong = otomatis (bawaan).
+# 0 = CPU saja: lebih lambat, tapi berguna kalau driver GPU bermasalah.
+_num_gpu = (_get("ITSME_OLLAMA_NUM_GPU", "") or "").strip()
+OLLAMA_NUM_GPU = int(_num_gpu) if re.fullmatch(r"-?\d+", _num_gpu) else None
 # Berapa lama model tetap dimuat di RAM setelah dipakai ("30m", "2h", atau -1 =
 # selamanya). Lebih lama = jawaban pertama lebih cepat, tapi RAM terpakai terus.
 # Ollama menolak angka berbentuk teks ("-1"), jadi angka dikirim sebagai angka.
