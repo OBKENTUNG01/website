@@ -464,11 +464,28 @@ function Get-ItsMeModel([string]$Ollama, [string]$Model, [int]$Attempts, [string
 
 # --- 6. menyalakan -------------------------------------------------------------------
 function Stop-ItsMeRunning([string]$Dir) {
-    # Matikan It's Me yang masih jalan dari pemasangan sebelumnya.
+    # Matikan It's Me yang masih jalan dari pemasangan sebelumnya: jendela
+    # start-itsme.cmd dan proses Python-nya. Baris perintah Python-nya relatif
+    # (".venv\Scripts\python.exe -m itsme.main"), jadi dikenali dari lokasi
+    # programnya. Python dari .venv di Windows jalan sebagai peluncur + proses
+    # anak; keduanya dimatikan. Tanpa ini bot lama tetap jalan dengan kode lama,
+    # dan bot baru menolak menyala karena hanya satu It's Me yang boleh jalan.
     if (-not $ItsMeOnWindows) { return }
-    $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -like '*start-itsme.cmd*' -or ($_.CommandLine -like '*itsme.main*' -and $_.CommandLine -like "*$Dir*")) }
-    foreach ($p in @($procs)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $venv = Join-Path $Dir '.venv'
+    $launchers = @($all | Where-Object { $_.CommandLine -and $_.CommandLine -like '*start-itsme.cmd*' })
+    $bots = @($all | Where-Object {
+        $_.CommandLine -and $_.CommandLine -like '*itsme.main*' -and
+        (($_.ExecutablePath -and $_.ExecutablePath -like "$venv\*") -or $_.CommandLine -like "*$Dir*")
+    })
+    $botIds = @($bots | ForEach-Object { $_.ProcessId })
+    $children = @($all | Where-Object { $botIds -contains $_.ParentProcessId -and $_.CommandLine -like '*itsme.main*' })
+    $targets = @($launchers + $bots + $children)
+    foreach ($p in $targets) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    if ($targets.Count -gt 0) {
+        Write-ItsMeInfo "It's Me versi lama dimatikan ($($targets.Count) proses)."
+        Start-Sleep -Seconds 1  # beri waktu kunci "hanya satu It's Me" dilepas
+    }
 }
 
 function Install-ItsMeLauncher([string]$Dir) {
