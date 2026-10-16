@@ -79,6 +79,42 @@ pertanyaan skrip untukmu, beri dia nilai-nilainya lewat variabel lingkungan:
 [@userinfobot](https://t.me/userinfobot)), dan di Windows `ITSME_NO_SLEEP`
 (`1` = cegah komputer tidur, `0` = biarkan).
 
+## Otak cloud lewat OpenRouter (opsional, jauh lebih pintar)
+
+Model lokal di komputer 16 GB terbatas kepintarannya. Dengan API key
+[OpenRouter](https://openrouter.ai), It's Me bisa memakai model cloud yang jauh
+lebih pintar — dan **otak lokal tetap jadi cadangan otomatis** kalau saldo
+habis, batas harian tercapai, atau internet putus.
+
+1. Di openrouter.ai → **Settings → API Keys → New Key**. **Isi batas kredit**
+   (mis. $5) supaya aman kalau key-nya bocor. Jangan kirim key ke chat mana pun.
+2. Jalankan lagi perintah setup di atas. Saat diminta, tempel key-nya
+   (ketikannya tidak tampil di layar). Setup memilih model otomatis:
+   - belum pernah isi saldo → `google/gemma-4-31b-it:free` (gratis)
+   - sudah pernah isi saldo → `anthropic/claude-haiku-5.5`
+3. Di Telegram: `/cloud` = otak cloud, `/lokal` = otak lokal, `/otak` = lihat
+   yang aktif.
+
+| Model | Harga per 1 juta token (masuk / keluar) | Catatan |
+|---|---|---|
+| `google/gemma-4-31b-it:free` | gratis | maks. 50 permintaan/hari (1000/hari kalau pernah isi saldo ≥ $10) |
+| `anthropic/claude-haiku-5.5` | $0,10 / $0,50 | murah (±$0,001 per pesan), pemakaian alat sangat andal |
+| `deepseek/deepseek-v4-flash` | $0,09 / $0,18 | paling murah |
+| `anthropic/claude-sonnet-5.5`, `openai/gpt-6-sol` | $2 / $10 | paling pintar, untuk tugas berat |
+
+Ganti model lewat `ITSME_OPENROUTER_MODEL` di `.env` — harus model yang
+mendukung *tools* (`python -m itsme.doctor` akan mengeceknya). Satu pesan bisa
+memakai beberapa permintaan kalau It's Me memakai alat.
+
+> **Menambah banyak API key tidak membuat It's Me lebih pintar.** Satu key
+> sudah bisa memakai semua model, dan batas pemakaian OpenRouter dihitung per
+> akun, bukan per key. Yang menentukan kepintaran adalah **model** yang dipilih.
+
+> **Privasi:** dengan otak cloud, isi obrolan dikirim ke OpenRouter dan
+> penyedia modelnya; sebagian penyedia model gratis mencatat data. Cek
+> pengaturan privasi akun OpenRouter-mu, dan pakai `/lokal` untuk hal yang
+> sangat pribadi.
+
 ## Cara manual
 
 Kalau lebih suka memasang sendiri langkah demi langkah:
@@ -164,6 +200,9 @@ mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 | Perintah | Fungsi |
 |---|---|
 | `/start`, `/help` | Bantuan |
+| `/otak` | Lihat otak yang sedang dipakai |
+| `/cloud` | Pakai otak cloud (OpenRouter) |
+| `/lokal` | Pakai otak lokal (Ollama) |
 | `/reset` | Mulai percakapan baru (memori tetap) |
 | `/id` | Tampilkan user id Telegram-mu |
 
@@ -171,7 +210,11 @@ mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 
 | Variabel | Bawaan | Fungsi |
 |---|---|---|
-| `ITSME_BACKEND` | `ollama` | Otak: `ollama` (lokal) atau `claude` |
+| `ITSME_BACKEND` | `ollama` | Otak awal: `ollama` (lokal), `openrouter` (cloud), atau `claude` |
+| `OPENROUTER_API_KEY` | — | Key otak cloud OpenRouter |
+| `ITSME_OPENROUTER_MODEL` | `google/gemma-4-31b-it:free` | Model cloud (harus mendukung tools) |
+| `ITSME_OPENROUTER_REASONING` | `medium` | Seberapa keras model cloud berpikir (`none` … `max`, atau `default`) |
+| `ITSME_FALLBACK_LOCAL` | `1` | Otak lokal menjawab kalau otak cloud gagal (`0` = matikan) |
 | `ITSME_OLLAMA_MODEL` | `qwen3.5:9b` | Model lokal yang dipakai |
 | `ITSME_OLLAMA_NUM_CTX` | `16384` | Panjang konteks; turunkan kalau RAM penuh |
 | `ITSME_OLLAMA_KEEP_ALIVE` | `30m` | Lama model tetap di RAM (`-1` = selamanya) |

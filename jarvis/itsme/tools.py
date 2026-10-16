@@ -156,8 +156,9 @@ CLAUDE_TOOLS = SERVER_TOOLS + [
     dict(tool, eager_input_streaming=True) for tool in CLIENT_TOOLS
 ]
 
-# Untuk otak lokal: format "function" yang dipakai Ollama.
-OLLAMA_TOOLS = [
+# Untuk otak lokal (Ollama) dan cloud (OpenRouter): format "function" yang
+# sama-sama dipakai keduanya.
+FUNCTION_TOOLS = [
     {
         "type": "function",
         "function": {

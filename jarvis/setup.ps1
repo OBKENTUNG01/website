@@ -17,6 +17,7 @@
 #   ITSME_REF            cabang GitHub sumber (bawaan: main, lalu cabang PR)
 #   TELEGRAM_BOT_TOKEN   token bot (melewati pertanyaan)
 #   OWNER_TELEGRAM_ID    user id pemilik (melewati deteksi)
+#   OPENROUTER_API_KEY   key otak cloud OpenRouter (opsional, melewati pertanyaan)
 #   ITSME_NO_SLEEP       1 = cegah komputer tidur, 0 = jangan ubah (tanpa ditanya)
 #   ITSME_AUTOSTART=0    jangan pasang penyalaan otomatis
 #
@@ -29,6 +30,7 @@ $ItsMeRepo = 'OBKENTUNG01/website'
 $ItsMeFallbackRef = 'claude/jarvis-iron-man-q0ud8c'
 $ItsMeTelegramApi = if ($env:TELEGRAM_API_URL) { $env:TELEGRAM_API_URL.TrimEnd('/') } else { 'https://api.telegram.org' }
 $ItsMeOllamaUrl = if ($env:OLLAMA_URL) { $env:OLLAMA_URL.TrimEnd('/') } else { 'http://localhost:11434' }
+$ItsMeOpenRouterApi = if ($env:OPENROUTER_URL) { $env:OPENROUTER_URL.TrimEnd('/') } else { 'https://openrouter.ai/api/v1' }
 $ItsMeOnWindows = ($env:OS -eq 'Windows_NT')
 
 function Write-ItsMeStep([string]$Text) { Write-Host ''; Write-Host "==> $Text" -ForegroundColor Cyan }
@@ -179,6 +181,19 @@ function Install-ItsMePython {
 }
 
 # --- 3. Telegram ------------------------------------------------------------------
+function Read-ItsMeSecret([string]$Prompt) {
+    # Seperti Read-Host, tapi ketikan tidak tampil di layar (untuk token &
+    # API key, supaya tidak ikut terlihat di screenshot).
+    $secure = Read-Host -Prompt $Prompt -AsSecureString
+    if (-not $secure -or $secure.Length -eq 0) { return '' }
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
 function Get-ItsMeBotUsername([string]$Token) {
     try {
         $me = Invoke-RestMethod -Uri "$ItsMeTelegramApi/bot$Token/getMe" -TimeoutSec 15
@@ -240,7 +255,7 @@ function Set-ItsMeTelegram([string]$EnvFile) {
         Write-ItsMeInfo 'Belum punya bot? Di Telegram chat @BotFather, kirim /newbot, ikuti'
         Write-ItsMeInfo 'langkahnya, lalu salin token yang diberikan.'
         for ($i = 0; $i -lt 3 -and -not $username; $i++) {
-            $token = ([string](Read-Host '    Tempel token bot di sini')) -replace '\s', ''
+            $token = (Read-ItsMeSecret '    Tempel token bot di sini (tidak akan tampil)') -replace '\s', ''
             if ($token) { $username = Get-ItsMeBotUsername $token }
             if ($username) { Write-ItsMeInfo "Token valid: @$username" }
             else { Write-ItsMeWarn 'Token ditolak Telegram. Salin ulang dari @BotFather.' }
@@ -257,6 +272,56 @@ function Set-ItsMeTelegram([string]$EnvFile) {
     }
     Set-ItsMeEnvValue $EnvFile 'OWNER_TELEGRAM_ID' $owner
     return $username
+}
+
+# --- 3b. otak cloud OpenRouter (opsional) -----------------------------------------
+function Get-ItsMeOpenRouterKeyInfo([string]$Key) {
+    try {
+        $r = Invoke-RestMethod -Uri "$ItsMeOpenRouterApi/key" -Headers @{ Authorization = "Bearer $Key" } -TimeoutSec 15
+        if ($r.data) { return $r.data }
+    } catch {
+        return $null  # key ditolak (401) atau OpenRouter tidak terjangkau
+    }
+    return $null
+}
+
+function Set-ItsMeOpenRouter([string]$EnvFile) {
+    $key = if ($env:OPENROUTER_API_KEY) { $env:OPENROUTER_API_KEY } else { Get-ItsMeEnvValue $EnvFile 'OPENROUTER_API_KEY' }
+    $info = $null
+    if ($key) { $info = Get-ItsMeOpenRouterKeyInfo $key }
+    if ($info) {
+        Write-ItsMeInfo 'API key OpenRouter tersimpan masih valid.'
+    } else {
+        if ([Console]::IsInputRedirected) {
+            Write-ItsMeInfo 'Otak cloud OpenRouter dilewati (opsional).'
+            return
+        }
+        Write-ItsMeInfo 'Opsional: otak cloud lewat OpenRouter (jauh lebih pintar). Tekan Enter untuk melewati.'
+        $key = ''
+        for ($i = 0; $i -lt 3 -and -not $info; $i++) {
+            $key = (Read-ItsMeSecret '    API key OpenRouter (tidak akan tampil)') -replace '\s', ''
+            if (-not $key) { break }
+            $info = Get-ItsMeOpenRouterKeyInfo $key
+            if (-not $info) { Write-ItsMeWarn 'API key ditolak OpenRouter. Coba lagi, atau tekan Enter untuk melewati.' }
+        }
+        if (-not $info) {
+            Write-ItsMeInfo "Dilewati - It's Me memakai otak lokal."
+            return
+        }
+    }
+    Set-ItsMeEnvValue $EnvFile 'OPENROUTER_API_KEY' $key
+    Set-ItsMeEnvValue $EnvFile 'ITSME_BACKEND' 'openrouter'
+    if (-not (Get-ItsMeEnvValue $EnvFile 'ITSME_OPENROUTER_MODEL')) {
+        # Belum pernah isi saldo -> model gratis; sudah -> model berbayar yang murah & andal.
+        $model = if ($info.is_free_tier) { 'google/gemma-4-31b-it:free' } else { 'anthropic/claude-haiku-5.5' }
+        Set-ItsMeEnvValue $EnvFile 'ITSME_OPENROUTER_MODEL' $model
+    }
+    Write-ItsMeInfo "Otak cloud aktif: $(Get-ItsMeEnvValue $EnvFile 'ITSME_OPENROUTER_MODEL') (otak lokal jadi cadangan)"
+    if ($null -eq $info.limit) {
+        Write-ItsMeWarn 'Key ini TANPA batas kredit. Demi keamanan, buat key dengan batas (mis. $5) di openrouter.ai/settings/keys'
+    } else {
+        Write-ItsMeInfo ('Batas key: sisa ${0} dari ${1}' -f $info.limit_remaining, $info.limit)
+    }
 }
 
 # --- 4. paket Python ----------------------------------------------------------------
@@ -404,8 +469,9 @@ function Install-ItsMe {
         Write-ItsMeStep '2/7 Memeriksa Python'
         $python = Install-ItsMePython
 
-        Write-ItsMeStep '3/7 Bot Telegram'
+        Write-ItsMeStep '3/7 Bot Telegram & otak cloud'
         $username = Set-ItsMeTelegram $envFile
+        Set-ItsMeOpenRouter $envFile
 
         $noSleep = $env:ITSME_NO_SLEEP
         if ($ItsMeOnWindows -and -not $noSleep) {
@@ -440,6 +506,7 @@ function Install-ItsMe {
         Write-Host ''
         Write-Host "It's Me sudah menyala!" -ForegroundColor Green
         Write-ItsMeInfo "Buka Telegram di HP, chat @$username, lalu coba kirim: halo"
+        Write-ItsMeInfo 'Ganti otak      : kirim /cloud atau /lokal ke bot (/otak untuk melihat)'
         Write-ItsMeInfo "Jendela 'It's Me' yang terkecilkan di taskbar = It's Me sedang jalan (tutup = mati)."
         if ($launcher.Autostart) { Write-ItsMeInfo "Menyala otomatis setiap kamu masuk Windows ($($launcher.Autostart))." }
         Write-ItsMeInfo "Nyalakan manual : $($launcher.StartCmd)"

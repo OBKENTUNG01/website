@@ -17,6 +17,7 @@
 #   ITSME_REF            cabang GitHub sumber (bawaan: main, lalu cabang PR)
 #   TELEGRAM_BOT_TOKEN   token bot (melewati pertanyaan)
 #   OWNER_TELEGRAM_ID    user id pemilik (melewati deteksi)
+#   OPENROUTER_API_KEY   key otak cloud OpenRouter (opsional, melewati pertanyaan)
 #   ITSME_AUTOSTART=0    jangan pasang penyalaan otomatis
 
 set -euo pipefail
@@ -24,6 +25,7 @@ set -euo pipefail
 REPO="OBKENTUNG01/website"
 FALLBACK_REF="claude/jarvis-iron-man-q0ud8c"
 TELEGRAM_API="${TELEGRAM_API_URL:-https://api.telegram.org}"
+OPENROUTER_API="${OPENROUTER_URL:-https://openrouter.ai/api/v1}"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 
 if [ -t 1 ]; then
@@ -45,6 +47,16 @@ ask() {
   local answer=""
   [ "$HAVE_TTY" = 1 ] || die "Butuh jawaban dari terminal: \"$1\". Jalankan skrip ini dari Terminal."
   read -r -p "$1" answer </dev/tty || true
+  printf '%s' "$answer"
+}
+
+# ask_secret "Pertanyaan: " → seperti ask, tapi ketikan tidak tampil di layar
+# (untuk token & API key, supaya tidak ikut terlihat di screenshot).
+ask_secret() {
+  local answer=""
+  [ "$HAVE_TTY" = 1 ] || die "Butuh jawaban dari terminal: \"$1\". Jalankan skrip ini dari Terminal."
+  read -r -s -p "$1" answer </dev/tty || true
+  printf '\n' >&2
   printf '%s' "$answer"
 }
 
@@ -213,7 +225,7 @@ configure_telegram() {
     info "langkahnya, lalu salin token yang diberikan."
     token=""
     for attempt in 1 2 3; do
-      token="$(ask "    Tempel token bot di sini: " | tr -d '[:space:]')"
+      token="$(ask_secret "    Tempel token bot di sini (tidak akan tampil): " | tr -d '[:space:]')"
       if [ -n "$token" ] && username="$(telegram_username "$token")"; then
         info "Token valid: @$username"
         break
@@ -233,6 +245,60 @@ configure_telegram() {
     owner="$(detect_owner "$token" "$username")"
   fi
   set_env OWNER_TELEGRAM_ID "$owner"
+}
+
+# --- 3b. otak cloud OpenRouter (opsional) -----------------------------------------
+openrouter_key_info() {  # openrouter_key_info KEY → "free|paid batas sisa", gagal kalau ditolak
+  local json
+  json="$(curl -fsS --max-time 15 -H "Authorization: Bearer $1" "$OPENROUTER_API/key" 2>/dev/null)" || return 1
+  printf '%s' "$json" | "$PY" -c '
+import json, sys
+info = json.load(sys.stdin).get("data") or {}
+limit, remaining = info.get("limit"), info.get("limit_remaining")
+print("free" if info.get("is_free_tier") else "paid",
+      "none" if limit is None else limit, "none" if remaining is None else remaining)'
+}
+
+configure_openrouter() {
+  local key details="" attempt tier limit remaining model
+  key="${OPENROUTER_API_KEY:-$(get_env OPENROUTER_API_KEY)}"
+  if [ -n "$key" ] && details="$(openrouter_key_info "$key")"; then
+    info "API key OpenRouter tersimpan masih valid."
+  else
+    key=""
+    if [ "$HAVE_TTY" != 1 ]; then
+      info "Otak cloud OpenRouter dilewati (opsional)."
+      return 0
+    fi
+    info "Opsional: otak cloud lewat OpenRouter (jauh lebih pintar). Tekan Enter untuk melewati."
+    for attempt in 1 2 3; do
+      key="$(ask_secret "    API key OpenRouter (tidak akan tampil): " | tr -d '[:space:]')"
+      [ -n "$key" ] || break
+      if details="$(openrouter_key_info "$key")"; then
+        break
+      fi
+      warn "API key ditolak OpenRouter. Coba lagi, atau tekan Enter untuk melewati."
+      key=""
+    done
+    if [ -z "$key" ]; then
+      info "Dilewati — It's Me memakai otak lokal."
+      return 0
+    fi
+  fi
+  read -r tier limit remaining <<<"$details"
+  set_env OPENROUTER_API_KEY "$key"
+  set_env ITSME_BACKEND openrouter
+  if [ -z "$(get_env ITSME_OPENROUTER_MODEL)" ]; then
+    # Belum pernah isi saldo → model gratis; sudah → model berbayar yang murah & andal.
+    if [ "$tier" = free ]; then model="google/gemma-4-31b-it:free"; else model="anthropic/claude-haiku-5.5"; fi
+    set_env ITSME_OPENROUTER_MODEL "$model"
+  fi
+  info "Otak cloud aktif: $(get_env ITSME_OPENROUTER_MODEL) (otak lokal jadi cadangan)"
+  if [ "$limit" = none ]; then
+    warn "Key ini TANPA batas kredit. Demi keamanan, buat key dengan batas (mis. \$5) di openrouter.ai/settings/keys"
+  else
+    info "Batas key: sisa \$$remaining dari \$$limit"
+  fi
 }
 
 # --- 4. paket Python ---------------------------------------------------------
@@ -406,8 +472,9 @@ main() {
   step "2/7 Memeriksa Python"
   ensure_python
 
-  step "3/7 Bot Telegram"
+  step "3/7 Bot Telegram & otak cloud"
   configure_telegram
+  configure_openrouter
 
   step "4/7 Memasang paket Python"
   make_venv
@@ -424,6 +491,7 @@ main() {
 
   printf '\n%sIt'"'"'s Me sudah menyala!%s\n' "$C_OK" "$C_END"
   info "Buka Telegram di HP, chat @$BOT_USERNAME, lalu coba kirim: halo"
+  info "Ganti otak     : kirim /cloud atau /lokal ke bot (/otak untuk melihat)"
   info "Lihat log      : $LOG_HINT"
   info "Hentikan       : $STOP_HINT"
   info "Perbarui       : jalankan perintah setup yang sama lagi"

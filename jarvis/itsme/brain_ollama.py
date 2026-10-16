@@ -1,41 +1,19 @@
 """Otak lokal: loop agen dengan model yang berjalan di Ollama di komputermu.
 
-Dipakai kalau ITSME_BACKEND=ollama (bawaan). Berbicara langsung ke REST API
-Ollama (POST /api/chat) dengan httpx — tidak butuh API key, tidak ada data
-yang keluar ke penyedia AI.
+Dipakai kalau ITSME_BACKEND=ollama (bawaan), dan sebagai cadangan saat otak
+cloud tidak bisa dipakai. Berbicara langsung ke REST API Ollama
+(POST /api/chat) dengan httpx — tidak butuh API key, tidak ada data yang
+keluar ke penyedia AI.
 """
-
-import json
-import re
 
 import httpx
 
 from . import config
+from .agentutil import clean_reply, parse_arguments, trim_history
 from .persona import system_prompt
-from .tools import OLLAMA_TOOLS, handle_tool, validate_input
-
-# Sebagian model menulis proses berpikirnya di dalam teks jawaban.
-_THINK_TAGS = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+from .tools import FUNCTION_TOOLS, handle_tool, validate_input
 
 _http = httpx.Client(timeout=httpx.Timeout(config.OLLAMA_TIMEOUT, connect=10.0))
-
-
-def _trim(messages, limit):
-    """Buang riwayat lama (di tempat) supaya muat di konteks model.
-
-    Potongan selalu dimulai di pesan "user", supaya hasil alat tidak tertinggal
-    tanpa pemanggilnya, dan pesan user giliran ini tidak pernah ikut terbuang.
-    """
-    if len(messages) <= limit:
-        return
-    user_idx = [i for i, m in enumerate(messages) if m.get("role") == "user"]
-    if not user_idx:
-        return
-    start = len(messages) - limit
-    while start < user_idx[-1] and messages[start].get("role") != "user":
-        start += 1
-    start = min(start, user_idx[-1])
-    del messages[:start]
 
 
 def _request(messages, memory_text):
@@ -48,7 +26,7 @@ def _request(messages, memory_text):
             }
         ]
         + messages,
-        "tools": OLLAMA_TOOLS,
+        "tools": FUNCTION_TOOLS,
         "stream": False,
         "keep_alive": config.OLLAMA_KEEP_ALIVE,
         "options": {"num_ctx": config.OLLAMA_NUM_CTX},
@@ -98,19 +76,6 @@ def _call_ollama(body):
     return message, None
 
 
-def _parse_arguments(raw):
-    if isinstance(raw, dict):
-        return raw, None
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw) if raw.strip() else {}
-        except json.JSONDecodeError:
-            return None, "Argumen alat bukan JSON yang valid."
-        if isinstance(parsed, dict):
-            return parsed, None
-    return None, "Argumen alat tidak valid."
-
-
 def run_agent(messages, ctx):
     """Jalankan loop agen sampai selesai. Mengubah `messages` di tempat.
 
@@ -119,12 +84,12 @@ def run_agent(messages, ctx):
     memory_text = ctx["memory"].text()
 
     for _ in range(config.MAX_STEPS):
-        _trim(messages, config.HISTORY_MESSAGES)
+        trim_history(messages, config.HISTORY_MESSAGES)
         message, error = _call_ollama(_request(messages, memory_text))
         if error:
             return error
 
-        content = _THINK_TAGS.sub("", message.get("content") or "").strip()
+        content = clean_reply(message.get("content"))
         tool_calls = [
             c for c in (message.get("tool_calls") or []) if isinstance(c, dict)
         ]
@@ -144,7 +109,7 @@ def run_agent(messages, ctx):
         for call in tool_calls:
             fn = call.get("function") or {}
             name = fn.get("name") or ""
-            args, problem = _parse_arguments(fn.get("arguments"))
+            args, problem = parse_arguments(fn.get("arguments"))
             if problem is None:
                 problem = validate_input(name, args)
             out = problem or handle_tool(name, args, ctx)

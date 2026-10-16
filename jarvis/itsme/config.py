@@ -35,8 +35,25 @@ TELEGRAM_API_URL = (_get("TELEGRAM_API_URL", "https://api.telegram.org") or "").
 
 # --- Pilihan otak -----------------------------------------------------------
 # "ollama" (bawaan): model lokal di komputermu, gratis, tanpa API key.
+# "openrouter": model cloud lewat OpenRouter (butuh OPENROUTER_API_KEY).
 # "claude": Claude lewat Anthropic API (butuh ANTHROPIC_API_KEY).
+# Bisa diganti saat bot berjalan lewat perintah Telegram /lokal dan /cloud.
 BACKEND = (_get("ITSME_BACKEND", "ollama") or "ollama").strip().lower()
+
+# --- Otak cloud lewat OpenRouter (opsional) ----------------------------------
+OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
+OPENROUTER_URL = (_get("OPENROUTER_URL", "https://openrouter.ai/api/v1") or "").rstrip("/")
+# Bawaan aman tanpa biaya: model gratis (maks. 50 permintaan/hari). Skrip setup
+# memilih anthropic/claude-haiku-5.5 kalau akunmu sudah pernah isi saldo.
+OPENROUTER_MODEL = _get("ITSME_OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+# Seberapa keras model cloud berpikir: none | minimal | low | medium | high |
+# xhigh | max, atau "default" (ikuti model). Lebih tinggi = lebih teliti,
+# lebih lambat, dan lebih banyak token terpakai.
+OPENROUTER_REASONING = (_get("ITSME_OPENROUTER_REASONING", "medium") or "medium").strip().lower()
+OPENROUTER_TIMEOUT = float(_get("ITSME_OPENROUTER_TIMEOUT", "300"))
+# Kalau otak cloud gagal (saldo habis, batas harian, internet), jawab pakai
+# otak lokal. Isi 0 untuk mematikan.
+FALLBACK_LOCAL = (_get("ITSME_FALLBACK_LOCAL", "1") or "1").strip().lower() not in ("0", "false", "no")
 
 # --- Otak lokal (Ollama) ----------------------------------------------------
 OLLAMA_URL = (_get("OLLAMA_URL", "http://localhost:11434") or "").rstrip("/")
@@ -94,8 +111,12 @@ def check():
         problems.append("TELEGRAM_BOT_TOKEN belum diisi.")
     if not OWNER_ID:
         problems.append("OWNER_TELEGRAM_ID belum diisi (wajib, demi keamanan).")
-    if BACKEND not in ("ollama", "claude"):
-        problems.append(f"ITSME_BACKEND harus 'ollama' atau 'claude', bukan '{BACKEND}'.")
+    if BACKEND not in ("ollama", "openrouter", "claude"):
+        problems.append(
+            f"ITSME_BACKEND harus 'ollama', 'openrouter', atau 'claude', bukan '{BACKEND}'."
+        )
+    if BACKEND == "openrouter" and not OPENROUTER_API_KEY:
+        problems.append("OPENROUTER_API_KEY belum diisi (wajib untuk ITSME_BACKEND=openrouter).")
     if BACKEND == "claude" and not ANTHROPIC_API_KEY:
         problems.append("ANTHROPIC_API_KEY belum diisi (wajib untuk ITSME_BACKEND=claude).")
     return problems

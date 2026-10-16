@@ -12,7 +12,7 @@ Fitur utama:
 import asyncio
 import uuid
 
-from . import config
+from . import brain, config
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -23,6 +23,9 @@ HELP = (
     "deploy website, atau beberapa tugas sekaligus.\n\n"
     "Perintah:\n"
     "/help — bantuan ini\n"
+    "/otak — lihat otak yang sedang dipakai\n"
+    "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
+    "/lokal — pakai otak lokal (gratis, privat)\n"
     "/reset — mulai percakapan baru (lupakan konteks obrolan, memori tetap)\n"
     "/id — tampilkan user id Telegram-mu"
 )
@@ -45,6 +48,17 @@ class App:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _brain_status(self):
+        lines = [f"Otak sekarang: {brain.describe()}", ""]
+        lines.append(f"/lokal — {brain.describe('ollama')}")
+        if config.OPENROUTER_API_KEY:
+            lines.append(f"/cloud — {brain.describe('openrouter')}")
+        else:
+            lines.append("/cloud — belum aktif (jalankan setup lagi dan isi API key OpenRouter)")
+        if brain.current_backend() == "openrouter" and config.FALLBACK_LOCAL:
+            lines += ["", "Kalau otak cloud tidak bisa dipakai, otak lokal otomatis menjawab."]
+        return "\n".join(lines)
 
     def _lock(self, chat_id):
         if chat_id not in self.chat_locks:
@@ -131,6 +145,23 @@ class App:
             self.histories.pop(chat_id, None)
             await self.tg.send(chat_id, "Oke, konteks obrolan direset. Memori tetap.")
             return
+        if text.startswith("/otak"):
+            await self.tg.send(chat_id, self._brain_status())
+            return
+        if text.startswith("/lokal") or text.startswith("/cloud"):
+            target = "ollama" if text.startswith("/lokal") else "openrouter"
+            try:
+                brain.set_backend(target)
+            except ValueError as exc:
+                await self.tg.send(chat_id, f"Belum bisa ganti otak: {exc}")
+                return
+            # Format riwayat tiap otak berbeda, jadi obrolan dimulai baru.
+            self.histories.pop(chat_id, None)
+            await self.tg.send(
+                chat_id,
+                f"Otak sekarang: {brain.describe()}.\nKonteks obrolan direset, memori tetap.",
+            )
+            return
         if not text.strip():
             return
 
@@ -169,11 +200,7 @@ class App:
     # --- loop utama ---------------------------------------------------------
     async def run(self):
         self.loop = asyncio.get_running_loop()
-        if config.BACKEND == "claude":
-            brain = f"Claude {config.MODEL} (effort {config.EFFORT})"
-        else:
-            brain = f"lokal {config.OLLAMA_MODEL} via {config.OLLAMA_URL}"
-        print(f"[itsme] {config.NAME} jalan. Otak: {brain}")
+        print(f"[itsme] {config.NAME} jalan. Otak: {brain.describe()}")
         try:
             while True:
                 updates = await self.tg.get_updates()
