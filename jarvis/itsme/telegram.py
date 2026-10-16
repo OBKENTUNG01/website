@@ -6,8 +6,11 @@ kalau panjang), tombol konfirmasi inline, dan menjawab callback.
 
 import asyncio
 import json
+import logging
 
 import httpx
+
+log = logging.getLogger("itsme")
 
 API = "https://api.telegram.org"
 MAX_LEN = 4000  # batas aman di bawah 4096 milik Telegram
@@ -38,7 +41,7 @@ class Telegram:
             return []
         if not data.get("ok"):
             # mis. token salah — beri jeda supaya tidak membanjiri API
-            print(f"[itsme] Telegram menolak: {data.get('description', data)}")
+            log.warning("Telegram menolak: %s", data.get("description", data))
             await asyncio.sleep(5)
             return []
         updates = data.get("result", [])

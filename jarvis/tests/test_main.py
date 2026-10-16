@@ -1,10 +1,13 @@
 """Uji alur bot Telegram It's Me dengan Telegram tiruan (tanpa jaringan)."""
 
 import asyncio
+import io
 import logging
 import os
 import shutil
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -145,6 +148,36 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
         await self.app._handle_callback({"id": "c2", "data": f"ok:{cid}", "from": {"id": 42}})
         await task
         self.assertNotIn("ingat ini", self.app.memory.text())
+
+
+class ConsoleTest(unittest.TestCase):
+    def test_blocked_console_does_not_block_bot(self):
+        """Jendela cmd yang tertahan (QuickEdit) tidak boleh menahan bot."""
+        gate = threading.Event()
+
+        class BlockingStream(io.StringIO):
+            def write(self, text):
+                gate.wait(5)
+                return super().write(text)
+
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        stream = BlockingStream()
+        with mock.patch.object(config, "LOG_FILE", os.path.join(folder, "itsme.log")), \
+                mock.patch.object(main.log, "handlers", []):
+            with mock.patch.object(sys, "stderr", stream):  # StreamHandler() menulis ke sys.stderr
+                listener = main._setup_logging()
+            try:
+                started = time.monotonic()
+                main.log.info("halo dari uji")
+                self.assertLess(time.monotonic() - started, 0.5)
+            finally:
+                gate.set()
+                listener.stop()
+        self.assertIn("halo dari uji", stream.getvalue())
+
+    def test_disable_quick_edit_is_safe_anywhere(self):
+        main._disable_quick_edit()  # tanpa jendela konsol pun tidak boleh error
 
 
 class SingleInstanceTest(unittest.TestCase):

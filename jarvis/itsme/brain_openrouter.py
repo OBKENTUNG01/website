@@ -12,6 +12,7 @@ CloudUnavailable dan pemilih otak (brain.py) menyerahkan pertanyaannya ke
 otak lokal.
 """
 
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -22,6 +23,7 @@ from .agentutil import clean_reply, parse_arguments, trim_history
 from .persona import system_prompt
 from .tools import FUNCTION_TOOLS, handle_tool, validate_input
 
+log = logging.getLogger("itsme")
 _http = httpx.Client(timeout=httpx.Timeout(config.OPENROUTER_TIMEOUT, connect=10.0))
 
 # Jeda sebelum mencoba lagi kesalahan sesaat (detik). Retry-After dari server
@@ -238,7 +240,7 @@ def _call_once(body):
         raise CloudUnavailable("Jawaban OpenRouter kosong.", transient=True)
     model = str(data.get("model") or "")
     if "models" in body and model and not model.startswith(config.OPENROUTER_MODEL.split(":")[0]):
-        print(f"[itsme] otak cloud: dijawab model cadangan {model}", flush=True)
+        log.info("otak cloud: dijawab model cadangan %s", model)
     return choice
 
 
@@ -254,7 +256,7 @@ def _call(body):
                 # Kalau itu berhasil, cadangan dimatikan untuk sesi ini.
                 choice = _call({k: v for k, v in body.items() if k != "models"})
                 _state["fallbacks"] = False
-                print("[itsme] model cadangan OpenRouter ditolak; dipakai tanpa cadangan.", flush=True)
+                log.warning("model cadangan OpenRouter ditolak; dipakai tanpa cadangan.")
                 return choice
             if not exc.transient or retries >= len(RETRY_WAITS):
                 raise

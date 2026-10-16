@@ -7,6 +7,7 @@ keluar ke penyedia AI.
 """
 
 import json
+import logging
 import os
 import sys
 
@@ -17,6 +18,7 @@ from .agentutil import clean_reply, parse_arguments, trim_history
 from .persona import system_prompt
 from .tools import FUNCTION_TOOLS, handle_tool, validate_input
 
+log = logging.getLogger("itsme")
 _http = httpx.Client(timeout=httpx.Timeout(config.OLLAMA_TIMEOUT, connect=10.0))
 
 
@@ -197,10 +199,7 @@ def _ask(messages, memory_text):
         # GPU yang mati tidak tertolong oleh konteks lebih kecil: langsung CPU.
         _state["level"] = len(_SAFE) - 1 if _gpu_crashed() else _state["level"] + 1
         _save_level(_state["level"])
-        print(
-            f"[itsme] otak lokal berhenti mendadak; dicoba lagi dengan {_SAFE_NAMES[_state['level']]}",
-            flush=True,
-        )
+        log.warning("otak lokal berhenti mendadak; dicoba lagi dengan %s", _SAFE_NAMES[_state["level"]])
         message, error, crashed = _call_ollama(_request(messages, memory_text))
     if crashed:
         error = (

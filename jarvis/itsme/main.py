@@ -14,13 +14,15 @@ Fitur utama:
 """
 
 import asyncio
+import atexit
 import logging
 import os
+import queue
 import re
 import sys
 import uuid
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
 from . import brain, config
 from .brain import run_agent
@@ -324,23 +326,58 @@ class App:
             await self.tg.close()
 
 
+def _disable_quick_edit():
+    """Matikan QuickEdit di jendela cmd Windows tempat It's Me berjalan.
+
+    Dengan QuickEdit menyala, satu klik di jendela itu memulai "seleksi teks",
+    dan Windows menahan semua tulisan ke jendela sampai Enter/Esc ditekan —
+    bot ikut berhenti dan tidak menjawab. Teks di jendela tetap bisa disalin
+    lewat menu jendela (klik kanan judul → Edit → Mark).
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return  # tidak berjalan di jendela konsol
+        enable_quick_edit, enable_extended_flags = 0x0040, 0x0080
+        kernel32.SetConsoleMode(handle, (mode.value & ~enable_quick_edit) | enable_extended_flags)
+    except Exception:  # noqa: BLE001 - tanpa ini bot tetap jalan
+        pass
+
+
 def _setup_logging():
+    """Log ke jendela dan ke data/itsme.log lewat thread terpisah.
+
+    Menulis ke jendela konsol bisa tertahan (mis. saat ada teks yang sedang
+    dipilih). Karena semua tulisan log diserahkan ke antrean, yang tertahan
+    hanya thread pencatat — bot tetap menerima dan menjawab pesan.
+    """
     log.setLevel(logging.INFO)
     if log.handlers:
-        return
+        return None
     console = logging.StreamHandler()
     console.setFormatter(logging.Formatter("[itsme] %(message)s"))
-    log.addHandler(console)
+    handlers = [console]
     try:
         os.makedirs(os.path.dirname(config.LOG_FILE) or ".", exist_ok=True)
         handler = RotatingFileHandler(
             config.LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
         )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        handlers.append(handler)
     except OSError as exc:
-        log.warning("Log tidak bisa ditulis ke %s: %s", config.LOG_FILE, exc)
-        return
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    log.addHandler(handler)
+        print(f"[itsme] Log tidak bisa ditulis ke {config.LOG_FILE}: {exc}")
+    pending = queue.SimpleQueue()
+    log.addHandler(QueueHandler(pending))
+    listener = QueueListener(pending, *handlers, respect_handler_level=True)
+    listener.start()
+    atexit.register(listener.stop)
+    return listener
 
 
 def _single_instance_lock():
@@ -364,6 +401,7 @@ def _single_instance_lock():
 
 
 def main():
+    _disable_quick_edit()
     _setup_logging()
     problems = config.check()
     if problems:
