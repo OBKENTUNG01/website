@@ -396,7 +396,7 @@ function Install-ItsMeOllama {
     return $ollama
 }
 
-function Get-ItsMeModel([string]$Ollama, [string]$Vpy, [string]$Dir) {
+function Get-ItsMeModelName([string]$Vpy, [string]$Dir) {
     Push-Location $Dir
     try {
         $model = ([string](& $Vpy -c 'from itsme import config; print(config.OLLAMA_MODEL)' | Select-Object -Last 1)).Trim()
@@ -404,13 +404,23 @@ function Get-ItsMeModel([string]$Ollama, [string]$Vpy, [string]$Dir) {
         Pop-Location
     }
     if (-not $model) { throw 'Tidak bisa membaca nama model dari konfigurasi.' }
-    $have = & $Ollama list | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ -eq $model }
+    return $model
+}
+
+function Get-ItsMeModel([string]$Ollama, [string]$Model, [int]$Attempts) {
+    # Unduh model; kembalikan $true kalau berhasil. Unduhan yang rusak di
+    # perjalanan ("digest mismatch") dihapus Ollama sendiri, jadi cukup diulang.
+    $have = & $Ollama list | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ -eq $Model }
     if ($have) {
-        Write-ItsMeInfo "Model $model sudah ada."
-        return
+        Write-ItsMeInfo "Model $Model sudah ada."
+        return $true
     }
-    Write-ItsMeInfo "Mengunduh $model (beberapa GB, hanya sekali - silakan ditinggal)..."
-    if ((Invoke-ItsMeProgram $Ollama @('pull', $model)) -ne 0) { throw "Gagal mengunduh model $model." }
+    for ($i = 1; $i -le $Attempts; $i++) {
+        if ($i -eq 1) { Write-ItsMeInfo "Mengunduh $Model (beberapa GB, hanya sekali - silakan ditinggal)..." }
+        else { Write-ItsMeWarn "Unduhan gagal atau rusak di perjalanan (biasanya koneksi tidak stabil). Mencoba lagi ($i/$Attempts)..." }
+        if ((Invoke-ItsMeProgram $Ollama @('pull', $Model)) -eq 0) { return $true }
+    }
+    return $false
 }
 
 # --- 6. menyalakan -------------------------------------------------------------------
@@ -482,11 +492,28 @@ function Install-ItsMe {
         Write-ItsMeStep '4/7 Memasang paket Python'
         $vpy = Install-ItsMePackages $python $dir
 
+        # Dengan otak cloud, otak lokal hanya cadangan: kegagalannya tidak boleh
+        # menghalangi It's Me menyala.
+        $cloud = (Get-ItsMeEnvValue $envFile 'ITSME_BACKEND') -eq 'openrouter'
+        $model = Get-ItsMeModelName $vpy $dir
+
         Write-ItsMeStep '5/7 Memeriksa Ollama (otak lokal)'
-        $ollama = Install-ItsMeOllama
+        $ollama = $null
+        try {
+            $ollama = Install-ItsMeOllama
+        } catch {
+            if (-not $cloud) { throw }
+            Write-ItsMeWarn "Otak lokal (cadangan) belum siap: $($_.Exception.Message)"
+        }
 
         Write-ItsMeStep '6/7 Model AI'
-        Get-ItsMeModel $ollama $vpy $dir
+        if ($cloud) {
+            Write-ItsMeInfo "Otak cloud aktif - model lokal (cadangan) diunduh setelah It's Me menyala."
+        } elseif (-not (Get-ItsMeModel $ollama $model 3)) {
+            throw ("Model $model gagal diunduh 3 kali - biasanya karena koneksi internet tidak stabil. " +
+                'Jalankan setup ini lagi nanti (bagian yang sudah beres tidak diulang), coba jaringan lain, ' +
+                'atau isi API key OpenRouter saat ditanya supaya It''s Me bisa memakai otak cloud.')
+        }
 
         Write-ItsMeStep "7/7 Pemeriksaan akhir & menyalakan It's Me"
         if ((Invoke-ItsMeProgram $vpy @('-m', 'itsme.doctor') $dir) -ne 0) {
@@ -511,6 +538,17 @@ function Install-ItsMe {
         if ($launcher.Autostart) { Write-ItsMeInfo "Menyala otomatis setiap kamu masuk Windows ($($launcher.Autostart))." }
         Write-ItsMeInfo "Nyalakan manual : $($launcher.StartCmd)"
         Write-ItsMeInfo 'Perbarui        : jalankan perintah setup yang sama lagi'
+
+        if ($cloud -and $ollama) {
+            Write-ItsMeStep 'Tambahan: model cadangan untuk otak lokal'
+            Write-ItsMeInfo "It's Me sudah bisa dipakai sekarang; unduhan ini berjalan sambil menunggu."
+            if (Get-ItsMeModel $ollama $model 2) {
+                Write-ItsMeInfo 'Model cadangan siap. Kalau otak cloud bermasalah, otak lokal otomatis menjawab.'
+            } else {
+                Write-ItsMeWarn ("Model cadangan $model belum berhasil diunduh. It's Me tetap jalan dengan otak cloud; " +
+                    'coba lagi nanti dengan menjalankan setup ini lagi.')
+            }
+        }
     } catch {
         Write-Host ''
         Write-Host "[GAGAL] $($_.Exception.Message)" -ForegroundColor Red

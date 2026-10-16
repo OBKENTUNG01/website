@@ -343,12 +343,27 @@ find_ollama() {
   fi
 }
 
+# Dengan otak cloud (CLOUD=1), otak lokal hanya cadangan: masalahnya cukup
+# diperingatkan, tidak menghentikan setup.
+ollama_fail() {
+  if [ "${CLOUD:-0}" = 1 ]; then
+    warn "Otak lokal (cadangan) belum siap: $*"
+    return 1
+  fi
+  die "$*"
+}
+
 ensure_ollama() {
   if ! OLLAMA_BIN="$(find_ollama)"; then
     info "Memasang Ollama dengan pemasang resmi dari ollama.com (mungkin diminta password)..."
-    curl -fsSL https://ollama.com/install.sh | sh \
-      || die "Gagal memasang Ollama. Pasang manual dari https://ollama.com/download lalu jalankan skrip ini lagi."
-    OLLAMA_BIN="$(find_ollama)" || die "Ollama belum terpasang."
+    if ! curl -fsSL https://ollama.com/install.sh | sh; then
+      ollama_fail "Gagal memasang Ollama. Pasang manual dari https://ollama.com/download lalu jalankan skrip ini lagi."
+      return 1
+    fi
+    if ! OLLAMA_BIN="$(find_ollama)"; then
+      ollama_fail "Ollama belum terpasang."
+      return 1
+    fi
   fi
   info "$("$OLLAMA_BIN" --version 2>/dev/null | head -n 1)"
   ollama_up && return
@@ -360,18 +375,29 @@ ensure_ollama() {
   wait_ollama 20 && return
   info "Menyalakan Ollama di latar belakang..."
   nohup "$OLLAMA_BIN" serve >"$DIR/ollama.log" 2>&1 &
-  wait_ollama 30 || die "Ollama tidak mau menyala. Lihat $DIR/ollama.log"
+  if ! wait_ollama 30; then
+    ollama_fail "Ollama tidak mau menyala. Lihat $DIR/ollama.log"
+    return 1
+  fi
 }
 
+# pull_model PERCOBAAN → 0 kalau model siap. Unduhan yang rusak di perjalanan
+# ("digest mismatch") dihapus Ollama sendiri, jadi cukup diulang.
 pull_model() {
-  local model
-  model="$("$VPY" -c 'from itsme import config; print(config.OLLAMA_MODEL)')"
-  if "$OLLAMA_BIN" list 2>/dev/null | awk 'NR > 1 { print $1 }' | grep -qx "$model"; then
-    info "Model $model sudah ada."
-    return
+  local attempt
+  if "$OLLAMA_BIN" list 2>/dev/null | awk 'NR > 1 { print $1 }' | grep -qx "$MODEL"; then
+    info "Model $MODEL sudah ada."
+    return 0
   fi
-  info "Mengunduh $model (beberapa GB, hanya sekali — silakan ditinggal)..."
-  "$OLLAMA_BIN" pull "$model" || die "Gagal mengunduh model $model."
+  for attempt in $(seq 1 "$1"); do
+    if [ "$attempt" = 1 ]; then
+      info "Mengunduh $MODEL (beberapa GB, hanya sekali — silakan ditinggal)..."
+    else
+      warn "Unduhan gagal atau rusak di perjalanan (biasanya koneksi tidak stabil). Mencoba lagi ($attempt/$1)..."
+    fi
+    "$OLLAMA_BIN" pull "$MODEL" && return 0
+  done
+  return 1
 }
 
 # --- 6. menyalakan -------------------------------------------------------------
@@ -479,11 +505,22 @@ main() {
   step "4/7 Memasang paket Python"
   make_venv
 
+  # Dengan otak cloud, otak lokal hanya cadangan: kegagalannya tidak boleh
+  # menghalangi It's Me menyala.
+  CLOUD=0
+  if [ "$(get_env ITSME_BACKEND)" = openrouter ]; then CLOUD=1; fi
+  MODEL="$("$VPY" -c 'from itsme import config; print(config.OLLAMA_MODEL)')"
+
   step "5/7 Memeriksa Ollama (otak lokal)"
-  ensure_ollama
+  OLLAMA_READY=1
+  ensure_ollama || OLLAMA_READY=0
 
   step "6/7 Model AI"
-  pull_model
+  if [ "$CLOUD" = 1 ]; then
+    info "Otak cloud aktif — model lokal (cadangan) diunduh setelah It's Me menyala."
+  elif ! pull_model 3; then
+    die "Model $MODEL gagal diunduh 3 kali — biasanya karena koneksi internet tidak stabil. Jalankan setup ini lagi nanti (bagian yang sudah beres tidak diulang), coba jaringan lain, atau isi API key OpenRouter saat ditanya supaya It's Me bisa memakai otak cloud."
+  fi
 
   step "7/7 Pemeriksaan akhir & menyalakan It's Me"
   "$VPY" -m itsme.doctor || die "Pemeriksaan gagal — lihat pesan di atas, betulkan, lalu jalankan skrip ini lagi."
@@ -495,6 +532,16 @@ main() {
   info "Lihat log      : $LOG_HINT"
   info "Hentikan       : $STOP_HINT"
   info "Perbarui       : jalankan perintah setup yang sama lagi"
+
+  if [ "$CLOUD" = 1 ] && [ "$OLLAMA_READY" = 1 ]; then
+    step "Tambahan: model cadangan untuk otak lokal"
+    info "It's Me sudah bisa dipakai sekarang; unduhan ini berjalan sambil menunggu."
+    if pull_model 2; then
+      info "Model cadangan siap. Kalau otak cloud bermasalah, otak lokal otomatis menjawab."
+    else
+      warn "Model cadangan $MODEL belum berhasil diunduh. It's Me tetap jalan dengan otak cloud; coba lagi nanti dengan menjalankan setup ini lagi."
+    fi
+  fi
 }
 
 [ "${ITSME_SETUP_NO_RUN:-}" = 1 ] || main "$@"
