@@ -1,9 +1,11 @@
 """Alat (tools) yang bisa dipakai It's Me.
 
-Dua jenis:
-  1. Alat server Anthropic (web_search, web_fetch) — jalan di sisi Anthropic,
-     dipakai It's Me untuk cari & baca info terbaru dari internet.
-  2. Alat klien (di bawah) — jalan di komputer/HP tempat bot ini berjalan:
+Tiga jenis:
+  1. Alat server Anthropic (web_search, web_fetch) — hanya untuk otak Claude,
+     jalan di sisi Anthropic.
+  2. Alat web lokal (cari_web, baca_halaman) — pengganti nomor 1 untuk otak
+     lokal (Ollama), jalan di komputermu (lihat web.py).
+  3. Alat klien (di bawah) — jalan di komputer/HP tempat bot ini berjalan:
      baca/tulis berkas, jalankan perintah, deploy website lewat Git, memori,
      dan tugas latar (multitasking).
 
@@ -16,6 +18,8 @@ import os
 import re
 import shlex
 import subprocess
+
+from . import web
 
 # --- Alat server (internet) -------------------------------------------------
 SERVER_TOOLS = [
@@ -114,15 +118,56 @@ CLIENT_TOOLS = [
     },
 ]
 
-# Input alat di-stream sedikit demi sedikit (berguna untuk isi berkas yang
-# panjang). Konsekuensinya input bisa saja tidak utuh, jadi selalu dicek
-# dengan validate_input() sebelum dijalankan.
-for _tool in CLIENT_TOOLS:
-    _tool["eager_input_streaming"] = True
+# --- Alat web lokal (pengganti web_search/web_fetch untuk otak Ollama) -------
+LOCAL_WEB_TOOLS = [
+    {
+        "name": "cari_web",
+        "description": (
+            "Cari informasi terbaru di internet (DuckDuckGo). Mengembalikan "
+            "judul, alamat, dan ringkasan beberapa hasil teratas. Lanjutkan "
+            "dengan baca_halaman untuk membaca isi lengkapnya."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"kata_kunci": {"type": "string"}},
+            "required": ["kata_kunci"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "baca_halaman",
+        "description": "Buka sebuah alamat web (http/https) dan ambil isinya "
+        "sebagai teks biasa.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+    },
+]
 
-ALL_TOOLS = SERVER_TOOLS + CLIENT_TOOLS
+_SCHEMAS = {t["name"]: t["input_schema"] for t in CLIENT_TOOLS + LOCAL_WEB_TOOLS}
 
-_SCHEMAS = {t["name"]: t["input_schema"] for t in CLIENT_TOOLS}
+# Untuk otak Claude: alat server + alat klien. Input alat klien di-stream
+# sedikit demi sedikit (berguna untuk isi berkas yang panjang); konsekuensinya
+# input bisa saja tidak utuh, jadi selalu dicek dengan validate_input().
+CLAUDE_TOOLS = SERVER_TOOLS + [
+    dict(tool, eager_input_streaming=True) for tool in CLIENT_TOOLS
+]
+
+# Untuk otak lokal: format "function" yang dipakai Ollama.
+OLLAMA_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["input_schema"],
+        },
+    }
+    for tool in LOCAL_WEB_TOOLS + CLIENT_TOOLS
+]
 
 # Perintah yang hanya membaca, boleh langsung jalan tanpa konfirmasi.
 # Sengaja berupa daftar yang diizinkan, bukan daftar yang dilarang: daftar
@@ -237,6 +282,12 @@ def handle_tool(name, tool_input, ctx):
                     log.append("Berhenti: langkah di atas gagal.")
                     break
             return "\n\n".join(log)
+
+        if name == "cari_web":
+            return web.search(tool_input.get("kata_kunci", ""))
+
+        if name == "baca_halaman":
+            return web.fetch(tool_input.get("url", ""))
 
         if name == "simpan_memori":
             return ctx["memory"].add(tool_input.get("catatan", ""))

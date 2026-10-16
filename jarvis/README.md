@@ -1,14 +1,31 @@
 # It's Me 🫡
 
-Asisten pribadi bergaya **JARVIS** (Iron Man) yang berjalan sebagai **bot
-Telegram**, jadi bisa langsung kamu pakai dari HP. Otaknya **Claude
-(Opus 5.5, effort `max`)**.
+Asisten pribadi bergaya **JARVIS** (Iron Man) yang kamu kendalikan lewat
+**Telegram di HP**. Otaknya berjalan di **komputermu sendiri** memakai model
+AI lokal lewat [Ollama](https://ollama.com) — gratis, tanpa API key, dan
+obrolanmu tidak dikirim ke penyedia AI mana pun.
+
+Mau otak yang jauh lebih pintar? Satu pengaturan mengganti otaknya ke
+**Claude** (lihat [Memakai otak Claude](#memakai-otak-claude-opsional)).
+
+## Cara kerjanya
+
+```
+HP (Telegram)  ⇄  bot It's Me di komputermu  ⇄  Ollama (model lokal)
+                         │
+                         ├─ cari_web / baca_halaman  → internet
+                         ├─ baca/tulis berkas, perintah, deploy Git
+                         └─ memori & tugas latar
+```
+
+Komputer harus **menyala dan tersambung internet** selama kamu ingin memakai
+bot dari HP.
 
 ## Yang bisa dilakukan
 
 - **Ngobrol & tanya apa saja** dalam bahasa Indonesia.
-- **Belajar dari internet** — cari info terbaru (`web_search`) dan baca isi
-  halaman (`web_fetch`), karena pengetahuan bawaan AI ada batas waktunya.
+- **Cari info terbaru di internet** (`cari_web`, lewat DuckDuckGo) dan **baca
+  isi halaman** (`baca_halaman`).
 - **Multitasking** — beberapa tugas bisa jalan paralel lewat tugas latar;
   kamu tetap bisa mengobrol sementara It's Me bekerja.
 - **Edit & deploy website lewat Git** — It's Me mengubah kode lalu `git push`;
@@ -17,51 +34,70 @@ Telegram**, jadi bisa langsung kamu pakai dari HP. Otaknya **Claude
 - **Aman** — hanya kamu (pemilik) yang bisa memerintah. Perintah yang hanya
   membaca (`ls`, `cat`, `git status`, …) langsung jalan; menulis berkas,
   perintah lain, dan deploy minta konfirmasi satu tombol, dan setelah kamu
-  tekan "Ya" langsung dijalankan.
+  tekan "Ya" langsung dijalankan. `baca_halaman` menolak alamat lokal
+  (router, `localhost`, dll.) supaya bot tidak bisa diarahkan mengintip
+  jaringan rumahmu.
 
-## Yang perlu kamu siapkan
+## Langkah 1 — Pasang Ollama dan unduh model
 
-1. **Token bot Telegram** — chat [@BotFather](https://t.me/BotFather), kirim
-   `/newbot`, salin token-nya.
+1. Unduh dan pasang Ollama dari <https://ollama.com/download>.
+   - **Windows / macOS:** jalankan installer-nya; Ollama lalu berjalan di
+     latar belakang.
+   - **Linux:** `curl -fsSL https://ollama.com/install.sh | sh`
+2. Unduh model (sekali saja, sekitar 5 GB):
+   ```bash
+   ollama pull qwen3:8b
+   ```
+3. Coba: `ollama run qwen3:8b "Halo, apa kabar?"` — kalau dijawab, otaknya siap.
+
+> **RAM 16 GB:** `qwen3:8b` adalah pilihan bawaan yang pas — mendukung
+> pemanggilan alat (tools) dan bahasa Indonesia. Kalau terasa terlalu lambat,
+> pakai model yang lebih kecil (mis. `qwen3:4b`) dan ubah `ITSME_OLLAMA_MODEL`.
+
+## Langkah 2 — Siapkan bot Telegram
+
+1. **Token bot** — chat [@BotFather](https://t.me/BotFather), kirim `/newbot`,
+   salin token-nya.
 2. **User id Telegram-mu** — chat [@userinfobot](https://t.me/userinfobot).
    Setelah bot jalan, kirim `/id` ke bot untuk memastikan angkanya sama.
-3. **API key Anthropic** — dari <https://console.anthropic.com>.
 
-## Cara menjalankan (di komputer / server)
+## Langkah 3 — Jalankan It's Me di komputer
 
-```bash
+Butuh [Python](https://www.python.org/downloads/) 3.10 atau lebih baru.
+
+**Windows (PowerShell):**
+```powershell
 cd jarvis
-python -m venv .venv && source .venv/bin/activate
+py -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env        # lalu isi TELEGRAM_BOT_TOKEN, OWNER_TELEGRAM_ID, ANTHROPIC_API_KEY
+copy .env.example .env
+notepad .env        # isi TELEGRAM_BOT_TOKEN dan OWNER_TELEGRAM_ID
 python -m itsme.main
 ```
 
-Buka Telegram, cari bot-mu, kirim `/start`.
+**macOS / Linux:**
+```bash
+cd jarvis
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+nano .env           # isi TELEGRAM_BOT_TOKEN dan OWNER_TELEGRAM_ID
+python -m itsme.main
+```
 
-## Cara menjalankan langsung dari HP (Android, Termux)
+Kalau berhasil, muncul tulisan `It's Me jalan. Otak: lokal qwen3:8b ...`.
+Buka Telegram di HP, cari bot-mu, kirim `/start`.
 
-1. Pasang **Termux** (dari F-Droid).
-2. Di Termux:
-   ```bash
-   pkg install python git
-   git clone <repo-ini> && cd website/jarvis
-   pip install -r requirements.txt
-   cp .env.example .env
-   nano .env        # isi tokennya
-   python -m itsme.main
-   ```
-3. Biarkan Termux tetap jalan. Sekarang botmu hidup dan bisa kamu ajak chat
-   dari aplikasi Telegram yang sama.
-
-> iPhone tidak punya Termux. Untuk iPhone, jalankan di sebuah server/komputer
-> kecil yang menyala terus, lalu kendalikan dari Telegram di iPhone.
+**Biar jalan terus:** biarkan jendela terminal itu tetap terbuka, dan matikan
+mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 
 ## Menghubungkan ke website Hostinger
 
 1. Di hPanel Hostinger → menu **Git** → hubungkan repo GitHub website-mu dan
    aktifkan **auto-deploy**.
-2. Di `.env`, isi `WEBSITE_REPO_DIR` ke folder clone lokal repo itu.
+2. Clone repo website itu ke komputermu, lalu isi `WEBSITE_REPO_DIR` di `.env`
+   dengan foldernya.
 3. Tinggal bilang ke It's Me, misalnya: *"ganti judul halaman jadi X lalu
    deploy"*. Ia mengedit kode, minta konfirmasi, push, dan Hostinger menarik
    perubahannya.
@@ -76,24 +112,41 @@ Buka Telegram, cari bot-mu, kirim `/start`.
 
 ## Pengaturan (opsional, di `.env`)
 
-| Variabel | Default | Fungsi |
+| Variabel | Bawaan | Fungsi |
 |---|---|---|
-| `ITSME_MODEL` | `claude-opus-5-5` | Model otak |
-| `ITSME_EFFORT` | `max` | Tingkat upaya: `low`/`medium`/`high`/`xhigh`/`max` |
-| `ITSME_MAX_TOKENS` | `64000` | Batas token per giliran (termasuk proses berpikir) |
+| `ITSME_BACKEND` | `ollama` | Otak: `ollama` (lokal) atau `claude` |
+| `ITSME_OLLAMA_MODEL` | `qwen3:8b` | Model lokal yang dipakai |
+| `ITSME_OLLAMA_NUM_CTX` | `16384` | Panjang konteks; turunkan kalau RAM penuh |
+| `ITSME_OLLAMA_KEEP_ALIVE` | `30m` | Lama model tetap di RAM (`-1` = selamanya) |
+| `ITSME_OLLAMA_THINK` | — | `true`/`false`: mode berpikir (lebih teliti, lebih lambat) |
+| `ITSME_OLLAMA_TIMEOUT` | `600` | Batas waktu satu jawaban (detik) |
+| `OLLAMA_URL` | `http://localhost:11434` | Alamat Ollama |
 | `WEBSITE_REPO_DIR` | — | Folder repo website untuk fitur deploy |
 
-> Catatan: effort `max` adalah yang paling cerdas tapi paling lambat dan paling
-> boros kuota. Kalau terasa lambat untuk obrolan ringan, turunkan ke `high`.
+## Memakai otak Claude (opsional)
 
-## Catatan jujur soal batasan
+Claude jauh lebih pintar untuk tugas bertahap seperti mengedit kode atau riset,
+tapi butuh API key berbayar.
 
-- **Model dikunci** ke `claude-opus-5-5` dan tidak diganti otomatis ke model
-  lain oleh kode ini. (Jika server Anthropic sedang penuh, sistem mereka bisa
-  mengalihkan sementara — itu di luar kendali aplikasi ini.)
-- **Pedoman keamanan bawaan Claude tidak bisa dimatikan** — itu ada di sisi
-  model, bukan di aplikasi. Untuk tugas sehari-hari (website, email, cari info)
-  pedoman ini praktis tidak menghalangi.
-- **Keamanan akun:** demi keamanan, untuk layanan seperti Google sebaiknya
-  pakai login resmi (OAuth) atau sesi browser yang sudah login — bukan menaruh
-  username & password di dalam berkas.
+1. Buat API key di <https://platform.claude.com>. Pelanggan **Max** dan
+   **Team** mendapat kredit API bulanan gratis: di claude.ai buka **Settings →
+   Billing → API credits**, lalu hubungkan organisasi Console-mu.
+2. Di `.env`: `ITSME_BACKEND=claude` dan isi `ANTHROPIC_API_KEY`.
+3. Model bawaan `claude-opus-5-5` dengan effort `max` (atur lewat `ITSME_MODEL`
+   dan `ITSME_EFFORT`).
+
+## Catatan jujur
+
+- **Model lokal jauh kurang pintar dari Claude.** Untuk obrolan, mencari info,
+  dan tugas sederhana sudah cukup; untuk mengedit kode yang rumit, sering salah
+  paham. Selalu baca dulu apa yang akan dijalankan sebelum menekan "Ya".
+- **Kecepatan tergantung komputermu.** Tanpa kartu grafis, satu jawaban bisa
+  butuh belasan detik sampai beberapa menit, apalagi kalau mode berpikir aktif.
+- **Model lokal lebih mudah tertipu** isi halaman web yang berisi perintah
+  tersembunyi. Karena itu tombol konfirmasi untuk aksi yang mengubah sesuatu
+  tetap aktif.
+- **Menjalankan di HP (Termux)** hanya cocok untuk otak Claude; model lokal
+  butuh komputer.
+- **Keamanan akun:** untuk layanan seperti Google, pakai login resmi (OAuth)
+  atau sesi browser yang sudah login — jangan menaruh username & password di
+  dalam berkas.

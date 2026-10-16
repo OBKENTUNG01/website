@@ -1,3 +1,6 @@
-anthropic>=0.69
 httpx>=0.27
 python-dotenv>=1.0
+# Pencarian web gratis untuk otak lokal (DuckDuckGo, tanpa API key).
+ddgs>=9.16
+# Hanya dipakai kalau ITSME_BACKEND=claude.
+anthropic>=0.69

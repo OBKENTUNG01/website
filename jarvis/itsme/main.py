@@ -169,7 +169,11 @@ class App:
     # --- loop utama ---------------------------------------------------------
     async def run(self):
         self.loop = asyncio.get_running_loop()
-        print(f"[itsme] {config.NAME} jalan. Model={config.MODEL} effort={config.EFFORT}")
+        if config.BACKEND == "claude":
+            brain = f"Claude {config.MODEL} (effort {config.EFFORT})"
+        else:
+            brain = f"lokal {config.OLLAMA_MODEL} via {config.OLLAMA_URL}"
+        print(f"[itsme] {config.NAME} jalan. Otak: {brain}")
         try:
             while True:
                 updates = await self.tg.get_updates()
