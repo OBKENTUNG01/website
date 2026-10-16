@@ -6,7 +6,9 @@ cloud tidak bisa dipakai. Berbicara langsung ke REST API Ollama
 keluar ke penyedia AI.
 """
 
+import json
 import os
+import sys
 
 import httpx
 
@@ -24,7 +26,9 @@ class LocalUnavailable(Exception):
 
 # Kalau proses model di Ollama (llama-server) mati mendadak, biasanya karena
 # driver atau memori GPU, It's Me mencoba lagi dengan pengaturan yang lebih
-# aman dan memakainya sampai It's Me dinyalakan ulang.
+# aman. Pengaturan yang akhirnya jalan disimpan (config.OLLAMA_STATE_FILE),
+# supaya It's Me tidak crash lagi setiap kali dinyalakan ulang. Hapus berkas
+# itu (mis. setelah memperbarui driver GPU) untuk mencoba GPU lagi.
 _SAFE = (
     {},
     {"num_ctx": 8192},
@@ -36,9 +40,61 @@ _SAFE_NOTES = (
     "Catatan: otak lokal sempat berhenti mendadak, jadi sekarang aku memakai konteks "
     "yang lebih kecil supaya stabil.",
     "Catatan: otak lokal sempat berhenti mendadak di GPU, jadi sekarang aku memakai "
-    "CPU saja (lebih lambat, tapi stabil) sampai It's Me dinyalakan ulang.",
+    "CPU saja (lebih lambat, tapi stabil). Pengaturan ini diingat.",
 )
-_state = {"level": 0, "noted": 0}
+# Tanda di log Ollama bahwa yang mati adalah GPU-nya (mis. kartu grafis lama
+# lewat Vulkan: "device lost"). Kalau begitu, langsung pakai CPU saja.
+_GPU_CRASH_SIGNS = ("device lost", "vk_error_device_lost", "cuda error", "cudaerror", "hiperror")
+
+
+def _load_level():
+    try:
+        with open(config.OLLAMA_STATE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        level = int(data.get("level", 0))
+        if data.get("model") == config.OLLAMA_MODEL and 0 <= level < len(_SAFE):
+            return level
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return 0
+
+
+def _save_level(level):
+    try:
+        os.makedirs(os.path.dirname(config.OLLAMA_STATE_FILE), exist_ok=True)
+        with open(config.OLLAMA_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"model": config.OLLAMA_MODEL, "level": level}, f)
+    except OSError:
+        pass
+
+
+def _ollama_log_path():
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+        return os.path.join(base, "Ollama", "server.log") if base else None
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/.ollama/logs/server.log")
+    return None  # Linux: log ada di journalctl, tidak dibaca dari sini
+
+
+def _gpu_crashed():
+    """Lihat ujung log Ollama: apakah crash terakhir terjadi di GPU?"""
+    path = _ollama_log_path()
+    if not path:
+        return False
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 32768))
+            tail = f.read().decode("utf-8", "replace").lower()
+    except OSError:
+        return False
+    return any(sign in tail for sign in _GPU_CRASH_SIGNS)
+
+
+_level = _load_level()
+# Catatan di jawaban hanya muncul saat pengaturan baru saja diturunkan.
+_state = {"level": _level, "noted": _level}
 _CRASH_SIGNS = (
     "error was encountered while running the model",
     "runner has unexpectedly stopped",
@@ -138,7 +194,9 @@ def _ask(messages, memory_text):
     pengaturan yang lebih aman (konteks lebih kecil, lalu CPU saja)."""
     message, error, crashed = _call_ollama(_request(messages, memory_text))
     while crashed and _state["level"] < len(_SAFE) - 1:
-        _state["level"] += 1
+        # GPU yang mati tidak tertolong oleh konteks lebih kecil: langsung CPU.
+        _state["level"] = len(_SAFE) - 1 if _gpu_crashed() else _state["level"] + 1
+        _save_level(_state["level"])
         print(
             f"[itsme] otak lokal berhenti mendadak; dicoba lagi dengan {_SAFE_NAMES[_state['level']]}",
             flush=True,

@@ -31,12 +31,22 @@ bot dari HP.
 - **Edit & deploy website lewat Git** — It's Me mengubah kode lalu `git push`;
   kalau Hostinger diatur auto-deploy, website langsung terbarui.
 - **Ingat** hal penting yang kamu beri tahu (memori jangka panjang).
-- **Aman** — hanya kamu (pemilik) yang bisa memerintah. Perintah yang hanya
-  membaca (`ls`, `cat`, `git status`, …) langsung jalan; menulis berkas,
-  perintah lain, dan deploy minta konfirmasi satu tombol, dan setelah kamu
-  tekan "Ya" langsung dijalankan. `baca_halaman` menolak alamat lokal
-  (router, `localhost`, dll.) supaya bot tidak bisa diarahkan mengintip
-  jaringan rumahmu.
+- **Aman** — hanya kamu (pemilik) yang bisa memerintah.
+  - Perintah yang hanya melihat keadaan (`git status`, `git diff`, `git log`,
+    `ls`, `dir`, …) langsung jalan. Perintah lain, menulis berkas, deploy, dan
+    menyimpan memori minta konfirmasi satu tombol — dan tombolnya menampilkan
+    apa persisnya yang akan terjadi (isi berkas, daftar berkas yang di-push).
+  - Berkas di luar folder website minta konfirmasi untuk dibaca; berkas
+    rahasia (`.env`, kunci SSH, dll.) selalu ditolak. Token & API key milik
+    It's Me tidak ikut terlihat oleh perintah yang dijalankan.
+  - Alamat web dari hasil pencarian atau dari pesanmu sendiri langsung dibuka;
+    alamat lain minta konfirmasi. `baca_halaman` menolak alamat lokal (router,
+    `localhost`, dll.) supaya bot tidak bisa diarahkan mengintip jaringan rumahmu.
+  - Deploy dibatalkan kalau ada berkas rahasia yang ikut berubah.
+- **Tidak diam saja** — selama berpikir, status "mengetik…" terus tampil, dan
+  kalau lama It's Me memberi tahu. Error apa pun dikirim ke Telegram dan
+  dicatat di `data/itsme.log`.
+- Untuk sekarang hanya **pesan teks** yang dibaca (belum pesan suara/gambar).
 
 ## Cara paling gampang: satu perintah
 
@@ -57,9 +67,6 @@ kirim `/newbot`, ikuti langkahnya, lalu siapkan token yang diberikan.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/setup.sh | bash
 ```
-
-> Selama PR #1 belum di-merge, ganti `main` pada alamat di atas dengan
-> `refs/heads/claude/jarvis-iron-man-q0ud8c`.
 
 It's Me dipasang di `%USERPROFILE%\ItsMe` (Windows) atau `~/itsme`
 (macOS/Linux). Jalankan perintah yang sama lagi kapan saja untuk
@@ -214,6 +221,8 @@ mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 | `/otak` | Lihat otak yang sedang dipakai |
 | `/cloud` | Pakai otak cloud (OpenRouter) |
 | `/lokal` | Pakai otak lokal (Ollama) |
+| `/memori` | Lihat isi memori jangka panjang |
+| `/hapus_memori` | Kosongkan memori (minta konfirmasi) |
 | `/reset` | Mulai percakapan baru (memori tetap) |
 | `/id` | Tampilkan user id Telegram-mu |
 
@@ -246,24 +255,35 @@ tapi butuh API key berbayar.
    **Team** mendapat kredit API bulanan gratis: di claude.ai buka **Settings →
    Billing → API credits**, lalu hubungkan organisasi Console-mu.
 2. Di `.env`: `ITSME_BACKEND=claude` dan isi `ANTHROPIC_API_KEY`.
-3. Model bawaan `claude-opus-5-5` dengan effort `max` (atur lewat `ITSME_MODEL`
-   dan `ITSME_EFFORT`).
+3. Model bawaan `claude-opus-5-5` dengan effort `medium` (atur lewat `ITSME_MODEL`
+   dan `ITSME_EFFORT`). `high`/`max` lebih teliti untuk tugas berat, tapi setiap
+   pesan — bahkan "halo" — jadi jauh lebih mahal.
 
 ## Catatan jujur
 
 - **Model lokal jauh kurang pintar dari Claude.** Untuk obrolan, mencari info,
   dan tugas sederhana sudah cukup; untuk mengedit kode yang rumit, sering salah
   paham. Selalu baca dulu apa yang akan dijalankan sebelum menekan "Ya".
-- **Kecepatan tergantung komputermu.** Tanpa kartu grafis, satu jawaban bisa
-  butuh belasan detik sampai beberapa menit, apalagi kalau mode berpikir aktif.
+- **Kecepatan tergantung komputermu.** Tanpa kartu grafis yang didukung, satu
+  jawaban bisa butuh beberapa menit. Contoh terukur: di Core i7-3770 (2012)
+  dengan `qwen3.5:9b` di CPU, jawaban "halo" pertama butuh ±3 menit (membaca
+  prompt ±2,5 menit, menulis ±4 token/detik). Di komputer seperti itu pakai
+  `qwen3.5:4b`, atau jadikan otak cloud sebagai otak utama.
 - **Kalau Ollama berhenti mendadak saat menjalankan model** (biasanya karena
-  driver atau memori GPU), It's Me otomatis mencoba lagi dengan konteks lebih
-  kecil, lalu dengan CPU saja, dan memberi tahu lewat catatan di jawabannya.
-  Penyebabnya tercatat di `%LOCALAPPDATA%\Ollama\server.log` (Windows);
-  memperbarui driver GPU biasanya menyelesaikannya.
+  driver atau memori GPU — mis. kartu grafis lama lewat Vulkan: `device lost`),
+  It's Me otomatis mencoba lagi dengan pengaturan yang lebih aman. Kalau log
+  Ollama menunjukkan GPU-nya yang mati, It's Me langsung memakai CPU saja.
+  Pengaturan yang berhasil **diingat** di `data/ollama_state.json`, jadi tidak
+  crash lagi setiap kali dinyalakan ulang; hapus berkas itu setelah memperbarui
+  driver GPU untuk mencoba GPU lagi. Penyebab crash tercatat di
+  `%LOCALAPPDATA%\Ollama\server.log` (Windows).
+- **Bot terasa macet?** Lihat `data/itsme.log` di folder It's Me — semua error
+  tercatat di sana. It's Me hanya boleh jalan satu kali sekaligus; menyalakan
+  yang kedua akan ditolak (dua bot dengan token sama saling berebut pesan).
 - **Model lokal lebih mudah tertipu** isi halaman web yang berisi perintah
-  tersembunyi. Karena itu tombol konfirmasi untuk aksi yang mengubah sesuatu
-  tetap aktif.
+  tersembunyi. Karena itu tombol konfirmasi tetap aktif — termasuk untuk
+  membaca berkas di luar folder website, membuka alamat web baru, dan
+  menyimpan memori. Baca isi tombol sebelum menekan "Ya".
 - **Menjalankan di HP (Termux)** hanya cocok untuk otak Claude; model lokal
   butuh komputer.
 - **Keamanan akun:** untuk layanan seperti Google, pakai login resmi (OAuth)

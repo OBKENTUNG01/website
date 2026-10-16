@@ -4,6 +4,11 @@
 # Memori lokal (boleh dihapus baris ini kalau mau ikut tersimpan di repo)
 data/memory.md
 
+# Dibuat It's Me saat berjalan
+data/itsme.log*
+data/itsme.lock
+data/ollama_state.json
+
 # Dibuat oleh skrip setup saat It's Me dipasang
 start-itsme.cmd
 itsme.log

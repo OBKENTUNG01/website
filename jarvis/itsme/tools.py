@@ -10,16 +10,20 @@ Tiga jenis:
      dan tugas latar (multitasking).
 
 Aksi yang mengubah sesuatu (menulis berkas, perintah selain yang hanya
-membaca, push Git) minta konfirmasi dulu lewat tombol di Telegram. Begitu
-kamu tekan "Ya", langsung dijalankan.
+melihat keadaan, push Git, menyimpan memori) minta konfirmasi dulu lewat
+tombol di Telegram, dan tombolnya menampilkan apa persisnya yang akan terjadi.
+Membaca berkas di luar folder website dan membuka alamat web yang tidak berasal
+dari hasil pencarian atau pesanmu sendiri juga minta konfirmasi, supaya isi
+halaman web yang aneh tidak bisa menyuruh bot mengirim datamu ke mana-mana.
 """
 
 import os
-import re
 import shlex
 import subprocess
 
 from . import web
+
+IS_WINDOWS = os.name == "nt"
 
 # --- Alat server (internet) -------------------------------------------------
 SERVER_TOOLS = [
@@ -27,21 +31,23 @@ SERVER_TOOLS = [
     {"type": "web_fetch_20260209", "name": "web_fetch"},
 ]
 
+_SHELL_NAME = "PowerShell (Windows)" if IS_WINDOWS else "shell"
+
 # --- Definisi alat klien ----------------------------------------------------
 CLIENT_TOOLS = [
     {
         "name": "jalankan_perintah",
         "description": (
-            "Jalankan satu perintah shell di komputer/HP tempat It's Me "
-            "berjalan. Perintah yang hanya membaca (ls, cat, git status, "
-            "git diff, git log, dll.) langsung jalan; selain itu minta "
-            "konfirmasi pemilik dulu. Gunakan untuk git, pengecekan berkas, "
-            "menjalankan skrip, dll."
+            f"Jalankan satu perintah {_SHELL_NAME} di komputer tempat It's Me "
+            "berjalan. Perintah yang hanya melihat keadaan (git status, git diff, "
+            "git log, git show, ls, dir, pwd, whoami, tree) langsung jalan; "
+            "selain itu minta konfirmasi pemilik dulu. Untuk membaca isi berkas "
+            "pakai baca_berkas, bukan cat."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "perintah": {"type": "string", "description": "Perintah shell."},
+                "perintah": {"type": "string", "description": "Perintah yang dijalankan."},
                 "alasan": {
                     "type": "string",
                     "description": "Penjelasan singkat untuk apa perintah ini.",
@@ -54,7 +60,8 @@ CLIENT_TOOLS = [
     {
         "name": "baca_berkas",
         "description": "Baca isi sebuah berkas teks. Path relatif ke folder "
-        "website kalau sudah diatur, atau path absolut.",
+        "website kalau sudah diatur, atau path absolut. Berkas di luar folder "
+        "website minta konfirmasi; berkas rahasia (.env, kunci SSH) ditolak.",
         "input_schema": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -94,7 +101,7 @@ CLIENT_TOOLS = [
     {
         "name": "simpan_memori",
         "description": "Simpan sebuah catatan ke memori jangka panjang supaya "
-        "It's Me mengingatnya di percakapan berikutnya.",
+        "It's Me mengingatnya di percakapan berikutnya. Minta konfirmasi dulu.",
         "input_schema": {
             "type": "object",
             "properties": {"catatan": {"type": "string"}},
@@ -137,7 +144,8 @@ LOCAL_WEB_TOOLS = [
     {
         "name": "baca_halaman",
         "description": "Buka sebuah alamat web (http/https) dan ambil isinya "
-        "sebagai teks biasa.",
+        "sebagai teks biasa. Alamat dari hasil cari_web atau dari pesan pemilik "
+        "langsung dibuka; alamat lain minta konfirmasi.",
         "input_schema": {
             "type": "object",
             "properties": {"url": {"type": "string"}},
@@ -170,14 +178,35 @@ FUNCTION_TOOLS = [
     for tool in LOCAL_WEB_TOOLS + CLIENT_TOOLS
 ]
 
-# Perintah yang hanya membaca, boleh langsung jalan tanpa konfirmasi.
-# Sengaja berupa daftar yang diizinkan, bukan daftar yang dilarang: daftar
-# "perintah berbahaya" selalu bisa diakali (python -c, sed -i, redirect, ...).
-# Apa pun yang memakai ; & | < > ` $ atau baris baru juga wajib konfirmasi.
-_READ_ONLY = re.compile(
-    r"\s*(ls|pwd|cat|head|tail|wc|grep|tree|du|df|whoami|date|"
-    r"git\s+(status|diff|log|show|branch|remote\s+-v))\b[^;&|<>`$\n\r]*"
-)
+# --- Perintah yang boleh langsung jalan ---------------------------------------
+# Sengaja daftar yang diizinkan, dan hanya perintah yang melihat keadaan.
+# Membaca isi berkas lewat baca_berkas (yang punya batas folder dan menolak
+# berkas rahasia), bukan lewat cat/type. Karakter yang punya arti khusus di
+# shell (termasuk % dan ^ milik cmd) selalu wajib konfirmasi.
+_SAFE_GIT = {"status", "diff", "log", "show"}
+_SAFE_PLAIN = {"ls", "dir", "pwd", "whoami", "tree"}
+# Opsi git yang menulis berkas, menjalankan program lain, atau membaca berkas
+# di luar repo.
+_GIT_BLOCKED_OPTIONS = ("--output", "--ext-diff", "--textconv", "--no-index", "-o")
+_SHELL_CHARS = set(";&|<>`$%^(){}[]!\n\r")
+
+
+def is_read_only(command):
+    """True kalau perintah ini aman dijalankan tanpa konfirmasi."""
+    if not command.strip() or any(ch in _SHELL_CHARS for ch in command):
+        return False
+    try:
+        parts = shlex.split(command, posix=not IS_WINDOWS)
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    head = parts[0].lower()
+    if head == "git":
+        if len(parts) < 2 or parts[1] not in _SAFE_GIT:
+            return False
+        return not any(arg.lower().startswith(_GIT_BLOCKED_OPTIONS) for arg in parts[2:])
+    return head in _SAFE_PLAIN
 
 
 def validate_input(name, tool_input):
@@ -196,6 +225,37 @@ def validate_input(name, tool_input):
     return None
 
 
+# --- berkas ----------------------------------------------------------------------
+_SECRET_NAMES = {
+    ".env", ".git-credentials", ".netrc", "_netrc", ".npmrc", ".pypirc",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials",
+}
+_SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".kdbx", ".ppk")
+_SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube"}
+
+
+def is_secret_path(path):
+    """True untuk berkas yang biasanya berisi token, password, atau kunci."""
+    parts = [p.lower() for p in os.path.normpath(path).replace("\\", "/").split("/") if p]
+    if not parts:
+        return False
+    name = parts[-1]
+    if name in _SECRET_NAMES or name.endswith(_SECRET_SUFFIXES):
+        return True
+    if name.startswith(".env") and name != ".env.example":
+        return True
+    return any(p in _SECRET_DIRS for p in parts[:-1])
+
+
+def _inside(path, base):
+    """True kalau path berada di dalam folder base (setelah symlink diikuti)."""
+    try:
+        real_base = os.path.realpath(base)
+        return os.path.commonpath([os.path.realpath(path), real_base]) == real_base
+    except ValueError:  # beda drive di Windows
+        return False
+
+
 def _resolve(ctx, path):
     if os.path.isabs(path):
         return path
@@ -203,41 +263,152 @@ def _resolve(ctx, path):
     return os.path.join(base, path)
 
 
-def _run(command, cwd, timeout=180):
-    """Jalankan perintah. String → lewat shell; list → tanpa shell (aman)."""
+def _preview(text, limit=700):
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…(+{len(text) - limit} karakter lagi)"
+
+
+# --- menjalankan program ----------------------------------------------------------
+# Rahasia milik It's Me tidak ikut diwariskan ke program yang dijalankan.
+_SECRET_ENV = ("TELEGRAM_BOT_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def _child_env():
+    env = {k: v for k, v in os.environ.items() if k not in _SECRET_ENV}
+    # Git jangan pernah menunggu ketikan atau membuka jendela login di komputer
+    # saat pemilik memerintah dari HP: lebih baik gagal cepat dengan pesan jelas.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "never"
+    return env
+
+
+def _shell_args(command):
+    if IS_WINDOWS:
+        # PowerShell punya ls/dir/pwd/cat dan tidak menunggu ketikan seperti
+        # "date" milik cmd. Keluarannya dipaksa UTF-8 supaya teks tidak rusak.
+        return [
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + command,
+        ]
+    return command
+
+
+def _exec(command, cwd, timeout=180):
+    """Jalankan perintah; kembalikan (exit code, stdout, stderr).
+
+    String → lewat shell (PowerShell di Windows); list → tanpa shell (aman).
+    """
+    is_shell = isinstance(command, str)
     try:
         proc = subprocess.run(
-            command,
-            shell=isinstance(command, str),
+            _shell_args(command) if is_shell else command,
+            shell=is_shell and not IS_WINDOWS,
             cwd=cwd or None,
+            stdin=subprocess.DEVNULL,  # tidak ada yang bisa mengetik di sini
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
+            env=_child_env(),
         )
     except subprocess.TimeoutExpired:
-        return 1, "⏱️ Perintah melebihi batas waktu dan dihentikan."
-    out = (proc.stdout or "")[-4000:]
-    err = (proc.stderr or "")[-2000:]
-    parts = [f"exit code: {proc.returncode}"]
+        return 1, "", "⏱️ Perintah melebihi batas waktu dan dihentikan."
+    except FileNotFoundError as exc:
+        return 127, "", f"Program tidak ditemukan: {exc.filename or command}"
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _format(code, out, err):
+    parts = [f"exit code: {code}"]
     if out.strip():
-        parts.append("stdout:\n" + out)
+        parts.append("stdout:\n" + out[-4000:])
     if err.strip():
-        parts.append("stderr:\n" + err)
-    return proc.returncode, "\n".join(parts)
+        parts.append("stderr:\n" + err[-2000:])
+    return "\n".join(parts)
+
+
+def _run(command, cwd, timeout=180):
+    code, out, err = _exec(command, cwd, timeout)
+    return code, _format(code, out, err)
+
+
+def _changed_paths(status_output):
+    """Daftar path dari keluaran `git status --porcelain`."""
+    paths = []
+    for line in status_output.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        paths.append(path.strip().strip('"'))
+    return paths
+
+
+_AUTH_SIGNS = (
+    "authentication failed", "could not read username", "terminal prompts disabled",
+    "permission denied", "403", "credential",
+)
+
+
+def _deploy(ctx, pesan):
+    cwd = ctx.get("website_dir")
+    if not cwd:
+        return "WEBSITE_REPO_DIR belum diatur, jadi deploy belum bisa."
+    code, out, err = _exec(["git", "status", "--porcelain"], cwd)
+    if code != 0:
+        return "Folder website bukan repo Git yang bisa dipakai.\n" + _format(code, out, err)
+    paths = _changed_paths(out)
+    if not paths:
+        return "Tidak ada perubahan di folder website, jadi tidak ada yang di-deploy."
+    secrets = [p for p in paths if is_secret_path(p)]
+    if secrets:
+        return (
+            "Deploy dibatalkan: berkas rahasia ikut berubah dan akan ter-push ke GitHub:\n"
+            + "\n".join(secrets)
+            + "\nTambahkan berkas itu ke .gitignore dulu."
+        )
+    daftar = "\n".join(paths[:30]) + (f"\n…(+{len(paths) - 30} berkas lagi)" if len(paths) > 30 else "")
+    if not ctx["confirm"](f"Deploy website sekarang?\n\nCommit: {pesan}\n\nBerkas yang ikut:\n{daftar}"):
+        return "Dibatalkan oleh pemilik."
+    # Argumen berupa list, tanpa shell: pesan commit tidak akan pernah
+    # dieksekusi sebagai perintah, apa pun isinya.
+    steps = [
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", pesan],
+        ["git", "push"],
+    ]
+    log = []
+    for step in steps:
+        code, out, err = _exec(step, cwd)
+        log.append(f"$ {shlex.join(step)}\n{_format(code, out, err)}")
+        if code != 0:
+            if step[1] == "push" and any(s in err.lower() for s in _AUTH_SIGNS):
+                log.append(
+                    "Git di komputer ini belum bisa login ke GitHub. Jalankan sekali "
+                    "`git push` dari folder website langsung di komputer (bukan lewat "
+                    "bot) supaya login tersimpan, lalu coba deploy lagi."
+                )
+            log.append("Berhenti: langkah di atas gagal.")
+            break
+    return "\n\n".join(log)
 
 
 def handle_tool(name, tool_input, ctx):
     """Jalankan satu alat klien dan kembalikan hasilnya sebagai teks.
 
     ctx berisi: website_dir, memory, confirm(teks)->bool,
-    schedule_background(instruksi)->str.
+    schedule_background(instruksi)->str, seen_urls (set alamat yang boleh
+    langsung dibuka), dan in_background (True di dalam tugas latar).
     """
     try:
         if name == "jalankan_perintah":
-            perintah = tool_input.get("perintah", "")
-            if not perintah.strip():
+            perintah = tool_input.get("perintah", "").strip()
+            if not perintah:
                 return "Perintah kosong."
-            if not _READ_ONLY.fullmatch(perintah):
+            if not is_read_only(perintah):
                 alasan = tool_input.get("alasan", "")
                 teks = f"Jalankan perintah ini?\n\n{perintah}"
                 if alasan:
@@ -248,13 +419,26 @@ def handle_tool(name, tool_input, ctx):
 
         if name == "baca_berkas":
             path = _resolve(ctx, tool_input["path"])
+            if is_secret_path(path):
+                return "Ditolak: berkas itu biasanya berisi rahasia (token, password, kunci)."
+            base = ctx.get("website_dir")
+            if not (base and _inside(path, base)):
+                if not ctx["confirm"](f"Baca berkas di luar folder website?\n\n{path}"):
+                    return "Dibatalkan oleh pemilik."
             with open(path, encoding="utf-8", errors="replace") as f:
                 return f.read()[:12000]
 
         if name == "tulis_berkas":
             path = _resolve(ctx, tool_input["path"])
+            if is_secret_path(path):
+                return "Ditolak: berkas rahasia (.env, kunci) tidak boleh ditulis lewat bot."
             isi = tool_input.get("isi", "")
-            if not ctx["confirm"](f"Tulis/timpa berkas ini?\n\n{path}"):
+            keadaan = "menimpa berkas yang sudah ada" if os.path.exists(path) else "berkas baru"
+            teks = (
+                f"Tulis berkas ini? ({keadaan}, {len(isi)} karakter)\n\n{path}\n\n"
+                f"Isi:\n{_preview(isi)}"
+            )
+            if not ctx["confirm"](teks):
                 return "Dibatalkan oleh pemilik."
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -262,38 +446,31 @@ def handle_tool(name, tool_input, ctx):
             return f"Berhasil ditulis: {path} ({len(isi)} karakter)."
 
         if name == "deploy_website":
-            cwd = ctx.get("website_dir")
-            if not cwd:
-                return "WEBSITE_REPO_DIR belum diatur, jadi deploy belum bisa."
             pesan = tool_input.get("pesan_commit", "").strip() or "update dari It's Me"
-            if not ctx["confirm"](f"Deploy website sekarang?\n\nCommit: {pesan}"):
-                return "Dibatalkan oleh pemilik."
-            # Argumen berupa list, tanpa shell: pesan commit tidak akan pernah
-            # dieksekusi sebagai perintah, apa pun isinya.
-            steps = [
-                ["git", "add", "-A"],
-                ["git", "commit", "-m", pesan],
-                ["git", "push"],
-            ]
-            log = []
-            for step in steps:
-                code, output = _run(step, cwd)
-                log.append(f"$ {shlex.join(step)}\n{output}")
-                if code != 0:
-                    log.append("Berhenti: langkah di atas gagal.")
-                    break
-            return "\n\n".join(log)
+            return _deploy(ctx, pesan)
 
         if name == "cari_web":
-            return web.search(tool_input.get("kata_kunci", ""))
+            return web.search(tool_input.get("kata_kunci", ""), seen=ctx.get("seen_urls"))
 
         if name == "baca_halaman":
-            return web.fetch(tool_input.get("url", ""))
+            url = tool_input.get("url", "").strip()
+            seen = ctx.get("seen_urls")
+            if seen is None or url not in seen:
+                if not ctx["confirm"](f"Buka halaman ini?\n\n{url}"):
+                    return "Dibatalkan oleh pemilik."
+            return web.fetch(url)
 
         if name == "simpan_memori":
-            return ctx["memory"].add(tool_input.get("catatan", ""))
+            catatan = tool_input.get("catatan", "").strip()
+            if not catatan:
+                return "Catatan kosong, tidak disimpan."
+            if not ctx["confirm"](f"Simpan ke memori jangka panjang?\n\n{_preview(catatan, 1000)}"):
+                return "Dibatalkan oleh pemilik."
+            return ctx["memory"].add(catatan)
 
         if name == "tugas_latar":
+            if ctx.get("in_background"):
+                return "Tugas latar tidak bisa membuat tugas latar lagi. Kerjakan langsung di sini."
             return ctx["schedule_background"](tool_input.get("instruksi", ""))
 
         return f"Alat tidak dikenal: {name}"

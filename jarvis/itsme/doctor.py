@@ -110,6 +110,16 @@ def _check_ollama(report, required=True):
     else:
         report.warn(f"Model cadangan {wanted} belum diunduh", f"Jalankan: ollama pull {wanted}")
 
+    from .brain_ollama import _load_level
+
+    if _load_level() >= 2:
+        report.warn(
+            "Otak lokal memakai CPU saja, karena GPU di komputer ini pernah crash",
+            "Jawaban bisa makan beberapa menit. Model lebih kecil jauh lebih cepat: isi "
+            "ITSME_OLLAMA_MODEL=qwen3.5:4b di .env (unduh dulu: ollama pull qwen3.5:4b). "
+            f"Setelah memperbarui driver GPU, hapus {config.OLLAMA_STATE_FILE} untuk mencoba GPU lagi.",
+        )
+
 
 def _money(value):
     try:

@@ -7,15 +7,27 @@ Fitur utama:
 - Multitasking: tiap pesan ditangani sebagai task async; alat tugas_latar
   menjalankan pekerjaan paralel yang hasilnya dikirim terpisah.
 - Konfirmasi aksi berisiko lewat tombol inline.
+- Tidak pernah diam saja: selama berpikir, status "mengetik" terus tampil, dan
+  error apa pun dilaporkan ke pemilik serta dicatat di data/itsme.log.
+- Hanya satu It's Me yang boleh jalan sekaligus; dua bot dengan token yang
+  sama akan saling berebut pesan dari Telegram.
 """
 
 import asyncio
+import logging
+import os
+import re
+import sys
 import uuid
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 from . import brain, config
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
+
+log = logging.getLogger("itsme")
 
 HELP = (
     "Halo, It's Me siap. 🫡\n\n"
@@ -26,9 +38,29 @@ HELP = (
     "/otak — lihat otak yang sedang dipakai\n"
     "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
     "/lokal — pakai otak lokal (gratis, privat)\n"
+    "/memori — lihat isi memori jangka panjang\n"
+    "/hapus_memori — kosongkan memori\n"
     "/reset — mulai percakapan baru (lupakan konteks obrolan, memori tetap)\n"
     "/id — tampilkan user id Telegram-mu"
 )
+
+# Pesan yang bukan teks (suara, foto, stiker, ...) belum bisa dibaca otaknya.
+_NON_TEXT = ("voice", "audio", "photo", "video", "video_note", "document", "sticker", "location", "contact")
+_URL = re.compile(r"https?://[^\s<>\"']+")
+# Jawaban otak lokal di komputer tanpa GPU bisa makan beberapa menit; setelah
+# sekian detik pemilik diberi tahu bahwa It's Me masih bekerja.
+_SLOW_NOTICE_AFTER = 25
+_TYPING_EVERY = 4.5
+# Exit code saat It's Me lain sudah jalan; skrip penyala berhenti mengulang.
+EXIT_ALREADY_RUNNING = 3
+_HARI = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
+
+
+def _stamped(text):
+    """Pesan pemilik diawali waktu kirimnya, supaya otak tahu jam & tanggal
+    tanpa system prompt yang berubah-ubah (lihat persona.py)."""
+    now = datetime.now()
+    return f"[{_HARI[now.weekday()]}, {now:%d-%m-%Y %H.%M}] {text}"
 
 
 class App:
@@ -39,6 +71,9 @@ class App:
         self.histories = {}  # chat_id -> list[message]
         self.chat_locks = {}  # chat_id -> asyncio.Lock (jaga konsistensi riwayat)
         self.pending = {}  # confirm id -> asyncio.Future
+        # Alamat web yang boleh dibuka tanpa konfirmasi: hasil cari_web dan
+        # alamat yang pemilik kirim sendiri.
+        self.seen_urls = {}  # chat_id -> set[str]
         # Referensi ke task yang sedang jalan; tanpa ini asyncio boleh
         # membuangnya (garbage collect) di tengah pekerjaan.
         self._tasks = set()
@@ -75,7 +110,13 @@ class App:
             self.chat_locks[chat_id] = asyncio.Lock()
         return self.chat_locks[chat_id]
 
-    def _ctx_for(self, chat_id):
+    def _seen(self, chat_id):
+        seen = self.seen_urls.setdefault(chat_id, set())
+        if len(seen) > 1000:  # jangan tumbuh tanpa batas
+            seen.clear()
+        return seen
+
+    def _ctx_for(self, chat_id, in_background=False):
         return {
             "website_dir": config.WEBSITE_REPO_DIR or None,
             "memory": self.memory,
@@ -83,7 +124,40 @@ class App:
             "schedule_background": lambda instr: self._schedule_background(
                 chat_id, instr
             ),
+            "seen_urls": self._seen(chat_id),
+            "in_background": in_background,
         }
+
+    async def _keep_typing(self, chat_id):
+        """Tampilkan "mengetik…" terus selama otak bekerja (Telegram
+        menghapusnya sendiri setelah ±5 detik), dan beri tahu pemilik sekali
+        kalau jawabannya lama."""
+        waited = 0.0
+        noticed = False
+        while True:
+            await self.tg.send_chat_action(chat_id, "typing")
+            await asyncio.sleep(_TYPING_EVERY)
+            waited += _TYPING_EVERY
+            if not noticed and waited >= _SLOW_NOTICE_AFTER:
+                noticed = True
+                note = "⏳ Masih kukerjakan…"
+                if brain.current_backend() == "ollama":
+                    note += " Otak lokal di komputer ini bisa butuh beberapa menit per jawaban."
+                await self.tg.send(chat_id, note)
+
+    async def _think(self, chat_id, messages, ctx):
+        """Jalankan otak di thread terpisah. Error apa pun jadi pesan yang jelas."""
+        typing = asyncio.create_task(self._keep_typing(chat_id))
+        try:
+            return await asyncio.to_thread(run_agent, messages, ctx)
+        except Exception as exc:  # noqa: BLE001 - pemilik harus selalu dapat jawaban
+            log.exception("otak gagal menjawab")
+            return (
+                f"⚠️ Maaf, terjadi error saat memproses pesanmu: {type(exc).__name__}: {exc}\n"
+                f"(Detailnya tercatat di {config.LOG_FILE})"
+            )
+        finally:
+            typing.cancel()
 
     # --- konfirmasi (dari thread worker ke event loop) ---------------------
     def _confirm_blocking(self, chat_id, text):
@@ -92,7 +166,8 @@ class App:
         )
         try:
             return fut.result()
-        except Exception:
+        except Exception:  # noqa: BLE001
+            log.exception("konfirmasi gagal")
             return False
 
     async def _ask_confirm(self, chat_id, text):
@@ -128,16 +203,16 @@ class App:
 
     async def _run_background(self, chat_id, instruksi):
         await self.tg.send(chat_id, f"⏳ Mulai di latar: {instruksi}")
-        messages = [{"role": "user", "content": instruksi}]
-        ctx = self._ctx_for(chat_id)
-        reply = await asyncio.to_thread(run_agent, messages, ctx)
-        await self.tg.send(chat_id, f"✅ Selesai: {instruksi}\n\n{reply}")
+        messages = [{"role": "user", "content": _stamped(instruksi)}]
+        ctx = self._ctx_for(chat_id, in_background=True)
+        reply = await self._think(chat_id, messages, ctx)
+        await self.tg.send(chat_id, f"✅ Tugas latar selesai: {instruksi}\n\n{reply}")
 
     # --- penanganan pesan ---------------------------------------------------
     async def _handle_message(self, message):
         chat_id = message["chat"]["id"]
         user_id = message.get("from", {}).get("id")
-        text = message.get("text", "")
+        text = message.get("text") or ""
 
         if text.startswith("/id"):
             # Aman dijawab ke siapa pun: hanya memberi tahu id pengirim sendiri.
@@ -146,6 +221,15 @@ class App:
 
         if user_id != config.OWNER_ID:
             # Bukan pemilik — abaikan diam-diam (keamanan).
+            return
+
+        if not text.strip():
+            if any(kind in message for kind in _NON_TEXT):
+                await self.tg.send(
+                    chat_id,
+                    "Maaf, untuk sekarang aku hanya bisa membaca pesan teks "
+                    "(belum bisa mendengar suara atau melihat gambar). Ketik saja pesanmu, ya.",
+                )
             return
 
         if text.startswith("/start") or text.startswith("/help"):
@@ -158,6 +242,17 @@ class App:
         if text.startswith("/otak"):
             # Sisa kuota ditanyakan ke OpenRouter; jangan tahan bot selama menunggu.
             await self.tg.send(chat_id, await asyncio.to_thread(self._brain_status))
+            return
+        if text.startswith("/memori"):
+            isi = self.memory.text() or "(memori masih kosong)"
+            if len(isi) > 3800:
+                isi = "…" + isi[-3800:]
+            await self.tg.send(chat_id, f"{isi}\n\n/hapus_memori — kosongkan memori")
+            return
+        if text.startswith("/hapus_memori"):
+            if await self._ask_confirm(chat_id, "Kosongkan seluruh memori jangka panjang?"):
+                self.memory.clear()
+                await self.tg.send(chat_id, "Memori sudah dikosongkan.")
             return
         if text.startswith("/lokal") or text.startswith("/cloud"):
             target = "ollama" if text.startswith("/lokal") else "openrouter"
@@ -173,15 +268,17 @@ class App:
                 f"Otak sekarang: {brain.describe()}.\nKonteks obrolan direset, memori tetap.",
             )
             return
-        if not text.strip():
-            return
+
+        # Alamat yang pemilik kirim sendiri boleh langsung dibuka.
+        seen = self._seen(chat_id)
+        for url in _URL.findall(text):
+            seen.add(url.rstrip(".,;:!?)]}'\""))
 
         async with self._lock(chat_id):
             history = self.histories.setdefault(chat_id, [])
-            history.append({"role": "user", "content": text})
-            await self.tg.send_chat_action(chat_id, "typing")
+            history.append({"role": "user", "content": _stamped(text)})
             ctx = self._ctx_for(chat_id)
-            reply = await asyncio.to_thread(run_agent, history, ctx)
+            reply = await self._think(chat_id, history, ctx)
             await self.tg.send(chat_id, reply)
 
     async def _handle_callback(self, cb):
@@ -193,8 +290,14 @@ class App:
         decision = data.startswith("ok:")
         cid = data.split(":", 1)[1] if ":" in data else ""
         future = self.pending.get(cid)
-        if future and not future.done():
-            future.set_result(decision)
+        if future is None or future.done():
+            # Tombol lama (mis. dari sebelum It's Me dinyalakan ulang).
+            await self.tg.answer_callback(cb["id"], "Konfirmasi ini sudah tidak berlaku.")
+            msg = cb.get("message") or {}
+            if msg.get("message_id") and msg.get("chat"):
+                await self.tg.edit_markup(msg["chat"]["id"], msg["message_id"], None)
+            return
+        future.set_result(decision)
         await self.tg.answer_callback(
             cb["id"], "Dijalankan ✅" if decision else "Dibatalkan ❌"
         )
@@ -205,13 +308,13 @@ class App:
                 await self._handle_message(update["message"])
             elif "callback_query" in update:
                 await self._handle_callback(update["callback_query"])
-        except Exception as exc:  # noqa: BLE001
-            print(f"[itsme] error dispatch: {exc}")
+        except Exception:  # noqa: BLE001
+            log.exception("error saat menangani update Telegram")
 
     # --- loop utama ---------------------------------------------------------
     async def run(self):
         self.loop = asyncio.get_running_loop()
-        print(f"[itsme] {config.NAME} jalan. Otak: {brain.describe()}")
+        log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
         try:
             while True:
                 updates = await self.tg.get_updates()
@@ -221,19 +324,67 @@ class App:
             await self.tg.close()
 
 
+def _setup_logging():
+    log.setLevel(logging.INFO)
+    if log.handlers:
+        return
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("[itsme] %(message)s"))
+    log.addHandler(console)
+    try:
+        os.makedirs(os.path.dirname(config.LOG_FILE) or ".", exist_ok=True)
+        handler = RotatingFileHandler(
+            config.LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+        )
+    except OSError as exc:
+        log.warning("Log tidak bisa ditulis ke %s: %s", config.LOG_FILE, exc)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.addHandler(handler)
+
+
+def _single_instance_lock():
+    """Kunci berkas; None kalau It's Me lain sudah memegangnya."""
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    handle = open(os.path.join(config.DATA_DIR, "itsme.lock"), "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle  # tetap terbuka (dan terkunci) selama proses hidup
+
+
 def main():
+    _setup_logging()
     problems = config.check()
     if problems:
         print("Konfigurasi belum lengkap:")
         for p in problems:
             print("  - " + p)
         print("\nSalin .env.example menjadi .env lalu isi nilainya.")
-        return
+        return 2
+    lock = _single_instance_lock()
+    if lock is None:
+        print(
+            "It's Me sudah jalan di jendela atau proses lain. Tutup yang lama dulu "
+            "kalau mau menyalakan ulang."
+        )
+        return EXIT_ALREADY_RUNNING
     try:
         asyncio.run(App().run())
     except KeyboardInterrupt:
         print("\n[itsme] berhenti.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

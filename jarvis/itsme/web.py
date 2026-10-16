@@ -31,7 +31,9 @@ MAX_REDIRECTS = 5
 
 
 # --- pencarian ----------------------------------------------------------------
-def search(query, max_results=5):
+def search(query, max_results=5, seen=None):
+    """Cari di DuckDuckGo. Alamat hasilnya ditambahkan ke `seen` (kalau ada),
+    supaya baca_halaman boleh langsung membukanya tanpa konfirmasi."""
     query = (query or "").strip()
     if not query:
         return "Kata kunci pencarian kosong."
@@ -59,6 +61,8 @@ def search(query, max_results=5):
     ][:max_results]
     if not results:
         return "Tidak ada hasil."
+    if seen is not None:
+        seen.update(str(r.get("href", "")).strip() for r in results)
     lines = []
     for i, r in enumerate(results, 1):
         lines.append(

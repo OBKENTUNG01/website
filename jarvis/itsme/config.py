@@ -100,9 +100,12 @@ HISTORY_MESSAGES = int(_get("ITSME_HISTORY_MESSAGES", "24"))
 # --- Otak Claude (opsional) ---------------------------------------------------
 ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY")
 MODEL = _get("ITSME_MODEL", "claude-opus-5-5")
-EFFORT = _get("ITSME_EFFORT", "max")
-# Proses berpikir ikut dihitung di sini, dan effort max berpikir panjang —
-# jadi dibuat lega. Aman karena permintaan ke Claude memakai streaming.
+# medium cukup untuk asisten obrolan dan jauh lebih hemat; "max" membuat
+# setiap pesan (bahkan "halo") memakai setelan termahal. Naikkan ke high/max
+# hanya kalau tugasnya memang berat.
+EFFORT = _get("ITSME_EFFORT", "medium")
+# Proses berpikir ikut dihitung di sini — jadi dibuat lega. Aman karena
+# permintaan ke Claude memakai streaming.
 MAX_TOKENS = int(_get("ITSME_MAX_TOKENS", "64000"))
 # Batas langkah tool dalam satu giliran, supaya tidak berputar tanpa henti.
 MAX_STEPS = int(_get("ITSME_MAX_STEPS", "16"))
@@ -112,9 +115,15 @@ MAX_STEPS = int(_get("ITSME_MAX_STEPS", "16"))
 # Kosongkan kalau belum dipakai.
 WEBSITE_REPO_DIR = _get("WEBSITE_REPO_DIR", "")
 
-# --- Memori -----------------------------------------------------------------
-_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-MEMORY_FILE = _get("ITSME_MEMORY_FILE", os.path.join(_DATA_DIR, "memory.md"))
+# --- Memori & berkas data -----------------------------------------------------
+DATA_DIR = _get("ITSME_DATA_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
+MEMORY_FILE = _get("ITSME_MEMORY_FILE", os.path.join(DATA_DIR, "memory.md"))
+# Catatan jalannya bot (error, otak yang dipakai). Berguna saat bot "diam saja"
+# dan jendelanya terkecilkan, sehingga pesan error tidak terlihat.
+LOG_FILE = _get("ITSME_LOG_FILE", os.path.join(DATA_DIR, "itsme.log"))
+# Pengaturan aman otak lokal yang terbukti jalan (mis. CPU saja karena GPU
+# crash), supaya tidak crash lagi setiap kali It's Me dinyalakan ulang.
+OLLAMA_STATE_FILE = os.path.join(DATA_DIR, "ollama_state.json")
 
 # Nama persona.
 NAME = _get("ITSME_NAME", "It's Me")

@@ -32,3 +32,7 @@ class Memory:
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(f"- ({stamp}) {note}\n")
         return "Tersimpan di memori."
+
+    def clear(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("# Memori It's Me\n\n")

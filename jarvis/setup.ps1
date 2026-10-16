@@ -481,6 +481,7 @@ function Install-ItsMeLauncher([string]$Dir) {
         'set PYTHONUNBUFFERED=1',
         ':loop',
         '".venv\Scripts\python.exe" -m itsme.main',
+        'if %ERRORLEVEL% EQU 3 exit /b 0',
         'echo.',
         "echo It's Me berhenti. Menyala lagi dalam 10 detik... (tutup jendela ini untuk mematikan)",
         'timeout /t 10 /nobreak >nul',

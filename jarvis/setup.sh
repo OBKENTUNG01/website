@@ -487,6 +487,8 @@ WorkingDirectory=$DIR
 ExecStart="$VPY" -m itsme.main
 Restart=always
 RestartSec=10
+# Exit code 3 = It's Me lain sudah jalan; jangan dinyalakan ulang terus.
+RestartPreventExitStatus=3
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
