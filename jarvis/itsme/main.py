@@ -58,6 +58,16 @@ class App:
             lines.append("/cloud — belum aktif (jalankan setup lagi dan isi API key OpenRouter)")
         if brain.current_backend() == "openrouter" and config.FALLBACK_LOCAL:
             lines += ["", "Kalau otak cloud tidak bisa dipakai, otak lokal otomatis menjawab."]
+        if config.OPENROUTER_API_KEY and config.OPENROUTER_MODEL.endswith(":free"):
+            from .brain_openrouter import free_quota, reset_time_text
+
+            quota = free_quota()
+            if quota:
+                lines += [
+                    "",
+                    f"Kuota model gratis hari ini: sisa {quota['remaining']} dari {quota['limit']} "
+                    f"(baru lagi pukul {reset_time_text()}).",
+                ]
         return "\n".join(lines)
 
     def _lock(self, chat_id):
@@ -146,7 +156,8 @@ class App:
             await self.tg.send(chat_id, "Oke, konteks obrolan direset. Memori tetap.")
             return
         if text.startswith("/otak"):
-            await self.tg.send(chat_id, self._brain_status())
+            # Sisa kuota ditanyakan ke OpenRouter; jangan tahan bot selama menunggu.
+            await self.tg.send(chat_id, await asyncio.to_thread(self._brain_status))
             return
         if text.startswith("/lokal") or text.startswith("/cloud"):
             target = "ollama" if text.startswith("/lokal") else "openrouter"

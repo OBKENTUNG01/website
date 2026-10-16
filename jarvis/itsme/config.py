@@ -46,6 +46,18 @@ OPENROUTER_URL = (_get("OPENROUTER_URL", "https://openrouter.ai/api/v1") or "").
 # Bawaan aman tanpa biaya: model gratis (maks. 50 permintaan/hari). Skrip setup
 # memilih anthropic/claude-haiku-5.5 kalau akunmu sudah pernah isi saldo.
 OPENROUTER_MODEL = _get("ITSME_OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+# Model cadangan (dipisah koma) yang dicoba OpenRouter dalam permintaan yang
+# sama kalau model utama penuh atau bermasalah. Bawaan untuk model ":free":
+# openrouter/free, router yang memilih model gratis lain yang mendukung alat.
+# Isi "off" untuk mematikan.
+_fallbacks = _get("ITSME_OPENROUTER_FALLBACKS")
+if _fallbacks is None:
+    _fallbacks = "openrouter/free" if OPENROUTER_MODEL.endswith(":free") else ""
+OPENROUTER_FALLBACKS = [
+    m.strip()
+    for m in _fallbacks.split(",")
+    if m.strip() and m.strip().lower() not in ("0", "off", "none", "false") and m.strip() != OPENROUTER_MODEL
+]
 # Seberapa keras model cloud berpikir: none | minimal | low | medium | high |
 # xhigh | max, atau "default" (ikuti model). Lebih tinggi = lebih teliti,
 # lebih lambat, dan lebih banyak token terpakai.

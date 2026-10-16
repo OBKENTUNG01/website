@@ -142,6 +142,58 @@ def _sha256_file(path, label=None):
     return hasher.hexdigest()
 
 
+class _Lock:
+    """Kunci antar-proses: dua setup tidak boleh mengunduh berkas yang sama
+    bersamaan. Kunci lepas sendiri kalau prosesnya mati."""
+
+    def __init__(self, path):
+        self.path = path
+        self.file = None
+
+    def _try(self):
+        f = open(self.path, "a+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return False
+        self.file = f
+        return True
+
+    def acquire(self):
+        if self._try():
+            return
+        print("    Model ini sedang diunduh jendela setup lain; menunggu sampai selesai...", flush=True)
+        while not self._try():
+            time.sleep(2)
+
+    def release(self):
+        if not self.file:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                self.file.seek(0)
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        self.file.close()
+        self.file = None
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
 class _Progress:
     """Satu baris kemajuan unduhan, diperbarui tiap detik."""
 
@@ -432,31 +484,38 @@ class Fetcher:
                 raise NotApplicable("folder model Ollama tidak ditemukan atau tidak bisa ditulis")
             part_dir = self.blobs_dir.parent / "itsme-download"
             part_dir.mkdir(exist_ok=True)
-
-            need = self.remaining_bytes(blobs, part_dir)
-            free = shutil.disk_usage(part_dir).free
-            if need and free < need + SPARE:
-                raise DiskFull(
-                    f"Ruang disk kurang di {self.blobs_dir.anchor or self.blobs_dir}: model butuh "
-                    f"{_gb(need + SPARE)} lagi, tersedia {_gb(free)}. Kosongkan ruang lalu jalankan setup lagi."
-                )
-            if need:
-                print(f"    Perlu diunduh: {_gb(need)} (bisa dilanjutkan kalau terputus).")
-
-            # Berkas kecil yang sudah diunduh tidak perlu diambil lagi oleh Ollama.
-            small = [(self.config_blob, config_bytes)] + ([self.child] if self.child else [])
-            for blob, data in small:
-                final = self.blobs_dir / f"sha256-{blob.hex}"
-                if not final.exists():
-                    tmp = part_dir / f"sha256-{blob.hex}.tmp"
-                    tmp.write_bytes(data)
-                    _replace(tmp, final)
-            for blob in sorted(blobs, key=lambda b: b.size):
-                self.ensure(blob, part_dir)
+            lock = _Lock(part_dir / "itsme.lock")
+            lock.acquire()
+            try:
+                self._download_all(blobs, config_bytes, part_dir)
+            finally:
+                lock.release()
         try:
             part_dir.rmdir()
         except OSError:
             pass
+
+    def _download_all(self, blobs, config_bytes, part_dir):
+        need = self.remaining_bytes(blobs, part_dir)
+        free = shutil.disk_usage(part_dir).free
+        if need and free < need + SPARE:
+            raise DiskFull(
+                f"Ruang disk kurang di {self.blobs_dir.anchor or self.blobs_dir}: model butuh "
+                f"{_gb(need + SPARE)} lagi, tersedia {_gb(free)}. Kosongkan ruang lalu jalankan setup lagi."
+            )
+        if need:
+            print(f"    Perlu diunduh: {_gb(need)} (bisa dilanjutkan kalau terputus).")
+
+        # Berkas kecil yang sudah diunduh tidak perlu diambil lagi oleh Ollama.
+        small = [(self.config_blob, config_bytes)] + ([self.child] if self.child else [])
+        for blob, data in small:
+            final = self.blobs_dir / f"sha256-{blob.hex}"
+            if not final.exists():
+                tmp = part_dir / f"sha256-{blob.hex}.tmp"
+                tmp.write_bytes(data)
+                _replace(tmp, final)
+        for blob in sorted(blobs, key=lambda b: b.size):
+            self.ensure(blob, part_dir)
 
 
 class _ChunkedDownload:

@@ -40,7 +40,11 @@ def set_backend(name):
 def describe(name=None):
     name = name or current_backend()
     if name == "openrouter":
-        return f"cloud {config.OPENROUTER_MODEL} (OpenRouter)"
+        from .brain_openrouter import fallback_models
+
+        fallbacks = fallback_models()
+        extra = f", cadangan {', '.join(fallbacks)}" if fallbacks else ""
+        return f"cloud {config.OPENROUTER_MODEL} (OpenRouter{extra})"
     if name == "claude":
         return f"Claude {config.MODEL} (effort {config.EFFORT})"
     return f"lokal {config.OLLAMA_MODEL} (Ollama)"
@@ -62,11 +66,15 @@ def run_agent(messages, ctx):
         except CloudUnavailable as exc:
             if not config.FALLBACK_LOCAL:
                 return f"⚠️ {exc}"
+            from .brain_ollama import LocalUnavailable
             from .brain_ollama import run_agent as local
 
             # Otak lokal menjawab dari salinan teks obrolan (tanpa jejak alat
             # format cloud), lalu hanya jawabannya yang masuk ke riwayat.
-            reply = local(text_only(messages), ctx)
+            try:
+                reply = local(text_only(messages), ctx, raise_errors=True)
+            except LocalUnavailable as local_exc:
+                return f"⚠️ {exc}\n\nOtak lokal (cadangan) juga belum bisa menjawab: {local_exc}"
             messages.append({"role": "assistant", "content": reply})
             return f"⚠️ {exc} Kujawab pakai otak lokal.\n\n{reply}"
 

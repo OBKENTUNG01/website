@@ -141,6 +141,21 @@ def _check_openrouter(report):
         return
     tier = "akun gratis" if info.get("is_free_tier") else "akun berbayar"
     report.line(True, f"API key OpenRouter valid ({tier})")
+    quota = info.get("free_model_daily_requests")
+    if config.OPENROUTER_MODEL.endswith(":free") and isinstance(quota, dict):
+        try:
+            remaining, limit = int(quota["remaining"]), int(quota["limit"])
+        except (KeyError, TypeError, ValueError):
+            remaining = limit = None
+        if remaining is not None and remaining <= 0:
+            from .brain_openrouter import reset_time_text
+
+            report.warn(
+                f"Kuota model gratis hari ini sudah habis (0 dari {limit})",
+                f"Kuota baru mulai pukul {reset_time_text()}. Sementara itu otak lokal yang menjawab.",
+            )
+        elif remaining is not None:
+            report.line(True, f"Kuota model gratis hari ini: sisa {remaining} dari {limit}")
     limit, remaining = info.get("limit"), info.get("limit_remaining")
     if limit is None:
         report.warn(
@@ -176,6 +191,15 @@ def _check_openrouter(report):
         )
     else:
         report.line(True, f"Model cloud {model_id} tersedia")
+    for fallback in config.OPENROUTER_FALLBACKS:
+        found = next((m for m in models if m.get("id") == fallback), None)
+        if found and "tools" in (found.get("supported_parameters") or []):
+            report.line(True, f"Model cadangan cloud {fallback} tersedia")
+        else:
+            report.warn(
+                f"Model cadangan cloud '{fallback}' tidak ada atau tidak mendukung alat",
+                "Perbaiki ITSME_OPENROUTER_FALLBACKS di .env (isi off untuk mematikan).",
+            )
     if model_id.endswith(":free"):
         report.warn(
             "Model gratis dibatasi 50 permintaan/hari (1000/hari kalau pernah isi saldo minimal $10)",

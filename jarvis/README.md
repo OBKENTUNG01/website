@@ -84,7 +84,9 @@ pertanyaan skrip untukmu, beri dia nilai-nilainya lewat variabel lingkungan:
 Model lokal di komputer 16 GB terbatas kepintarannya. Dengan API key
 [OpenRouter](https://openrouter.ai), It's Me bisa memakai model cloud yang jauh
 lebih pintar — dan **otak lokal tetap jadi cadangan otomatis** kalau saldo
-habis, batas harian tercapai, atau internet putus.
+habis, batas harian tercapai, atau internet putus. Kalau model gratisnya sedang
+penuh, It's Me mencoba lagi sebentar dan pindah ke model gratis lain
+(`openrouter/free`) sebelum menyerahkan ke otak lokal.
 
 1. Di openrouter.ai → **Settings → API Keys → New Key**. **Isi batas kredit**
    (mis. $5) supaya aman kalau key-nya bocor. Jangan kirim key ke chat mana pun.
@@ -93,11 +95,11 @@ habis, batas harian tercapai, atau internet putus.
    - belum pernah isi saldo → `google/gemma-4-31b-it:free` (gratis)
    - sudah pernah isi saldo → `anthropic/claude-haiku-5.5`
 3. Di Telegram: `/cloud` = otak cloud, `/lokal` = otak lokal, `/otak` = lihat
-   yang aktif.
+   yang aktif dan sisa kuota model gratis hari ini.
 
 | Model | Harga per 1 juta token (masuk / keluar) | Catatan |
 |---|---|---|
-| `google/gemma-4-31b-it:free` | gratis | maks. 50 permintaan/hari (1000/hari kalau pernah isi saldo ≥ $10) |
+| `google/gemma-4-31b-it:free` | gratis | maks. 50 permintaan/hari (1000/hari kalau pernah isi saldo ≥ $10); di jam sibuk kadang penuh |
 | `anthropic/claude-haiku-5.5` | $0,10 / $0,50 | murah (±$0,001 per pesan), pemakaian alat sangat andal |
 | `deepseek/deepseek-v4-flash` | $0,09 / $0,18 | paling murah |
 | `anthropic/claude-sonnet-5.5`, `openai/gpt-6-sol` | $2 / $10 | paling pintar, untuk tugas berat |
@@ -222,6 +224,7 @@ mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 | `ITSME_BACKEND` | `ollama` | Otak awal: `ollama` (lokal), `openrouter` (cloud), atau `claude` |
 | `OPENROUTER_API_KEY` | — | Key otak cloud OpenRouter |
 | `ITSME_OPENROUTER_MODEL` | `google/gemma-4-31b-it:free` | Model cloud (harus mendukung tools) |
+| `ITSME_OPENROUTER_FALLBACKS` | `openrouter/free` (untuk model `:free`) | Model cadangan kalau model utama penuh; `off` = matikan |
 | `ITSME_OPENROUTER_REASONING` | `medium` | Seberapa keras model cloud berpikir (`none` … `max`, atau `default`) |
 | `ITSME_FALLBACK_LOCAL` | `1` | Otak lokal menjawab kalau otak cloud gagal (`0` = matikan) |
 | `ITSME_OLLAMA_MODEL` | `qwen3.5:9b` | Model lokal yang dipakai |

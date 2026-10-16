@@ -16,6 +16,10 @@ from .tools import FUNCTION_TOOLS, handle_tool, validate_input
 _http = httpx.Client(timeout=httpx.Timeout(config.OLLAMA_TIMEOUT, connect=10.0))
 
 
+class LocalUnavailable(Exception):
+    """Otak lokal tidak bisa menjawab sekarang; pesannya siap dibaca pemilik."""
+
+
 def _request(messages, memory_text):
     body = {
         "model": config.OLLAMA_MODEL,
@@ -61,8 +65,9 @@ def _call_ollama(body):
         detail = data.get("error") or resp.text[:300]
         if resp.status_code == 404 and "not found" in str(detail).lower():
             return None, (
-                f"Model '{config.OLLAMA_MODEL}' belum diunduh. Jalankan di "
-                f"komputer: ollama pull {config.OLLAMA_MODEL}"
+                f"Model '{config.OLLAMA_MODEL}' belum ada di komputer. Kalau setup "
+                "sedang mengunduhnya, tunggu sampai selesai; kalau tidak, jalankan "
+                "perintah setup lagi."
             )
         if "does not support thinking" in str(detail):
             return None, (
@@ -76,10 +81,12 @@ def _call_ollama(body):
     return message, None
 
 
-def run_agent(messages, ctx):
+def run_agent(messages, ctx, raise_errors=False):
     """Jalankan loop agen sampai selesai. Mengubah `messages` di tempat.
 
-    Kembalikan teks jawaban akhir untuk dikirim ke pemilik.
+    Kembalikan teks jawaban akhir untuk dikirim ke pemilik. Kalau Ollama
+    tidak bisa dipakai, pesan kesalahannya dikembalikan sebagai jawaban, atau
+    dilempar sebagai LocalUnavailable kalau raise_errors=True.
     """
     memory_text = ctx["memory"].text()
 
@@ -87,6 +94,8 @@ def run_agent(messages, ctx):
         trim_history(messages, config.HISTORY_MESSAGES)
         message, error = _call_ollama(_request(messages, memory_text))
         if error:
+            if raise_errors:
+                raise LocalUnavailable(error)
             return error
 
         content = clean_reply(message.get("content"))
