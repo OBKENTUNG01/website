@@ -46,11 +46,19 @@ function Update-ItsMeSessionPath {
 function Invoke-ItsMeProgram([string]$File, [string[]]$Arguments, [string]$WorkDir) {
     # Menjalankan program di jendela ini (progress-nya tetap terlihat) dan
     # mengembalikan exit code-nya.
-    $params = @{ FilePath = $File; NoNewWindow = $true; Wait = $true; PassThru = $true }
+    #
+    # Sengaja TIDAK memakai Start-Process -Wait: -Wait menunggu seluruh pohon
+    # proses (program + semua turunannya). Pemasang Ollama menyalakan aplikasi
+    # Ollama yang terus berjalan di tray, sehingga -Wait menunggu selamanya.
+    # WaitForExit() hanya menunggu program itu sendiri.
+    $params = @{ FilePath = $File; NoNewWindow = $true; PassThru = $true }
     if ($Arguments -and $Arguments.Count -gt 0) { $params.ArgumentList = $Arguments }
     if ($WorkDir) { $params.WorkingDirectory = $WorkDir }
     $proc = Start-Process @params
-    return $proc.ExitCode
+    $null = $proc.Handle  # simpan handle sekarang supaya ExitCode tetap terbaca nanti
+    $proc.WaitForExit()
+    if ($null -eq $proc.ExitCode) { return 0 }
+    return [int]$proc.ExitCode
 }
 
 # --- .env ----------------------------------------------------------------------
