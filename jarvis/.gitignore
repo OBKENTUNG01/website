@@ -12,6 +12,7 @@ data/version.json
 data/update_notice.txt
 data/claude/
 data/access.json
+data/brain.json
 
 # Dibuat oleh skrip setup saat It's Me dipasang
 start-itsme.cmd

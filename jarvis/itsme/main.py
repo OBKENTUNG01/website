@@ -553,6 +553,7 @@ class App:
     async def run(self):
         """Layani Telegram. Kembalikan EXIT_UPDATED setelah pembaruan terpasang."""
         self.loop = asyncio.get_running_loop()
+        brain.restore()
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
         try:
             notice = updater.pop_notice()

@@ -202,6 +202,22 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.brain.current_backend(), "ollama")
         self.assertIn("itsme.claude_login", self.tg.sent[-1][1])
 
+    async def test_brain_choice_survives_restart(self):
+        token = "sk-ant-oat01-" + "t" * 40
+        with mock.patch.dict(main.brain._state, {"backend": "openrouter"}), mock.patch.object(
+            config, "CLAUDE_CODE_OAUTH_TOKEN", token
+        ):
+            await self.app._handle_message(self._msg("/claudepc"))
+            main.brain._state["backend"] = "openrouter"  # seperti baru menyala dengan ITSME_BACKEND
+            main.brain.restore()
+            self.assertEqual(main.brain.current_backend(), "claude_code")
+        # Token sudah tidak ada: tetap otak bawaan, tanpa error.
+        with mock.patch.dict(main.brain._state, {"backend": "openrouter"}), mock.patch.object(
+            config, "CLAUDE_CODE_OAUTH_TOKEN", None
+        ), mock.patch.object(main.keys, "ENV_FILE", os.path.join(self.dir, "tidak-ada.env")):
+            main.brain.restore()
+            self.assertEqual(main.brain.current_backend(), "openrouter")
+
     async def test_claudepc_and_claude_are_different_commands(self):
         with mock.patch.dict(main.brain._state, {"backend": "ollama"}), mock.patch.object(
             config, "CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-" + "t" * 40

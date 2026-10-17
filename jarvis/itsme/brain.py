@@ -13,6 +13,9 @@ otak di-import saat dipakai, jadi pemakai satu otak tidak butuh perlengkapan
 otak lainnya.
 """
 
+import json
+import os
+
 from . import config, keys
 from .agentutil import text_only
 
@@ -25,7 +28,25 @@ def current_backend():
     return _state["backend"]
 
 
-def set_backend(name):
+def _choice_file():
+    return os.path.join(config.DATA_DIR, "brain.json")
+
+
+def restore():
+    """Pakai lagi otak pilihan terakhir pemilik, supaya tetap sama setelah
+    It's Me menyala ulang (mis. sesudah pembaruan otomatis)."""
+    try:
+        with open(_choice_file(), encoding="utf-8") as f:
+            name = json.load(f).get("backend")
+    except (OSError, ValueError, AttributeError):
+        return
+    try:
+        set_backend(name, remember=False)
+    except ValueError:
+        pass  # mis. key/token-nya sudah dihapus: tetap otak bawaan
+
+
+def set_backend(name, remember=True):
     """Ganti otak. Lempar ValueError (pesan siap dibaca) kalau belum bisa."""
     if name not in BACKENDS:
         raise ValueError(f"Otak '{name}' tidak dikenal.")
@@ -44,6 +65,13 @@ def set_backend(name):
 
         raise ValueError(LOGIN_HINT)
     _state["backend"] = name
+    if remember:
+        try:
+            os.makedirs(config.DATA_DIR, exist_ok=True)
+            with open(_choice_file(), "w", encoding="utf-8") as f:
+                json.dump({"backend": name}, f)
+        except OSError:
+            pass  # tetap berganti sekarang; hanya tidak diingat setelah menyala ulang
 
 
 def claude_code_ready():
