@@ -107,9 +107,11 @@ penuh, It's Me mencoba lagi sebentar dan pindah ke model gratis lain
 (`openrouter/free`) sebelum menyerahkan ke otak lokal.
 
 1. Di openrouter.ai → **Settings → API Keys → New Key**. **Isi batas kredit**
-   (mis. $5) supaya aman kalau key-nya bocor. Jangan kirim key ke chat mana pun.
-2. Jalankan lagi perintah setup di atas. Saat diminta, tempel key-nya
-   (ketikannya tidak tampil di layar). Setup memilih model otomatis:
+   (mis. $5) supaya aman kalau key-nya bocor. Jangan kirim key ke chat mana
+   pun, kecuali lewat [`/kunci`](#mengirim-api-key-lewat-telegram-kunci) ke It's Me.
+2. Kirim `/kunci <key>` ke bot, atau jalankan lagi perintah setup di atas dan
+   tempel key-nya saat diminta (ketikannya tidak tampil di layar). Setup
+   memilih model otomatis:
    - belum pernah isi saldo → `google/gemma-4-31b-it:free` (gratis)
    - sudah pernah isi saldo → `anthropic/claude-haiku-5.5`
 3. Di Telegram: `/cloud` = otak cloud, `/lokal` = otak lokal, `/otak` = lihat
@@ -236,10 +238,26 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/cloud` | Pakai otak cloud (OpenRouter) |
 | `/claude` | Pakai otak Claude (Anthropic API, butuh `ANTHROPIC_API_KEY` di `.env`) |
 | `/lokal` | Pakai otak lokal (Ollama) |
+| `/kunci <key>` | Simpan API key Claude (`sk-ant-…`) atau OpenRouter (`sk-or-…`); pesannya langsung dihapus |
 | `/memori` | Lihat isi memori jangka panjang |
 | `/hapus_memori` | Kosongkan memori (minta konfirmasi) |
 | `/reset` | Mulai percakapan baru (memori tetap) |
 | `/id` | Tampilkan user id Telegram-mu |
+
+### Mengirim API key lewat Telegram (`/kunci`)
+
+Kirim `/kunci sk-ant-…` (Claude) atau `/kunci sk-or-…` (OpenRouter) ke bot.
+It's Me langsung **menghapus pesanmu** dari chat (di semua perangkat),
+memeriksa key ke penyedianya tanpa biaya, menyimpannya ke `.env`, dan
+memakainya tanpa perlu dinyalakan ulang. Balasannya hanya menampilkan awalan
+dan 4 huruf terakhir (`sk-ant-…a1b2`). Key tidak pernah masuk riwayat obrolan,
+tidak dibaca otak AI, dan tidak dicatat di log. Key yang ditolak tidak disimpan.
+
+Yang tetap perlu diingat: chat bot Telegram tidak terenkripsi ujung-ke-ujung,
+jadi key sempat lewat server Telegram sebelum dihapus, dan key terlihat sesaat
+di layarmu saat ditempel. Paling aman tetap mengisi `.env` langsung di
+komputer; kalau memakai `/kunci`, buat key khusus untuk It's Me dengan batas
+pengeluaran, supaya bisa dicabut kapan saja.
 
 ## Pengaturan (opsional, di `.env`)
 
@@ -273,10 +291,11 @@ tapi butuh API key berbayar.
 1. Buat API key di <https://platform.claude.com>. Pelanggan **Max** dan
    **Team** mendapat kredit API bulanan gratis: di claude.ai buka **Settings →
    Billing → API credits**, lalu hubungkan organisasi Console-mu.
-2. Di `.env` (di komputer, jangan kirim key lewat chat): isi `ANTHROPIC_API_KEY`,
-   lalu nyalakan ulang It's Me. Kirim `/claude` ke bot untuk beralih ke otak
-   Claude (dan `/lokal` atau `/cloud` untuk kembali), atau isi juga
-   `ITSME_BACKEND=claude` supaya Claude langsung dipakai setiap It's Me menyala.
+2. Kirim [`/kunci <key>`](#mengirim-api-key-lewat-telegram-kunci) ke bot, atau
+   isi `ANTHROPIC_API_KEY` di `.env` di komputer lalu nyalakan ulang It's Me.
+   Kirim `/claude` ke bot untuk beralih ke otak Claude (dan `/lokal` atau
+   `/cloud` untuk kembali), atau isi juga `ITSME_BACKEND=claude` di `.env`
+   supaya Claude langsung dipakai setiap It's Me menyala.
 3. Model bawaan `claude-opus-5-5` dengan effort `medium` (atur lewat `ITSME_MODEL`
    dan `ITSME_EFFORT`). `high`/`max` lebih teliti untuk tugas berat, tapi setiap
    pesan — bahkan "halo" — jadi jauh lebih mahal.

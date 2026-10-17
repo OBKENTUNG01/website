@@ -11,7 +11,14 @@ from . import config
 from .persona import system_prompt
 from .tools import CLAUDE_TOOLS, handle_tool, validate_input
 
-_client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
+_client = None  # (key, klien); dibuat ulang kalau key diganti lewat /kunci
+
+
+def _anthropic():
+    global _client
+    if _client is None or _client[0] != config.ANTHROPIC_API_KEY:
+        _client = (config.ANTHROPIC_API_KEY, Anthropic(api_key=config.ANTHROPIC_API_KEY))
+    return _client[1]
 
 
 def _build_request(messages, memory_text):
@@ -35,7 +42,7 @@ def run_agent(messages, ctx):
 
     for _ in range(config.MAX_STEPS):
         try:
-            with _client.messages.stream(
+            with _anthropic().messages.stream(
                 **_build_request(messages, memory_text)
             ) as stream:
                 msg = stream.get_final_message()

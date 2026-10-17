@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
-from . import brain, config, updater
+from . import brain, config, keys, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -44,12 +44,19 @@ HELP = (
     "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
     "/claude — pakai otak Claude (Anthropic API, paling pintar)\n"
     "/lokal — pakai otak lokal (gratis, privat)\n"
+    "/kunci <key> — simpan API key Claude/OpenRouter (pesannya langsung kuhapus)\n"
     "/memori — lihat isi memori jangka panjang\n"
     "/hapus_memori — kosongkan memori\n"
     "/reset — mulai percakapan baru (lupakan konteks obrolan, memori tetap)\n"
     "/id — tampilkan user id Telegram-mu"
 )
 
+KUNCI_HELP = (
+    "Kirim API key dengan: /kunci <key>\n\n"
+    "Key Claude diawali sk-ant-, key OpenRouter diawali sk-or-. Pesanmu "
+    "langsung kuhapus, key diperiksa dulu ke penyedianya, lalu disimpan ke "
+    ".env dan langsung aktif. Key tidak pernah dibaca otak AI."
+)
 # Perintah Telegram untuk mengganti otak.
 _BRAIN_COMMANDS = {"/lokal": "ollama", "/cloud": "openrouter", "/claude": "claude"}
 # Pesan yang bukan teks (suara, foto, stiker, ...) belum bisa dibaca otaknya.
@@ -108,11 +115,11 @@ class App:
         if config.OPENROUTER_API_KEY:
             lines.append(f"/cloud — {brain.describe('openrouter')}")
         else:
-            lines.append("/cloud — belum aktif (jalankan setup lagi dan isi API key OpenRouter)")
+            lines.append("/cloud — belum aktif (kirim /kunci <key OpenRouter>)")
         if config.ANTHROPIC_API_KEY:
             lines.append(f"/claude — {brain.describe('claude')}")
         else:
-            lines.append("/claude — belum aktif (isi ANTHROPIC_API_KEY di .env lalu nyalakan ulang)")
+            lines.append("/claude — belum aktif (kirim /kunci <key Claude>)")
         if brain.current_backend() == "openrouter" and config.FALLBACK_LOCAL:
             lines += ["", "Kalau otak cloud tidak bisa dipakai, otak lokal otomatis menjawab."]
         if config.OPENROUTER_API_KEY and config.OPENROUTER_MODEL.endswith(":free"):
@@ -230,6 +237,55 @@ class App:
         reply = await self._think(chat_id, messages, ctx)
         await self.tg.send(chat_id, f"✅ Tugas latar selesai: {instruksi}\n\n{reply}")
 
+    # --- API key lewat chat (/kunci) ----------------------------------------
+    async def _save_key(self, chat_id, message):
+        """Simpan API key dari chat tanpa membiarkannya terbaca: pesannya
+        langsung dihapus, key diperiksa, disimpan ke .env, dan hanya
+        ditampilkan sebagian. Tidak pernah masuk riwayat atau log."""
+        parts = (message.get("text") or "").split()[1:]
+        if not parts:
+            await self.tg.send(chat_id, KUNCI_HELP)
+            return
+        deleted = await self.tg.delete_message(chat_id, message.get("message_id"))
+        note = "" if deleted else "\n\n⚠️ Pesanmu yang berisi key belum bisa kuhapus — hapus sendiri, ya."
+        key = next((p for p in parts if keys.detect(p)), None)
+        if key is None:
+            await self.tg.send(
+                chat_id,
+                "Key tidak dikenali. Key Claude diawali sk-ant-, key OpenRouter "
+                "diawali sk-or-. Contoh: /kunci sk-ant-…" + note,
+            )
+            return
+        kind = keys.detect(key)
+        name = keys.label(kind)
+        try:
+            await asyncio.to_thread(keys.verify, kind, key)
+        except keys.KeyRejected as exc:
+            await self.tg.send(chat_id, f"❌ {exc} Key tidak disimpan." + note)
+            return
+        except Exception as exc:  # noqa: BLE001 - mis. internet putus
+            # Hanya nama error-nya: pesan error lengkap tidak boleh membawa key ke log.
+            log.warning("API key %s belum bisa diperiksa: %s", name, type(exc).__name__)
+            await self.tg.send(
+                chat_id,
+                f"⚠️ Key {name} belum bisa diperiksa ({type(exc).__name__}). Cek "
+                "internet komputer lalu kirim lagi. Key tidak disimpan." + note,
+            )
+            return
+        try:
+            await asyncio.to_thread(keys.save, kind, key)
+        except OSError as exc:
+            await self.tg.send(chat_id, f"⚠️ Key {name} gagal disimpan ke .env: {exc.strerror or exc}" + note)
+            return
+        if brain.current_backend() == kind:
+            usage = f"Otak {name} sekarang memakai key ini."
+        else:
+            usage = f"Kirim {'/claude' if kind == 'claude' else '/cloud'} untuk memakainya."
+        await self.tg.send(
+            chat_id,
+            f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa, disimpan, dan langsung aktif. {usage}" + note,
+        )
+
     # --- penanganan pesan ---------------------------------------------------
     async def _handle_message(self, message):
         chat_id = message["chat"]["id"]
@@ -254,6 +310,11 @@ class App:
                 )
             return
 
+        if text.startswith("/kunci"):
+            # Ditangani di sini, sebelum riwayat obrolan & otak AI: key tidak
+            # boleh sampai ke model mana pun.
+            await self._save_key(chat_id, message)
+            return
         if text.startswith("/start") or text.startswith("/help"):
             await self.tg.send(chat_id, HELP)
             return

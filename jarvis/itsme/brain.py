@@ -29,13 +29,13 @@ def set_backend(name):
         raise ValueError(f"Otak '{name}' tidak dikenal.")
     if name == "openrouter" and not config.OPENROUTER_API_KEY:
         raise ValueError(
-            "Belum ada API key OpenRouter. Jalankan perintah setup lagi dan "
-            "tempel key-nya saat diminta."
+            "Belum ada API key OpenRouter. Kirim /kunci <key OpenRouter> "
+            "(pesannya langsung kuhapus), atau jalankan perintah setup lagi."
         )
     if name == "claude" and not config.ANTHROPIC_API_KEY:
         raise ValueError(
-            "Belum ada ANTHROPIC_API_KEY di .env. Isi dulu di komputer (jangan "
-            "kirim key lewat chat), lalu nyalakan ulang It's Me."
+            "Belum ada ANTHROPIC_API_KEY. Kirim /kunci <key Claude> (pesannya "
+            "langsung kuhapus), atau isi di .env lalu nyalakan ulang It's Me."
         )
     _state["backend"] = name
 

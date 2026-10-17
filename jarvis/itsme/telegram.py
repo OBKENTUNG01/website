@@ -96,6 +96,18 @@ class Telegram:
         except httpx.HTTPError:
             pass
 
+    async def delete_message(self, chat_id, message_id):
+        """Hapus pesan; True kalau berhasil. Di chat pribadi bot boleh menghapus
+        pesan dari lawan bicaranya (selama umurnya belum 48 jam)."""
+        try:
+            r = await self._client.post(
+                f"{self._base}/deleteMessage",
+                json={"chat_id": chat_id, "message_id": message_id},
+            )
+            return bool(r.json().get("ok"))
+        except (httpx.HTTPError, ValueError):
+            return False
+
     async def edit_markup(self, chat_id, message_id, reply_markup=None):
         payload = {"chat_id": chat_id, "message_id": message_id}
         payload["reply_markup"] = json.dumps(reply_markup or {"inline_keyboard": []})

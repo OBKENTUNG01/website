@@ -24,6 +24,7 @@ class FakeTelegram:
         self.markups = []
         self.incoming = []  # batch update yang akan dikembalikan get_updates
         self.acked = False
+        self.deleted = []
 
     async def send(self, chat_id, text, reply_markup=None):
         self.sent.append((chat_id, text, reply_markup))
@@ -37,6 +38,10 @@ class FakeTelegram:
 
     async def edit_markup(self, chat_id, message_id, reply_markup=None):
         self.markups.append(message_id)
+
+    async def delete_message(self, chat_id, message_id):
+        self.deleted.append((chat_id, message_id))
+        return True
 
     async def close(self):
         pass
@@ -188,6 +193,72 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
             await self.app._handle_message(self._msg("/claude"))
             self.assertEqual(main.brain.current_backend(), "ollama")
         self.assertIn("ANTHROPIC_API_KEY", self.tg.sent[-1][1])
+
+    # --- API key lewat chat ----------------------------------------------------
+    KEY = "sk-ant-api03-" + "x" * 40 + "a1b2"
+
+    def _keys_patched(self, **verify):
+        stack = contextlib.ExitStack()
+        self.env = os.path.join(self.dir, ".env")
+        with open(self.env, "w", encoding="utf-8") as f:
+            f.write("TELEGRAM_BOT_TOKEN=t\n# ANTHROPIC_API_KEY=\n")
+        stack.enter_context(mock.patch.object(main.keys, "ENV_FILE", self.env))
+        stack.enter_context(mock.patch.object(config, "ANTHROPIC_API_KEY", None))
+        stack.enter_context(mock.patch.object(main.keys, "verify", **verify))
+        stack.enter_context(mock.patch.dict(main.brain._state, {"backend": "ollama"}))
+        stack.enter_context(mock.patch.object(main, "run_agent", side_effect=AssertionError("key sampai ke otak AI")))
+        return stack
+
+    def _texts(self):
+        return [t for _, t, _ in self.tg.sent]
+
+    async def test_key_saved_deleted_and_never_shown(self):
+        with self._keys_patched(return_value=None):
+            await self.app._handle_message(self._msg(f"/kunci {self.KEY}", message_id=55))
+            self.assertEqual(config.ANTHROPIC_API_KEY, self.KEY)  # langsung aktif
+            await self.app._handle_message(self._msg("/claude"))
+            self.assertEqual(main.brain.current_backend(), "claude")
+        self.assertEqual(self.tg.deleted, [(7, 55)])
+        with open(self.env, encoding="utf-8") as f:
+            self.assertEqual(f.read(), f"TELEGRAM_BOT_TOKEN=t\nANTHROPIC_API_KEY={self.KEY}\n")
+        self.assertIn("sk-ant-…a1b2", self._texts()[0])
+        self.assertFalse(any(self.KEY in t for t in self._texts()))
+        self.assertNotIn(7, self.app.histories)  # tidak masuk riwayat obrolan
+
+    async def test_rejected_key_not_saved(self):
+        with self._keys_patched(side_effect=main.keys.KeyRejected("Anthropic menolak key ini.")):
+            await self.app._handle_message(self._msg(f"/kunci {self.KEY}", message_id=56))
+            self.assertIsNone(config.ANTHROPIC_API_KEY)
+        self.assertEqual(self.tg.deleted, [(7, 56)])  # tetap dihapus
+        self.assertIn("tidak disimpan", self._texts()[-1])
+        with open(self.env, encoding="utf-8") as f:
+            self.assertNotIn(self.KEY, f.read())
+
+    async def test_unchecked_key_not_saved(self):
+        with self._keys_patched(side_effect=OSError("internet putus")):
+            await self.app._handle_message(self._msg(f"/kunci {self.KEY}", message_id=57))
+            self.assertIsNone(config.ANTHROPIC_API_KEY)
+        self.assertIn("belum bisa diperiksa", self._texts()[-1])
+
+    async def test_unknown_key_deleted_anyway(self):
+        with self._keys_patched(return_value=None):
+            await self.app._handle_message(self._msg("/kunci rahasia-lain-12345678901234567890", message_id=58))
+        self.assertEqual(self.tg.deleted, [(7, 58)])
+        self.assertIn("tidak dikenali", self._texts()[-1])
+
+    async def test_kunci_without_key_explains(self):
+        await self.app._handle_message(self._msg("/kunci"))
+        self.assertEqual(self.tg.deleted, [])
+        self.assertIn("/kunci <key>", self._texts()[-1])
+
+    async def test_key_from_stranger_ignored(self):
+        with self._keys_patched(return_value=None):
+            message = self._msg(f"/kunci {self.KEY}", message_id=59)
+            message["from"] = {"id": 999}
+            await self.app._handle_message(message)
+            self.assertIsNone(config.ANTHROPIC_API_KEY)
+        self.assertEqual(self.tg.deleted, [])
+        self.assertEqual(self.tg.sent, [])
 
     # --- pembaruan otomatis ---------------------------------------------------
     def _updates_patched(self, **check):
