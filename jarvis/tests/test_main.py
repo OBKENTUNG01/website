@@ -212,6 +212,42 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
             await self.app._handle_message(self._msg("/claude"))
             self.assertEqual(main.brain.current_backend(), "claude")
 
+    # --- mode akses -------------------------------------------------------------
+    async def _press(self, answer):
+        """Tekan tombol konfirmasi pertama yang muncul."""
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if self.app.pending:
+                break
+        cid = next(iter(self.app.pending))
+        await self.app._handle_callback({"id": "c", "data": f"{'ok' if answer else 'no'}:{cid}", "from": {"id": 42}})
+
+    async def test_full_access_needs_a_yes_and_can_be_turned_off(self):
+        self.assertFalse(self.app._ctx_for(7)["full_access"])
+        task = asyncio.create_task(self.app._handle_message(self._msg("/akses_penuh")))
+        await self._press(False)
+        await task
+        self.assertFalse(main.access.full())  # Batal = tetap aman
+
+        task = asyncio.create_task(self.app._handle_message(self._msg("/akses_penuh")))
+        await self._press(True)
+        await task
+        self.assertTrue(main.access.full())
+        self.assertTrue(self.app._ctx_for(7)["full_access"])
+        await self.app._handle_message(self._msg("/akses"))
+        self.assertIn("penuh", self.tg.sent[-1][1])
+
+        await self.app._handle_message(self._msg("/akses_aman"))
+        self.assertFalse(main.access.full())
+        self.assertIn("aman", self.tg.sent[-1][1])
+
+    async def test_full_access_reports_actions_in_chat(self):
+        ctx = self.app._ctx_for(7)
+        await asyncio.to_thread(ctx["notify"], "Jalankan perintah ini?\n\nmkdir baru")
+        self.assertEqual(self.tg.sent[-1][0], 7)
+        self.assertIn("mkdir baru", self.tg.sent[-1][1])
+        self.assertNotIn("Jalankan perintah ini?", self.tg.sent[-1][1])
+
     # --- API key lewat chat ----------------------------------------------------
     KEY = "sk-ant-api03-" + "x" * 40 + "a1b2"
 

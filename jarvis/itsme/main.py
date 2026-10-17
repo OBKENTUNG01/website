@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
-from . import brain, config, keys, updater
+from . import access, brain, config, keys, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -46,6 +46,9 @@ HELP = (
     "/claude — pakai otak Claude (Anthropic API, paling pintar)\n"
     "/lokal — pakai otak lokal (gratis, privat)\n"
     "/kunci <key> — simpan API key atau token akun Claude (pesannya langsung kuhapus)\n"
+    "/akses — lihat mode akses (aman/penuh)\n"
+    "/akses_penuh — langsung bertindak tanpa tombol (berkas rahasia tetap dijaga)\n"
+    "/akses_aman — kembali minta tombol untuk aksi yang mengubah sesuatu\n"
     "/memori — lihat isi memori jangka panjang\n"
     "/hapus_memori — kosongkan memori\n"
     "/reset — mulai percakapan baru (lupakan konteks obrolan, memori tetap)\n"
@@ -58,6 +61,16 @@ KUNCI_HELP = (
     "diawali sk-ant-oat, key OpenRouter diawali sk-or-. Pesanmu langsung "
     "kuhapus, key diperiksa dulu ke penyedianya, lalu disimpan ke .env dan "
     "langsung aktif. Key tidak pernah dibaca otak AI."
+)
+ACCESS_WARNING = (
+    "Aktifkan akses penuh?\n\n"
+    "Semua perintah, baca/tulis berkas, deploy, dan memori langsung jalan tanpa "
+    "tombol; aksi yang mengubah sesuatu tetap kukabari di chat.\n\n"
+    "Tetap dijaga: berkas rahasia (password, token, kunci, login aplikasi & "
+    "browser) selalu ditolak, dan perintah yang menyebutnya tetap ditanyakan.\n\n"
+    "Risikonya: siapa pun yang bisa membuka Telegram-mu bisa mengendalikan "
+    "komputer ini, dan perintah tersembunyi di halaman web bisa ikut dijalankan. "
+    "Matikan kapan saja dengan /akses_aman."
 )
 # Perintah Telegram untuk mengganti otak, dan perintah yang memakai tiap jenis key.
 _BRAIN_COMMANDS = {
@@ -132,6 +145,7 @@ class App:
             lines.append(f"/claudepc — {brain.describe('claude_code')}")
         else:
             lines.append("/claudepc — belum login (kirim /claudepc untuk caranya)")
+        lines += ["", self._access_status()]
         if brain.current_backend() == "openrouter" and config.FALLBACK_LOCAL:
             lines += ["", "Kalau otak cloud tidak bisa dipakai, otak lokal otomatis menjawab."]
         if config.OPENROUTER_API_KEY and config.OPENROUTER_MODEL.endswith(":free"):
@@ -145,6 +159,18 @@ class App:
                     f"(baru lagi pukul {reset_time_text()}).",
                 ]
         return "\n".join(lines)
+
+    @staticmethod
+    def _access_status():
+        if access.full():
+            return (
+                "Akses: 🔓 penuh — langsung bertindak tanpa tombol, berkas rahasia "
+                "tetap dijaga. /akses_aman untuk kembali minta tombol."
+            )
+        return (
+            "Akses: 🔒 aman — aksi yang mengubah sesuatu dan membaca di luar folder "
+            "website minta tombol Ya. /akses_penuh untuk langsung bertindak."
+        )
 
     def _lock(self, chat_id):
         if chat_id not in self.chat_locks:
@@ -162,6 +188,8 @@ class App:
             "website_dir": config.WEBSITE_REPO_DIR or None,
             "memory": self.memory,
             "confirm": lambda text: self._confirm_blocking(chat_id, text),
+            "notify": lambda text: self._notify_blocking(chat_id, text),
+            "full_access": access.full(),
             "schedule_background": lambda instr: self._schedule_background(
                 chat_id, instr
             ),
@@ -210,6 +238,17 @@ class App:
         except Exception:  # noqa: BLE001
             log.exception("konfirmasi gagal")
             return False
+
+    def _notify_blocking(self, chat_id, text):
+        """Kabari pemilik tentang aksi yang langsung dijalankan (akses penuh)."""
+        detail = text.split("\n\n", 1)[-1]  # tanpa baris pertanyaannya
+        fut = asyncio.run_coroutine_threadsafe(
+            self.tg.send(chat_id, f"🔓 Langsung kujalankan (akses penuh):\n\n{detail}"), self.loop
+        )
+        try:
+            fut.result(timeout=30)
+        except Exception:  # noqa: BLE001 - kabar gagal tidak boleh menghentikan pekerjaan
+            log.exception("kabar akses penuh gagal dikirim")
 
     async def _ask_confirm(self, chat_id, text):
         cid = uuid.uuid4().hex[:12]
@@ -327,6 +366,28 @@ class App:
             # boleh sampai ke model mana pun.
             await self._save_key(chat_id, message)
             return
+        # Kata perintahnya utuh: "/claudepc" bukan "/claude", "/akses_penuh" bukan "/akses".
+        command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        if command == "/akses":
+            await self.tg.send(chat_id, self._access_status())
+            return
+        if command == "/akses_penuh":
+            if access.full():
+                await self.tg.send(chat_id, "Akses penuh sudah aktif. /akses_aman untuk mematikannya.")
+            elif await self._ask_confirm(chat_id, ACCESS_WARNING):
+                access.set_full(True)
+                await self.tg.send(
+                    chat_id,
+                    "🔓 Akses penuh aktif. Aku langsung bertindak tanpa tombol dan "
+                    "mengabarimu setiap kali mengubah sesuatu. /akses_aman untuk mematikan.",
+                )
+            else:
+                await self.tg.send(chat_id, "Oke, tetap di akses aman.")
+            return
+        if command == "/akses_aman":
+            access.set_full(False)
+            await self.tg.send(chat_id, "🔒 Kembali ke akses aman: aksi yang mengubah sesuatu minta tombol Ya lagi.")
+            return
         if text.startswith("/start") or text.startswith("/help"):
             await self.tg.send(chat_id, HELP)
             return
@@ -349,8 +410,6 @@ class App:
                 self.memory.clear()
                 await self.tg.send(chat_id, "Memori sudah dikosongkan.")
             return
-        # Cocokkan kata perintahnya utuh: "/claudepc" bukan "/claude".
-        command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
         target = _BRAIN_COMMANDS.get(command)
         if target:
             try:

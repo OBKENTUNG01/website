@@ -18,8 +18,10 @@ halaman web yang aneh tidak bisa menyuruh bot mengirim datamu ke mana-mana.
 """
 
 import os
+import re
 import shlex
 import subprocess
+import sys
 
 from . import web
 
@@ -228,10 +230,20 @@ def validate_input(name, tool_input):
 # --- berkas ----------------------------------------------------------------------
 _SECRET_NAMES = {
     ".env", ".git-credentials", ".netrc", "_netrc", ".npmrc", ".pypirc",
-    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", ".credentials.json",
+    # Login & cookie browser (Chrome/Edge/aplikasi Electron, Firefox).
+    "cookies", "cookies-journal", "login data", "login data-journal", "web data",
+    "web data-journal", "local state", "logins.json", "key3.db", "key4.db", "cookies.sqlite",
 }
 _SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".kdbx", ".ppk")
-_SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube"}
+_SECRET_DIRS = {".ssh", ".gnupg", ".aws", ".azure", ".kube", "local storage", "session storage", "indexeddb"}
+# Berkas data yang namanya jelas menyebut rahasia (client_secret.json,
+# buddy-tokens.json, passwords.txt, ...). Kode seperti token.php tetap boleh.
+_SECRET_WORDS = ("secret", "token", "password", "credential")
+_SECRET_WORD_EXTS = ("", ".json", ".txt", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".xml", ".db")
+# Di folder data aplikasi Claude (...\Roaming\Claude) hanya riwayat sesi dan
+# folder kerja yang boleh dibaca; sisanya login, token, dan cookie aplikasi.
+_CLAUDE_APP_READABLE = {"claude-code-sessions", "local-agent-mode-sessions", "scratch-workspaces"}
 
 
 def is_secret_path(path):
@@ -244,7 +256,52 @@ def is_secret_path(path):
         return True
     if name.startswith(".env") and name != ".env.example":
         return True
-    return any(p in _SECRET_DIRS for p in parts[:-1])
+    if any(w in name for w in _SECRET_WORDS) and os.path.splitext(name)[1] in _SECRET_WORD_EXTS:
+        return True
+    if any(p in _SECRET_DIRS for p in parts[:-1]):
+        return True
+    # Folder data Claude Code / aplikasi Claude itu sendiri (dibaca utuh = ikut rahasianya).
+    if name == ".claude" or (name == "claude" and len(parts) > 1 and parts[-2] == "roaming"):
+        return True
+    for i, part in enumerate(parts[:-1]):
+        # ~/.claude milik Claude Code: hanya riwayat proyek (projects/) yang boleh.
+        if part == ".claude" and parts[i + 1] != "projects":
+            return True
+        if part == "claude" and i > 0 and parts[i - 1] == "roaming" and parts[i + 1] not in _CLAUDE_APP_READABLE:
+            return True
+    return False
+
+
+def too_broad_to_search(path):
+    """True kalau mencari isi berkas di folder ini bisa ikut menyedot data
+    login aplikasi & browser sekaligus: seluruh folder home, satu drive, atau
+    folder data aplikasi (AppData; Library di macOS) — kecuali riwayat sesi Claude."""
+    full = os.path.normpath(os.path.abspath(path))
+    parts = [p.lower() for p in full.replace("\\", "/").split("/") if p]
+    if len(parts) <= 1 or full == os.path.normpath(os.path.expanduser("~")):
+        return True
+    app_data = "appdata" in parts or (sys.platform == "darwin" and "library" in parts)
+    return app_data and not any(p in _CLAUDE_APP_READABLE for p in parts)
+
+
+def mentions_secret(command):
+    """True kalau perintah menyebut berkas rahasia (mis. Get-Content .env)."""
+    words = re.split(r"[\s'\"`;|&,()<>=]+", command or "")
+    return any(w and is_secret_path(w) for w in words)
+
+
+def approve(ctx, text, always_ask=False):
+    """Izin pemilik untuk aksi yang mengubah sesuatu.
+
+    Mode akses penuh: langsung jalan, pemilik dikabari lewat ctx["notify"].
+    Selain itu (atau always_ask): tombol Ya/Batal di Telegram.
+    """
+    if ctx.get("full_access") and not always_ask:
+        notify = ctx.get("notify")
+        if notify:
+            notify(text)
+        return True
+    return ctx["confirm"](text)
 
 
 def _inside(path, base):
@@ -371,7 +428,7 @@ def _deploy(ctx, pesan):
             + "\nTambahkan berkas itu ke .gitignore dulu."
         )
     daftar = "\n".join(paths[:30]) + (f"\n…(+{len(paths) - 30} berkas lagi)" if len(paths) > 30 else "")
-    if not ctx["confirm"](f"Deploy website sekarang?\n\nCommit: {pesan}\n\nBerkas yang ikut:\n{daftar}"):
+    if not approve(ctx, f"Deploy website sekarang?\n\nCommit: {pesan}\n\nBerkas yang ikut:\n{daftar}"):
         return "Dibatalkan oleh pemilik."
     # Argumen berupa list, tanpa shell: pesan commit tidak akan pernah
     # dieksekusi sebagai perintah, apa pun isinya.
@@ -399,9 +456,10 @@ def _deploy(ctx, pesan):
 def handle_tool(name, tool_input, ctx):
     """Jalankan satu alat klien dan kembalikan hasilnya sebagai teks.
 
-    ctx berisi: website_dir, memory, confirm(teks)->bool,
-    schedule_background(instruksi)->str, seen_urls (set alamat yang boleh
-    langsung dibuka), dan in_background (True di dalam tugas latar).
+    ctx berisi: website_dir, memory, confirm(teks)->bool, notify(teks),
+    full_access (mode akses penuh), schedule_background(instruksi)->str,
+    seen_urls (set alamat yang boleh langsung dibuka), dan in_background
+    (True di dalam tugas latar).
     """
     try:
         if name == "jalankan_perintah":
@@ -413,7 +471,8 @@ def handle_tool(name, tool_input, ctx):
                 teks = f"Jalankan perintah ini?\n\n{perintah}"
                 if alasan:
                     teks += f"\n\nAlasan: {alasan}"
-                if not ctx["confirm"](teks):
+                # Perintah yang menyebut berkas rahasia selalu ditanyakan.
+                if not approve(ctx, teks, always_ask=mentions_secret(perintah)):
                     return "Dibatalkan oleh pemilik."
             return _run(perintah, ctx.get("website_dir"))[1]
 
@@ -422,7 +481,7 @@ def handle_tool(name, tool_input, ctx):
             if is_secret_path(path):
                 return "Ditolak: berkas itu biasanya berisi rahasia (token, password, kunci)."
             base = ctx.get("website_dir")
-            if not (base and _inside(path, base)):
+            if not (base and _inside(path, base)) and not ctx.get("full_access"):
                 if not ctx["confirm"](f"Baca berkas di luar folder website?\n\n{path}"):
                     return "Dibatalkan oleh pemilik."
             with open(path, encoding="utf-8", errors="replace") as f:
@@ -438,7 +497,7 @@ def handle_tool(name, tool_input, ctx):
                 f"Tulis berkas ini? ({keadaan}, {len(isi)} karakter)\n\n{path}\n\n"
                 f"Isi:\n{_preview(isi)}"
             )
-            if not ctx["confirm"](teks):
+            if not approve(ctx, teks):
                 return "Dibatalkan oleh pemilik."
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -455,7 +514,7 @@ def handle_tool(name, tool_input, ctx):
         if name == "baca_halaman":
             url = tool_input.get("url", "").strip()
             seen = ctx.get("seen_urls")
-            if seen is None or url not in seen:
+            if (seen is None or url not in seen) and not ctx.get("full_access"):
                 if not ctx["confirm"](f"Buka halaman ini?\n\n{url}"):
                     return "Dibatalkan oleh pemilik."
             return web.fetch(url)
@@ -464,7 +523,7 @@ def handle_tool(name, tool_input, ctx):
             catatan = tool_input.get("catatan", "").strip()
             if not catatan:
                 return "Catatan kosong, tidak disimpan."
-            if not ctx["confirm"](f"Simpan ke memori jangka panjang?\n\n{_preview(catatan, 1000)}"):
+            if not approve(ctx, f"Simpan ke memori jangka panjang?\n\n{_preview(catatan, 1000)}"):
                 return "Dibatalkan oleh pemilik."
             return ctx["memory"].add(catatan)
 

@@ -78,8 +78,9 @@ def load_sdk():
 
 
 # --- aturan alat ------------------------------------------------------------------
-def _ask(ctx, text):
-    if ctx["confirm"](text):
+def _ask(ctx, text, always_ask=False):
+    """Mode akses penuh: langsung jalan (pemilik dikabari); selain itu tombol."""
+    if tools.approve(ctx, text, always_ask):
         return True, None
     return False, "Dibatalkan oleh pemilik."
 
@@ -105,14 +106,20 @@ def decide(name, inp, ctx, cwd):
         text = f"Jalankan perintah ini?\n\n{command}"
         if inp.get("description"):
             text += f"\n\nAlasan: {inp['description']}"
-        return _ask(ctx, text)
+        # Perintah yang menyebut berkas rahasia selalu ditanyakan, juga di akses penuh.
+        return _ask(ctx, text, always_ask=tools.mentions_secret(command))
     path = inp.get("file_path") or inp.get("notebook_path") or inp.get("path") or cwd
     path = path if os.path.isabs(path) else os.path.join(cwd, path)
     if tools.is_secret_path(path):
         return False, "Ditolak: berkas itu biasanya berisi rahasia (token, password, kunci)."
+    if name == "Grep" and tools.too_broad_to_search(path):
+        return False, (
+            "Ditolak: pencarian di folder ini terlalu luas (ikut berisi data login "
+            "aplikasi & browser). Cari di folder proyek yang lebih spesifik."
+        )
     if name in _READ:
         base = ctx.get("website_dir")
-        if base and tools._inside(path, base):
+        if ctx.get("full_access") or (base and tools._inside(path, base)):
             return True, None
         return _ask(ctx, f"Baca berkas di luar folder website?\n\n{path}")
     if name in _WRITE:

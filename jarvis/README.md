@@ -240,10 +240,40 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/claude` | Pakai otak Claude (Anthropic API, butuh `ANTHROPIC_API_KEY` di `.env`) |
 | `/lokal` | Pakai otak lokal (Ollama) |
 | `/kunci <key>` | Simpan API key Claude (`sk-ant-…`), token akun Claude (`sk-ant-oat…`), atau key OpenRouter (`sk-or-…`); pesannya langsung dihapus |
+| `/akses` | Lihat mode akses: 🔒 aman (bawaan) atau 🔓 penuh |
+| `/akses_penuh` | Langsung bertindak tanpa tombol ([lihat di bawah](#akses-penuh-akses_penuh)) |
+| `/akses_aman` | Kembali minta tombol "Ya" untuk aksi yang mengubah sesuatu |
 | `/memori` | Lihat isi memori jangka panjang |
 | `/hapus_memori` | Kosongkan memori (minta konfirmasi) |
 | `/reset` | Mulai percakapan baru (memori tetap) |
 | `/id` | Tampilkan user id Telegram-mu |
+
+### Akses penuh (`/akses_penuh`)
+
+Bawaannya It's Me memakai **akses aman**: aksi yang mengubah sesuatu, membaca
+berkas di luar folder website, dan membuka alamat web baru menunggu tombol "Ya".
+Kirim `/akses_penuh` (lalu tekan "Ya") supaya It's Me **langsung bertindak**:
+membaca berkas di mana saja, menjalankan perintah, menulis berkas, deploy, dan
+menyimpan memori tanpa tombol. Setiap aksi yang mengubah sesuatu tetap
+dikabarkan di chat. Mode ini tersimpan, jadi tetap berlaku setelah It's Me
+menyala ulang; matikan kapan saja dengan `/akses_aman`.
+
+Yang **tetap dijaga** di akses penuh: berkas rahasia (password, token, kunci,
+`.env`, login & cookie browser, serta login aplikasi Claude di `~/.claude` dan
+folder data aplikasi Claude) selalu ditolak; perintah yang menyebut berkas
+seperti itu tetap ditanyakan; dan pencarian isi berkas di seluruh folder home
+atau AppData ditolak karena bisa ikut menyedot data login aplikasi.
+
+Risikonya: siapa pun yang bisa membuka Telegram-mu bisa mengendalikan komputer
+ini — aktifkan verifikasi dua langkah Telegram — dan perintah tersembunyi di
+halaman web bisa ikut dijalankan tanpa kamu sempat menolak.
+
+Otak `/claudepc` juga diberi tahu letak pekerjaanmu: isi percakapan Claude Code
+di `~/.claude/projects`, daftar sesi aplikasi Claude desktop (judul, ringkasan,
+folder proyek), dan sesi yang terakhir kamu pakai. Jadi pertanyaan seperti
+"lanjutkan pekerjaan website toko kemarin" langsung dicari di tempat yang benar.
+Obrolan di claude.ai (web/HP) tersimpan di akun, bukan di komputer, jadi tidak
+bisa dibaca dari sini.
 
 ### Mengirim API key lewat Telegram (`/kunci`)
 

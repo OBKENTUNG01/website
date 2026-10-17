@@ -177,6 +177,42 @@ def main():
         reply = asyncio.run(ask(history))
         check("tulis berkas setelah tombol Ya", os.path.exists(target) and "halo dari claude" in (confirm.call_args[0][0] if confirm.call_args else ""), reply[:200])
 
+        # --- akses penuh ---------------------------------------------------------
+        notes = []
+        ctx.update(full_access=True, notify=notes.append)
+        confirm.reset_mock()
+        confirm.return_value = False  # kalau sampai ditanya, jawabannya Batal
+
+        history.append({"role": "user", "content": "buat folder"})
+        folder = os.path.join(site, "baru")
+        SCENARIO["issued"] = None
+        SCENARIO["tool"] = ("SHELL", {"command": f'mkdir "{folder}"'})
+        reply = asyncio.run(ask(history))
+        check("akses penuh: perintah langsung jalan tanpa tombol", os.path.isdir(folder) and confirm.call_count == 0, reply[:200])
+        check("akses penuh: pemilik dikabari perintahnya", bool(notes) and "mkdir" in notes[-1], str(notes))
+
+        work = os.path.join(tempfile.mkdtemp(prefix="itsme-kerjaan-"), "laporan.txt")
+        with open(work, "w") as f:
+            f.write("LAPORAN-PENJUALAN-OKTOBER")
+        history.append({"role": "user", "content": "baca laporan"})
+        before = len(notes)
+        SCENARIO["issued"] = None
+        SCENARIO["tool"] = ("Read", {"file_path": work})
+        reply = asyncio.run(ask(history))
+        check("akses penuh: baca di mana saja tanpa tombol & tanpa kabar", "LAPORAN-PENJUALAN-OKTOBER" in reply and confirm.call_count == 0 and len(notes) == before, reply[:200])
+
+        history.append({"role": "user", "content": "cari token di semua folder"})
+        SCENARIO["issued"] = None
+        SCENARIO["tool"] = ("Grep", {"pattern": "token", "path": os.path.expanduser("~")})
+        reply = asyncio.run(ask(history))
+        check("akses penuh: pencarian di seluruh home ditolak", "terlalu luas" in reply, reply[:200])
+
+        history.append({"role": "user", "content": "tampilkan .env"})
+        SCENARIO["issued"] = None
+        SCENARIO["tool"] = ("SHELL", {"command": f'Get-Content "{os.path.join(site, ".env")}"'})
+        reply = asyncio.run(ask(history))
+        check("akses penuh: perintah yang menyebut .env tetap ditanyakan", confirm.call_count == 1 and "Dibatalkan" in reply and "jangan-dibaca" not in reply, reply[:200])
+
     check("Claude Code memakai folder sesi It's Me sendiri", os.path.isdir(os.path.join(data, "claude")))
     server.shutdown()
     print("\nSEMUA LULUS" if not failures else f"\n{len(failures)} GAGAL")

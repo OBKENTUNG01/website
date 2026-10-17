@@ -90,6 +90,85 @@ class SecretPathTest(unittest.TestCase):
         for path in ("index.html", "jarvis/.env.example", "src/app.py", "README.md"):
             self.assertFalse(tools.is_secret_path(path), path)
 
+    APP = r"C:\Users\x\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude"
+
+    def test_login_of_claude_and_browsers_is_secret(self):
+        for path in (
+            r"C:\Users\x\.claude\.credentials.json", r"C:\Users\x\.claude\settings.json",
+            r"C:\Users\x\.claude\session-env\abc", r"C:\Users\x\.claude",
+            self.APP, self.APP + r"\buddy-tokens.json", self.APP + r"\config.json",
+            self.APP + r"\claude_desktop_config.json", self.APP + r"\Local Storage\leveldb\000003.log",
+            r"C:\Users\x\AppData\Roaming\Claude\Network\Cookies",
+            r"C:\Users\x\AppData\Local\Google\Chrome\User Data\Default\Login Data",
+            r"C:\Users\x\AppData\Local\Google\Chrome\User Data\Local State",
+            "client_secret.json", "passwords.txt", "api-tokens.json",
+        ):
+            self.assertTrue(tools.is_secret_path(path), path)
+
+    def test_owner_work_history_is_readable(self):
+        for path in (
+            r"C:\Users\x\.claude\projects\C--Users-x-proyek\abc.jsonl",
+            self.APP + r"\claude-code-sessions\a\b\local_123.json",
+            r"C:\Users\x\AppData\Roaming\Claude\scratch-workspaces\s\index.php",
+            r"C:\Users\x\Downloads\Compressed\domains\token.php",
+        ):
+            self.assertFalse(tools.is_secret_path(path), path)
+
+    def test_command_naming_a_secret(self):
+        self.assertTrue(tools.mentions_secret(r"Get-Content C:\Users\x\ItsMe\.env"))
+        self.assertTrue(tools.mentions_secret(f'Get-ChildItem "{self.APP}"'))
+        self.assertFalse(tools.mentions_secret(r"Get-ChildItem C:\Users\x\Downloads -Recurse"))
+
+    def test_searching_everything_at_once_is_too_broad(self):
+        home = os.path.expanduser("~")
+        for path in (home, "C:\\", os.path.join(home, "AppData", "Local")):
+            self.assertTrue(tools.too_broad_to_search(path), path)
+        for path in (os.path.join(home, "Downloads", "proyek"), os.path.join(home, ".claude", "projects"),
+                     self.APP + r"\claude-code-sessions"):
+            self.assertFalse(tools.too_broad_to_search(path), path)
+
+
+class FullAccessTest(unittest.TestCase):
+    """Mode akses penuh: langsung jalan dan dikabari; rahasia tetap dijaga."""
+
+    def setUp(self):
+        self.outside = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.outside, ignore_errors=True)
+        self.notes = []
+        self.ctx = FakeCtx(website_dir=None, answer=False, full_access=True, notify=self.notes.append)
+
+    def test_command_runs_without_button_and_owner_is_told(self):
+        with mock.patch.object(tools, "_run", return_value=(0, "selesai")) as run:
+            out = tools.handle_tool("jalankan_perintah", {"perintah": "mkdir baru"}, self.ctx)
+        self.assertEqual(out, "selesai")
+        run.assert_called_once()
+        self.assertEqual(self.ctx.asked, [])
+        self.assertIn("mkdir baru", self.notes[0])
+
+    def test_command_naming_a_secret_still_asks(self):
+        with mock.patch.object(tools, "_run", return_value=(0, "isi")) as run:
+            out = tools.handle_tool("jalankan_perintah", {"perintah": "type C:\\ItsMe\\.env"}, self.ctx)
+        self.assertEqual(out, "Dibatalkan oleh pemilik.")
+        run.assert_not_called()
+        self.assertEqual(len(self.ctx.asked), 1)
+
+    def test_reads_anywhere_silently_but_not_secrets(self):
+        path = os.path.join(self.outside, "kerjaan.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("laporan")
+        self.assertEqual(tools.handle_tool("baca_berkas", {"path": path}, self.ctx), "laporan")
+        self.assertEqual((self.ctx.asked, self.notes), ([], []))
+        secret = os.path.join(self.outside, ".env")
+        self.assertIn("Ditolak", tools.handle_tool("baca_berkas", {"path": secret}, self.ctx))
+
+    def test_safe_mode_still_asks(self):
+        safe = FakeCtx(website_dir=None, answer=False, notify=self.notes.append)
+        with mock.patch.object(tools, "_run") as run:
+            tools.handle_tool("jalankan_perintah", {"perintah": "mkdir baru"}, safe)
+        run.assert_not_called()
+        self.assertEqual(len(safe.asked), 1)
+        self.assertEqual(self.notes, [])
+
 
 class FileToolsTest(unittest.TestCase):
     def setUp(self):

@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib.util
+import json
 import os
 import shutil
 import tempfile
@@ -69,6 +70,47 @@ class DecideTest(unittest.TestCase):
         allowed, _ = self.decide("mcp__lain__hapus_semua", {"x": 1})
         self.assertFalse(allowed)
         self.assertIn("mcp__lain__hapus_semua", self.confirm.call_args[0][0])
+
+    def test_search_of_whole_home_or_appdata_refused(self):
+        for path in (os.path.expanduser("~"), os.path.join(os.path.expanduser("~"), "AppData")):
+            allowed, reason = self.decide("Grep", {"pattern": "token", "path": path})
+            self.assertFalse(allowed, path)
+            self.assertIn("terlalu luas", reason)
+        self.confirm.assert_not_called()
+
+    def test_full_access_acts_without_buttons_and_reports(self):
+        notes = []
+        self.ctx.update(full_access=True, notify=notes.append)
+        self.confirm.return_value = False
+        outside = os.path.join(os.path.dirname(self.site), "kerjaan", "laporan.txt")
+        self.assertEqual(self.decide("Read", {"file_path": outside}), (True, None))
+        self.assertEqual(self.decide("PowerShell", {"command": "New-Item -Type Directory baru"}), (True, None))
+        self.assertEqual(self.decide("Write", {"file_path": outside, "content": "isi"}), (True, None))
+        self.confirm.assert_not_called()
+        self.assertEqual(len(notes), 2)  # perintah & tulis dikabari; membaca tidak
+        self.assertIn("New-Item", notes[0])
+        # Rahasia tetap dijaga di akses penuh.
+        self.assertFalse(self.decide("Read", {"file_path": os.path.join(self.site, ".env")})[0])
+        allowed, _ = self.decide("PowerShell", {"command": f"Get-Content {os.path.join(self.site, '.env')}"})
+        self.assertFalse(allowed)  # ditanyakan, dan pemilik menjawab Batal
+        self.confirm.assert_called_once()
+
+    def test_owner_work_listed_for_claude(self):
+        from itsme import persona
+
+        appdata = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, appdata, ignore_errors=True)
+        sessions = os.path.join(appdata, "Claude", "claude-code-sessions", "a", "b")
+        os.makedirs(os.path.join(sessions, "deleted_x"))
+        sample = {"title": "Website toko", "cwd": r"C:\proyek\toko", "lastActivityAt": 1792046672876, "isArchived": False}
+        for folder, title in ((sessions, "Website toko"), (os.path.join(sessions, "deleted_x"), "Sudah dihapus")):
+            with open(os.path.join(folder, "local_1.json" if title == "Website toko" else "local_2.json"), "w", encoding="utf-8") as f:
+                json.dump(dict(sample, title=title), f)
+        with mock.patch.dict(os.environ, {"APPDATA": appdata, "LOCALAPPDATA": appdata}):
+            text = persona.claude_code_prompt("")
+        self.assertIn(os.path.join(os.path.expanduser("~"), ".claude", "projects"), text)
+        self.assertIn(r"Website toko — C:\proyek\toko", text)
+        self.assertNotIn("Sudah dihapus", text)
 
     def test_hook_answers_in_claude_code_format(self):
         self.confirm.return_value = False
