@@ -37,7 +37,7 @@ TELEGRAM_API_URL = (_get("TELEGRAM_API_URL", "https://api.telegram.org") or "").
 # "ollama" (bawaan): model lokal di komputermu, gratis, tanpa API key.
 # "openrouter": model cloud lewat OpenRouter (butuh OPENROUTER_API_KEY).
 # "claude": Claude lewat Anthropic API (butuh ANTHROPIC_API_KEY).
-# Bisa diganti saat bot berjalan lewat perintah Telegram /lokal dan /cloud.
+# Bisa diganti saat bot berjalan lewat perintah Telegram /lokal, /cloud, dan /claude.
 BACKEND = (_get("ITSME_BACKEND", "ollama") or "ollama").strip().lower()
 
 # --- Otak cloud lewat OpenRouter (opsional) ----------------------------------

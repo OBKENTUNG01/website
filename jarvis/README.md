@@ -234,6 +234,7 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/start`, `/help` | Bantuan |
 | `/otak` | Lihat otak yang sedang dipakai |
 | `/cloud` | Pakai otak cloud (OpenRouter) |
+| `/claude` | Pakai otak Claude (Anthropic API, butuh `ANTHROPIC_API_KEY` di `.env`) |
 | `/lokal` | Pakai otak lokal (Ollama) |
 | `/memori` | Lihat isi memori jangka panjang |
 | `/hapus_memori` | Kosongkan memori (minta konfirmasi) |
@@ -272,7 +273,10 @@ tapi butuh API key berbayar.
 1. Buat API key di <https://platform.claude.com>. Pelanggan **Max** dan
    **Team** mendapat kredit API bulanan gratis: di claude.ai buka **Settings →
    Billing → API credits**, lalu hubungkan organisasi Console-mu.
-2. Di `.env`: `ITSME_BACKEND=claude` dan isi `ANTHROPIC_API_KEY`.
+2. Di `.env` (di komputer, jangan kirim key lewat chat): isi `ANTHROPIC_API_KEY`,
+   lalu nyalakan ulang It's Me. Kirim `/claude` ke bot untuk beralih ke otak
+   Claude (dan `/lokal` atau `/cloud` untuk kembali), atau isi juga
+   `ITSME_BACKEND=claude` supaya Claude langsung dipakai setiap It's Me menyala.
 3. Model bawaan `claude-opus-5-5` dengan effort `medium` (atur lewat `ITSME_MODEL`
    dan `ITSME_EFFORT`). `high`/`max` lebih teliti untuk tugas berat, tapi setiap
    pesan — bahkan "halo" — jadi jauh lebih mahal.

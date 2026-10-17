@@ -42,6 +42,7 @@ HELP = (
     "/help — bantuan ini\n"
     "/otak — lihat otak yang sedang dipakai\n"
     "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
+    "/claude — pakai otak Claude (Anthropic API, paling pintar)\n"
     "/lokal — pakai otak lokal (gratis, privat)\n"
     "/memori — lihat isi memori jangka panjang\n"
     "/hapus_memori — kosongkan memori\n"
@@ -49,6 +50,8 @@ HELP = (
     "/id — tampilkan user id Telegram-mu"
 )
 
+# Perintah Telegram untuk mengganti otak.
+_BRAIN_COMMANDS = {"/lokal": "ollama", "/cloud": "openrouter", "/claude": "claude"}
 # Pesan yang bukan teks (suara, foto, stiker, ...) belum bisa dibaca otaknya.
 _NON_TEXT = ("voice", "audio", "photo", "video", "video_note", "document", "sticker", "location", "contact")
 _URL = re.compile(r"https?://[^\s<>\"']+")
@@ -106,6 +109,10 @@ class App:
             lines.append(f"/cloud — {brain.describe('openrouter')}")
         else:
             lines.append("/cloud — belum aktif (jalankan setup lagi dan isi API key OpenRouter)")
+        if config.ANTHROPIC_API_KEY:
+            lines.append(f"/claude — {brain.describe('claude')}")
+        else:
+            lines.append("/claude — belum aktif (isi ANTHROPIC_API_KEY di .env lalu nyalakan ulang)")
         if brain.current_backend() == "openrouter" and config.FALLBACK_LOCAL:
             lines += ["", "Kalau otak cloud tidak bisa dipakai, otak lokal otomatis menjawab."]
         if config.OPENROUTER_API_KEY and config.OPENROUTER_MODEL.endswith(":free"):
@@ -269,8 +276,8 @@ class App:
                 self.memory.clear()
                 await self.tg.send(chat_id, "Memori sudah dikosongkan.")
             return
-        if text.startswith("/lokal") or text.startswith("/cloud"):
-            target = "ollama" if text.startswith("/lokal") else "openrouter"
+        target = next((b for cmd, b in _BRAIN_COMMANDS.items() if text.startswith(cmd)), None)
+        if target:
             try:
                 brain.set_backend(target)
             except ValueError as exc:

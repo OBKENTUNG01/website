@@ -7,7 +7,7 @@
   claude     → Claude lewat Anthropic API.
 
 Otak awal diambil dari ITSME_BACKEND, lalu bisa diganti saat bot berjalan
-lewat perintah Telegram /lokal dan /cloud. Modul tiap otak di-import saat
+lewat perintah Telegram /lokal, /cloud, dan /claude. Modul tiap otak di-import saat
 dipakai, jadi pemakai satu otak tidak butuh perlengkapan otak lainnya.
 """
 
@@ -33,7 +33,10 @@ def set_backend(name):
             "tempel key-nya saat diminta."
         )
     if name == "claude" and not config.ANTHROPIC_API_KEY:
-        raise ValueError("Belum ada ANTHROPIC_API_KEY di .env.")
+        raise ValueError(
+            "Belum ada ANTHROPIC_API_KEY di .env. Isi dulu di komputer (jangan "
+            "kirim key lewat chat), lalu nyalakan ulang It's Me."
+        )
     _state["backend"] = name
 
 

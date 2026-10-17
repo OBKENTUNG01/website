@@ -164,6 +164,31 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
         await task
         self.assertNotIn("ingat ini", self.app.memory.text())
 
+    # --- ganti otak -----------------------------------------------------------
+    async def test_claude_command_switches_brain(self):
+        with mock.patch.dict(main.brain._state, {"backend": "ollama"}), mock.patch.object(
+            config, "ANTHROPIC_API_KEY", "kunci-uji"
+        ):
+            self.app.histories[7] = [{"role": "user", "content": "lama"}]
+            await self.app._handle_message(self._msg("/claude"))
+            self.assertEqual(main.brain.current_backend(), "claude")
+            self.assertIn("Claude", self.tg.sent[-1][1])
+            self.assertNotIn(7, self.app.histories)  # format riwayat tiap otak berbeda
+
+            await self.app._handle_message(self._msg("/otak"))
+            self.assertIn("/claude — Claude", self.tg.sent[-1][1])
+
+            await self.app._handle_message(self._msg("/lokal"))
+            self.assertEqual(main.brain.current_backend(), "ollama")
+
+    async def test_claude_command_without_key_explains(self):
+        with mock.patch.dict(main.brain._state, {"backend": "ollama"}), mock.patch.object(
+            config, "ANTHROPIC_API_KEY", None
+        ):
+            await self.app._handle_message(self._msg("/claude"))
+            self.assertEqual(main.brain.current_backend(), "ollama")
+        self.assertIn("ANTHROPIC_API_KEY", self.tg.sent[-1][1])
+
     # --- pembaruan otomatis ---------------------------------------------------
     def _updates_patched(self, **check):
         stack = contextlib.ExitStack()
