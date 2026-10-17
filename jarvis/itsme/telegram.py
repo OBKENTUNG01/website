@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 
 import httpx
@@ -16,6 +17,14 @@ log = logging.getLogger("itsme")
 
 API = "https://api.telegram.org"
 MAX_LEN = 4000  # batas aman di bawah 4096 milik Telegram
+_BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')  # dilarang di nama berkas Windows
+
+
+def _safe_name(name):
+    """Nama berkas kiriman yang aman disimpan: tanpa folder, tanpa karakter
+    terlarang Windows, dan tidak terlalu panjang (jalur Windows maks. 260)."""
+    stem, ext = os.path.splitext(_BAD_NAME_CHARS.sub("_", os.path.basename(name)))
+    return (stem[:100] + ext[:10]) or "berkas"
 
 
 class Telegram:
@@ -95,11 +104,14 @@ class Telegram:
                 return None
         except (httpx.HTTPError, ValueError, KeyError):
             return None
-        os.makedirs(dest_dir, exist_ok=True)
-        name = os.path.basename(name or remote) or "berkas"
-        path = os.path.join(dest_dir, f"{int(time.time())}_{name}")
-        with open(path, "wb") as f:
-            f.write(r.content)
+        path = os.path.join(dest_dir, f"{int(time.time())}_{_safe_name(name or remote)}")
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(r.content)
+        except OSError:
+            log.warning("Berkas kiriman gagal disimpan ke %s", path, exc_info=True)
+            return None
         return path
 
     async def send_chat_action(self, chat_id, action="typing"):
