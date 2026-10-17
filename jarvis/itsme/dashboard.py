@@ -20,6 +20,8 @@ import logging
 import os
 import re
 import secrets
+import subprocess
+import sys
 import threading
 from datetime import datetime
 from http import HTTPStatus
@@ -28,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from . import access, brain, config, updater
+from . import access, brain, config, tools, updater
 
 log = logging.getLogger("itsme")
 
@@ -148,6 +150,98 @@ def _memory(app, action, text):
     return True, app.memory.text()
 
 
+# --- berkas & perintah komputer ----------------------------------------------------
+# Dashboard sudah owner-only (localhost/token), jadi menjelajah & melihat berkas
+# non-rahasia tidak perlu konfirmasi ulang. Yang MENGUBAH sesuatu (buka aplikasi,
+# jalankan perintah, zip/ekstrak) tetap lewat aturan akses: tombol di Telegram
+# saat akses aman, langsung + kabar saat akses penuh. Berkas rahasia selalu dijaga.
+_MAX_VIEW_BYTES = 256 * 1024
+_MAX_ENTRIES = 3000
+
+
+def _list_dir(path):
+    path = os.path.normpath(path or os.path.expanduser("~"))
+    if not os.path.isdir(path):
+        return None, "Folder tidak ditemukan."
+    try:
+        names = os.listdir(path)
+    except OSError as exc:
+        return None, f"Tidak bisa membuka folder: {exc}"
+    entries = []
+    for name in names[:_MAX_ENTRIES]:
+        full = os.path.join(path, name)
+        is_dir = os.path.isdir(full)
+        try:
+            size = 0 if is_dir else os.path.getsize(full)
+        except OSError:
+            size = 0
+        entries.append({"name": name, "full": full, "dir": is_dir, "size": size, "secret": tools.is_secret_path(full)})
+    entries.sort(key=lambda e: (not e["dir"], e["name"].lower()))
+    parent = os.path.dirname(path)
+    return {"path": path, "parent": parent if parent != path else None, "entries": entries}, None
+
+
+def _read_file(path):
+    path = os.path.normpath(path or "")
+    if not os.path.isfile(path):
+        return None, "Berkas tidak ditemukan."
+    if tools.is_secret_path(path):
+        return None, "Ditolak: berkas ini biasanya berisi rahasia (token, password, kunci)."
+    try:
+        size = os.path.getsize(path)
+    except OSError as exc:
+        return None, str(exc)
+    if size > _MAX_VIEW_BYTES:
+        return None, f"Berkas terlalu besar untuk ditampilkan ({tools._human(size)}). Pakai zip untuk mengunduhnya."
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {"path": path, "text": f.read()}, None
+    except (UnicodeDecodeError, OSError):
+        return None, "Berkas ini bukan teks (biner), jadi tidak bisa ditampilkan di sini."
+
+
+def _open_path(app, path):
+    path = os.path.normpath(path or "")
+    if not os.path.exists(path):
+        return False, "Tidak ditemukan."
+    if not tools.approve(app.owner_ctx(), f"Buka di aplikasi bawaan?\n\n{path}"):
+        return False, "Dibatalkan oleh pemilik."
+    try:
+        if os.name == "nt":
+            os.startfile(path)  # noqa: S606 - buka dengan aplikasi bawaan Windows
+        else:
+            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
+    except OSError as exc:
+        return False, f"Gagal membuka: {exc}"
+    return True, f"Dibuka: {os.path.basename(path) or path}"
+
+
+def _run_command(app, command):
+    command = (command or "").strip()
+    if not command:
+        return False, "Perintah kosong."
+    if not tools.is_read_only(command):
+        always = tools.mentions_secret(command) or tools.is_archive_command(command)
+        if not tools.approve(app.owner_ctx(), f"Jalankan perintah ini?\n\n{command}", always_ask=always):
+            return False, "Dibatalkan oleh pemilik."
+    return True, tools._run(command, ctx_cwd(app))[1]
+
+
+def ctx_cwd(app):
+    return config.WEBSITE_REPO_DIR or None
+
+
+def _zip(app, sumber, tujuan):
+    sources = [os.path.normpath(s.strip()) for s in (sumber or "").splitlines() if s.strip()]
+    if not sources:
+        return "Tidak ada folder/berkas yang disebutkan."
+    return tools._make_zip(sources, (tujuan or "").strip(), app.owner_ctx())
+
+
+def _extract(app, arsip, tujuan):
+    return tools._extract((arsip or "").strip(), (tujuan or "").strip(), app.owner_ctx())
+
+
 # --- server ------------------------------------------------------------------------
 def _make_handler(app, token):
     require_token = bool(token)
@@ -220,6 +314,12 @@ def _make_handler(app, token):
                 return self._json(info())
             if path == "/api/chat":  # polling jawaban chat
                 return self._chat_poll()
+            if path == "/api/fs/list":
+                data, err = _list_dir((self._query().get("path") or [""])[0])
+                return self._json(data or {"error": err}, 200 if data else 400)
+            if path == "/api/fs/read":
+                data, err = _read_file((self._query().get("path") or [""])[0])
+                return self._json(data or {"error": err}, 200 if data else 400)
             return self._json({"error": "not found"}, 404)
 
         # -- POST --
@@ -239,6 +339,14 @@ def _make_handler(app, token):
                 return self._json({"ok": ok, "text": result} if ok else {"ok": False, "error": result}, 200 if ok else 400)
             elif path == "/api/chat":
                 return self._chat_start(app, data)
+            elif path == "/api/fs/open":
+                ok, msg = _open_path(app, data.get("path", ""))
+            elif path == "/api/fs/run":
+                ok, msg = _run_command(app, data.get("command", ""))
+            elif path == "/api/fs/zip":
+                return self._json({"ok": True, "message": _zip(app, data.get("sumber", ""), data.get("tujuan", ""))})
+            elif path == "/api/fs/extract":
+                return self._json({"ok": True, "message": _extract(app, data.get("arsip", ""), data.get("tujuan", ""))})
             else:
                 return self._json({"error": "not found"}, 404)
             return self._json({"ok": ok, "message": msg, "status": status(app)}, 200 if ok else 400)
@@ -358,6 +466,15 @@ pre{background:var(--bg);border:1px solid var(--border);border-radius:10px;paddi
 .msg.thinking{opacity:.65;font-style:italic}
 .chatbar{display:flex;gap:8px;margin-top:10px}
 .chatbar input{flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:11px;font:inherit}
+input{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px;font:inherit}
+.fslist{max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:10px;margin-top:10px;background:var(--bg)}
+.fsrow{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:.9rem}
+.fsrow:last-child{border-bottom:0}
+.fsrow:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.fsrow.sel{background:color-mix(in srgb,var(--accent) 22%,transparent)}
+.fsrow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fsrow .sz{color:var(--muted);font-size:.78rem}
+.fsrow.secret{opacity:.55}
 </style>
 </head>
 <body>
@@ -395,6 +512,35 @@ pre{background:var(--bg);border:1px solid var(--border);border-radius:10px;paddi
         <button id="btnFull" onclick="setAccess(true)">Penuh</button>
       </div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Berkas komputer</h2>
+    <div class="row" style="gap:6px">
+      <button onclick="fsUp()">↑ Naik</button>
+      <input id="fsPath" style="flex:1" placeholder="path folder…" autocomplete="off">
+      <button onclick="fsGo()">Buka</button>
+    </div>
+    <div id="fsList" class="fslist"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="fsViewBtn" onclick="fsView()" disabled>Lihat</button>
+      <button class="primary" id="fsOpenBtn" onclick="fsOpen()" disabled>Buka di aplikasi</button>
+      <button onclick="fsZip()">Zip folder ini</button>
+    </div>
+    <pre id="fsFile" hidden></pre>
+    <div class="sub" style="margin-top:8px">Ekstrak arsip:
+      <input id="fsArc" placeholder="path .zip / .tar" style="width:52%">
+      <button onclick="fsExtract()">Ekstrak</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Perintah</h2>
+    <div class="row">
+      <input id="cmd" style="flex:1" placeholder="mis. Start-Process notepad" autocomplete="off">
+      <button class="primary" onclick="runCmd()">Jalankan</button>
+    </div>
+    <pre id="cmdOut" hidden></pre>
+    <div class="sub">Perintah yang mengubah sesuatu minta persetujuan di Telegram saat akses aman; berkas rahasia dijaga.</div>
   </div>
 
   <div class="card">
@@ -526,7 +672,62 @@ async function sendChat(){
 document.getElementById('chatInput').addEventListener('keydown', e => {
   if(e.key === 'Enter'){ e.preventDefault(); sendChat(); }
 });
-loadStatus(); loadMemory(); loadLogs(); loadInfo();
+
+// --- Berkas komputer ---
+let fsCur = '', fsParent = null, fsSel = null;
+function fmtBytes(n){ const u=['B','KB','MB','GB']; let i=0, s=n; while(s>=1024 && i<3){ s/=1024; i++; } return (i? s.toFixed(1): s) + ' ' + u[i]; }
+function fsGo(p){
+  const path = (p !== undefined && p !== null) ? p : document.getElementById('fsPath').value;
+  api('/api/fs/list?path=' + encodeURIComponent(path || '')).then(fsRender).catch(e => toast(e.message));
+}
+function fsUp(){ if(fsParent !== null) fsGo(fsParent); }
+function fsRender(d){
+  fsCur = d.path; fsParent = d.parent; fsSel = null;
+  document.getElementById('fsPath').value = d.path;
+  document.getElementById('fsFile').hidden = true;
+  document.getElementById('fsViewBtn').disabled = true;
+  document.getElementById('fsOpenBtn').disabled = true;
+  const box = document.getElementById('fsList'); box.innerHTML = '';
+  for(const e of d.entries){
+    const row = document.createElement('div');
+    row.className = 'fsrow' + (e.secret ? ' secret' : '');
+    row.innerHTML = '<span>' + (e.dir ? '📁' : '📄') + '</span><span class="nm"></span>'
+      + (e.dir ? '' : '<span class="sz">' + fmtBytes(e.size) + '</span>')
+      + (e.secret ? ' <span title="rahasia">🔒</span>' : '');
+    row.querySelector('.nm').textContent = e.name;
+    row.onclick = () => e.dir ? fsGo(e.full) : fsPick(row, e.full, e.secret);
+    box.appendChild(row);
+  }
+}
+function fsPick(row, full, secret){
+  document.querySelectorAll('.fsrow.sel').forEach(r => r.classList.remove('sel'));
+  row.classList.add('sel'); fsSel = full;
+  document.getElementById('fsOpenBtn').disabled = false;
+  document.getElementById('fsViewBtn').disabled = secret;
+}
+function fsView(){
+  if(!fsSel) return;
+  api('/api/fs/read?path=' + encodeURIComponent(fsSel)).then(d => {
+    const pre = document.getElementById('fsFile'); pre.hidden = false; pre.textContent = d.text;
+  }).catch(e => toast(e.message));
+}
+function fsOpen(){ if(fsSel) api('/api/fs/open', {method:'POST', body:JSON.stringify({path:fsSel})}).then(d=>toast(d.message)).catch(e=>toast(e.message)); }
+function fsZip(){ if(fsCur) api('/api/fs/zip', {method:'POST', body:JSON.stringify({sumber:fsCur})}).then(d=>toast(d.message)).catch(e=>toast(e.message)); }
+function fsExtract(){
+  const a = document.getElementById('fsArc').value.trim(); if(!a) return;
+  api('/api/fs/extract', {method:'POST', body:JSON.stringify({arsip:a})}).then(d=>toast(d.message)).catch(e=>toast(e.message));
+}
+function runCmd(){
+  const c = document.getElementById('cmd').value.trim(); if(!c) return;
+  const out = document.getElementById('cmdOut'); out.hidden = false; out.textContent = 'Menjalankan…';
+  api('/api/fs/run', {method:'POST', body:JSON.stringify({command:c})})
+    .then(d => out.textContent = d.message || '(selesai)')
+    .catch(e => out.textContent = '⚠️ ' + e.message);
+}
+document.getElementById('fsPath').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); fsGo(); } });
+document.getElementById('cmd').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); runCmd(); } });
+
+loadStatus(); loadMemory(); loadLogs(); loadInfo(); fsGo('');
 setInterval(loadStatus, 5000);
 setInterval(loadInfo, 30000);
 </script>

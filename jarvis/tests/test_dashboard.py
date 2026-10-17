@@ -21,9 +21,22 @@ class FakeApp:
         self.histories = {7: [{"role": "user", "content": "lama"}]}
         self.loop = None  # histories.clear dipanggil langsung kalau None
         self.started = datetime.now()
+        self.full_access = False
+        self.confirm_answer = True
+        self.confirmed = []
 
     async def ask(self, text):
         return "Jawaban: " + text
+
+    def owner_ctx(self):
+        return {
+            "confirm": self._confirm, "notify": lambda t: None, "full_access": self.full_access,
+            "website_dir": None, "memory": self.memory, "seen_urls": set(), "in_background": False,
+        }
+
+    def _confirm(self, text):
+        self.confirmed.append(text)
+        return self.confirm_answer
 
 
 class DashboardTest(unittest.TestCase):
@@ -47,12 +60,21 @@ class DashboardTest(unittest.TestCase):
         with open(config.LOG_FILE, "w", encoding="utf-8") as f:
             f.write("It's Me jalan\ntoken bocor 123456789:AAbbccddeeffgghh_ii-jj11223344556\n")
         self.app = FakeApp(self.dir)
+        self.tree = os.path.join(self.dir, "tree")
+        os.makedirs(os.path.join(self.tree, "sub"))
+        with open(os.path.join(self.tree, "a.txt"), "w", encoding="utf-8") as f:
+            f.write("isi A")
+        with open(os.path.join(self.tree, ".env"), "w", encoding="utf-8") as f:
+            f.write("SECRET=x")
         self.server = dashboard.start(self.app)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def get(self, path):
         return httpx.get(self.base + path, timeout=5)
+
+    def getp(self, url, **params):
+        return httpx.get(self.base + url, params=params, timeout=5)
 
     def post(self, path, body, guard=True):
         headers = {"X-Itsme-Dashboard": "1"} if guard else {}
@@ -138,6 +160,51 @@ class DashboardTest(unittest.TestCase):
 
     def test_chat_needs_guard_header(self):
         self.assertEqual(self.post("/api/chat", {"text": "halo"}, guard=False).status_code, 403)
+
+    # --- berkas & perintah komputer ---
+    def test_fs_list_marks_folders_and_secrets(self):
+        names = {e["name"]: e for e in self.getp("/api/fs/list", path=self.tree).json()["entries"]}
+        self.assertTrue(names["sub"]["dir"])
+        self.assertFalse(names["a.txt"]["dir"])
+        self.assertTrue(names[".env"]["secret"])
+
+    def test_fs_read_text(self):
+        self.assertEqual(self.getp("/api/fs/read", path=os.path.join(self.tree, "a.txt")).json()["text"], "isi A")
+
+    def test_fs_read_secret_refused(self):
+        r = self.getp("/api/fs/read", path=os.path.join(self.tree, ".env"))
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("rahasia", r.json()["error"])
+
+    def test_readonly_command_runs_without_confirm(self):
+        self.app.confirm_answer = False
+        with mock.patch.object(dashboard.tools, "_run", return_value=(0, "OK")) as run:
+            r = self.post("/api/fs/run", {"command": "whoami"}).json()
+        self.assertEqual(r["message"], "OK")
+        self.assertEqual(self.app.confirmed, [])  # read-only: tak minta konfirmasi
+        run.assert_called_once()
+
+    def test_command_asks_then_runs(self):
+        with mock.patch.object(dashboard.tools, "_run", return_value=(0, "HASIL")) as run:
+            r = self.post("/api/fs/run", {"command": "Start-Process notepad"}).json()
+        self.assertEqual(r["message"], "HASIL")
+        self.assertEqual(len(self.app.confirmed), 1)
+        run.assert_called_once()
+
+    def test_command_declined_not_run(self):
+        self.app.confirm_answer = False
+        with mock.patch.object(dashboard.tools, "_run") as run:
+            r = self.post("/api/fs/run", {"command": "Remove-Item x"}).json()
+        self.assertIn("Dibatalkan", r["message"])
+        run.assert_not_called()
+
+    def test_fs_zip_always_asks(self):
+        r = self.post("/api/fs/zip", {"sumber": self.tree}).json()
+        self.assertIn("Zip dibuat", r["message"])
+        self.assertTrue(self.app.confirmed)  # nomor 5: zip selalu minta konfirmasi
+
+    def test_fs_run_needs_guard_header(self):
+        self.assertEqual(self.post("/api/fs/run", {"command": "whoami"}, guard=False).status_code, 403)
 
 
 class DashboardTokenTest(unittest.TestCase):

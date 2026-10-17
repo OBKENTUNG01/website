@@ -266,9 +266,21 @@ Di sana kamu bisa: **ngobrol langsung dengan It's Me** (berbagi konteks dengan
 Telegram), lihat otak yang aktif dan ganti otak (lokal/cloud/Claude/Claude di
 komputer), lihat & ubah mode akses, lihat & edit memori, lihat log terbaru,
 serta status ringkas (lama nyala, Ollama hidup/mati, sisa kuota cloud).
-Perubahan langsung berlaku pada It's Me yang sedang jalan. Saat mode akses
-masih "aman", konfirmasi aksi dari chat dashboard tetap muncul sebagai tombol
-di Telegram.
+
+Ada juga akses ke komputermu:
+- **Berkas komputer** — jelajah folder, lihat isi berkas teks, buka berkas/
+  folder di aplikasi bawaannya, dan zip/ekstrak lewat tombol.
+- **Perintah** — jalankan perintah apa pun (mis. buka aplikasi dengan
+  `Start-Process ...`).
+
+Perubahan langsung berlaku pada It's Me yang sedang jalan. Aturan keamanan tetap
+sama: saat mode akses "aman", perintah yang mengubah sesuatu, buka aplikasi,
+dan zip/ekstrak minta persetujuan lewat tombol di Telegram; zip/ekstrak selalu
+minta persetujuan walau akses penuh; dan **berkas rahasia** (`.env`, kunci,
+login aplikasi & browser) selalu dijaga — ditandai 🔒, tidak bisa dibuka isinya,
+dan dilewati saat nge-zip. Karena dashboard bisa mengendalikan komputer,
+biarkan bawaannya hanya di `127.0.0.1`, pakai token kalau diakses dari HP, dan
+aktifkan verifikasi dua langkah Telegram.
 
 Bawaannya dashboard **hanya bisa dibuka dari komputer itu sendiri**
 (`127.0.0.1`). Mau membukanya dari HP di WiFi yang sama? Set

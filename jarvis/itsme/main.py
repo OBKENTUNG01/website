@@ -438,6 +438,11 @@ class App:
             reply = await self._think(chat_id, history, ctx)
             await self.tg.send(chat_id, reply)
 
+    def owner_ctx(self):
+        """ctx alat untuk aksi dari dashboard: konfirmasi muncul sebagai tombol
+        di Telegram pemilik (saat akses aman), dan akses penuh dihormati."""
+        return self._ctx_for(config.OWNER_ID)
+
     async def ask(self, text):
         """Jalankan satu giliran untuk pemilik dari dashboard; kembalikan
         jawabannya. Berbagi riwayat & konteks dengan Telegram — konfirmasi aksi
