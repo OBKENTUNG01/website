@@ -30,6 +30,11 @@ bot dari HP.
   kamu tetap bisa mengobrol sementara It's Me bekerja.
 - **Edit & deploy website lewat Git** — It's Me mengubah kode lalu `git push`;
   kalau Hostinger diatur auto-deploy, website langsung terbarui.
+- **Kompres & ekstrak berkas** — minta It's Me nge-zip berkas/folder (jadi satu
+  `.zip`) atau mengekstrak arsip (`.zip`, `.tar`, `.tar.gz`, `.tgz`). Selalu
+  minta persetujuanmu dulu, **juga di akses penuh**. Saat nge-zip, berkas
+  rahasia (`.env`, kunci, login) otomatis dilewati dan dilaporkan; arsip
+  berbahaya yang mencoba menulis di luar folder tujuan (zip-slip) ditolak.
 - **Ingat** hal penting yang kamu beri tahu (memori jangka panjang).
 - **Aman** — hanya kamu (pemilik) yang bisa memerintah.
   - Perintah yang hanya melihat keadaan (`git status`, `git diff`, `git log`,

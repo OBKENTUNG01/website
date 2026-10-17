@@ -22,6 +22,8 @@ import re
 import shlex
 import subprocess
 import sys
+import tarfile
+import zipfile
 
 from . import web
 
@@ -108,6 +110,48 @@ CLIENT_TOOLS = [
             "type": "object",
             "properties": {"catatan": {"type": "string"}},
             "required": ["catatan"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "buat_zip",
+        "description": (
+            "Kompres satu atau beberapa berkas/folder menjadi satu berkas .zip. "
+            "Selalu minta konfirmasi pemilik dulu (juga saat akses penuh). "
+            "Berkas rahasia (.env, kunci, login) otomatis dilewati dan dilaporkan."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sumber": {
+                    "type": "string",
+                    "description": "Path berkas/folder yang dikompres. Beberapa path dipisah baris baru.",
+                },
+                "tujuan": {
+                    "type": "string",
+                    "description": "Path berkas .zip hasil (opsional; bawaan di sebelah sumber).",
+                },
+            },
+            "required": ["sumber"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ekstrak",
+        "description": (
+            "Ekstrak isi arsip (.zip, .tar, .tar.gz, .tgz) ke sebuah folder. "
+            "Selalu minta konfirmasi pemilik dulu (juga saat akses penuh)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "arsip": {"type": "string", "description": "Path berkas arsip yang diekstrak."},
+                "tujuan": {
+                    "type": "string",
+                    "description": "Folder tujuan (opsional; bawaan folder baru di sebelah arsip).",
+                },
+            },
+            "required": ["arsip"],
             "additionalProperties": False,
         },
     },
@@ -254,7 +298,7 @@ def is_secret_path(path):
     name = parts[-1]
     if name in _SECRET_NAMES or name.endswith(_SECRET_SUFFIXES):
         return True
-    if name.startswith(".env") and name != ".env.example":
+    if (name.startswith(".env") or name.endswith(".env")) and name != ".env.example":
         return True
     if any(w in name for w in _SECRET_WORDS) and os.path.splitext(name)[1] in _SECRET_WORD_EXTS:
         return True
@@ -288,6 +332,17 @@ def mentions_secret(command):
     """True kalau perintah menyebut berkas rahasia (mis. Get-Content .env)."""
     words = re.split(r"[\s'\"`;|&,()<>=]+", command or "")
     return any(w and is_secret_path(w) for w in words)
+
+
+# Perintah yang mengompres/mengekstrak arsip. Nomor 5: zip/ekstrak selalu minta
+# persetujuan, juga di akses penuh — jadi perintah ini dipaksa bertanya.
+_ARCHIVE_CMDS = {"compress-archive", "expand-archive", "tar", "unzip", "zip", "7z", "7za", "gzip", "gunzip"}
+
+
+def is_archive_command(command):
+    """True kalau perintah shell mengompres atau mengekstrak arsip."""
+    words = re.split(r"[\s'\"`;|&,()<>=/\\]+", (command or "").lower())
+    return any(w in _ARCHIVE_CMDS for w in words)
 
 
 def approve(ctx, text, always_ask=False):
@@ -324,6 +379,15 @@ def _preview(text, limit=700):
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n…(+{len(text) - limit} karakter lagi)"
+
+
+def _human(num):
+    """Ukuran berkas yang enak dibaca, mis. 3.4 MB."""
+    size = float(num)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
 
 
 # --- menjalankan program ----------------------------------------------------------
@@ -453,6 +517,173 @@ def _deploy(ctx, pesan):
     return "\n\n".join(log)
 
 
+# --- zip & ekstrak (nomor 5) ------------------------------------------------------
+# Batas aman supaya tidak tak sengaja mengompres/mengekstrak seluruh drive.
+_ARCHIVE_MAX_BYTES = 2 * 1024 ** 3   # 2 GB
+_ARCHIVE_MAX_FILES = 50_000
+_EXTRACT_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
+
+
+def _too_broad_to_archive(path):
+    """True kalau folder ini terlalu luas untuk di-zip sekaligus: akar drive,
+    folder home, atau puncak AppData/Library. Subfolder yang spesifik di
+    dalamnya tetap boleh (berkas rahasia di dalamnya dilewati per-berkas)."""
+    full = os.path.normpath(os.path.abspath(path))
+    parts = [p for p in full.replace("\\", "/").split("/") if p]
+    if len(parts) <= 1 or full == os.path.normpath(os.path.expanduser("~")):
+        return True
+    tail = [p.lower() for p in parts[-2:]]
+    return tail[-1] in ("appdata", "library") or tail in (["appdata", "local"], ["appdata", "roaming"])
+
+
+def _zip_plan(sources, ctx):
+    """Kumpulkan berkas yang akan di-zip.
+
+    Kembalikan (files, dilewati, total_byte, error). files = (path, nama_di_zip).
+    Berkas rahasia dilewati; folder yang terlalu luas atau arsip terlalu besar
+    menjadi error (string siap dibaca).
+    """
+    files, skipped, total = [], [], 0
+    for src in sources:
+        if not os.path.exists(src):
+            return None, None, 0, f"Tidak ditemukan: {src}"
+        if _too_broad_to_archive(src):
+            return None, None, 0, (
+                f"Folder terlalu luas untuk di-zip sekaligus: {src}. Pilih folder yang "
+                "lebih spesifik (satu folder proyek, bukan seluruh home/AppData/drive)."
+            )
+        if os.path.isfile(src):
+            if is_secret_path(src):
+                skipped.append(src)
+                continue
+            files.append((src, os.path.basename(src)))
+            total += _size(src)
+        else:
+            parent = os.path.dirname(os.path.normpath(src))
+            for dirpath, dirnames, filenames in os.walk(src):
+                dirnames[:] = [d for d in dirnames if d.lower() not in _SECRET_DIRS]
+                for fn in filenames:
+                    full = os.path.join(dirpath, fn)
+                    if is_secret_path(full):
+                        skipped.append(full)
+                        continue
+                    files.append((full, os.path.relpath(full, parent)))
+                    total += _size(full)
+                    if total > _ARCHIVE_MAX_BYTES or len(files) > _ARCHIVE_MAX_FILES:
+                        return None, None, 0, (
+                            "Terlalu besar untuk di-zip (batas sekitar 2 GB / 50.000 berkas). "
+                            "Pilih bagian yang lebih kecil."
+                        )
+    return files, skipped, total, None
+
+
+def _size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _extract_plan(archive):
+    """Periksa arsip tanpa mengekstrak: (nama_entri, total_byte, error)."""
+    try:
+        if zipfile.is_zipfile(archive):
+            with zipfile.ZipFile(archive) as zf:
+                infos = zf.infolist()
+                names = [i.filename for i in infos]
+                total = sum(i.file_size for i in infos)
+        elif tarfile.is_tarfile(archive):
+            with tarfile.open(archive) as tf:
+                members = tf.getmembers()
+                names = [m.name for m in members]
+                total = sum(m.size for m in members)
+        else:
+            return None, 0, "Format tidak didukung. Pakai .zip, .tar, .tar.gz, atau .tgz."
+    except (OSError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        return None, 0, f"Arsip rusak atau tidak bisa dibaca: {exc}"
+    for n in names:
+        if os.path.isabs(n) or ".." in n.replace("\\", "/").split("/"):
+            return None, 0, f"Arsip ditolak: berisi path yang keluar folder tujuan ({n})."
+    if total > _ARCHIVE_MAX_BYTES or len(names) > _ARCHIVE_MAX_FILES:
+        return None, 0, "Arsip terlalu besar untuk diekstrak (batas sekitar 2 GB / 50.000 berkas)."
+    return names, total, None
+
+
+def _safe_extract(archive, dest):
+    """Ekstrak dengan penjagaan path traversal (zip-slip) berlapis."""
+    dest_real = os.path.realpath(dest)
+
+    def ok(member_name):
+        target = os.path.realpath(os.path.join(dest, member_name))
+        return target == dest_real or target.startswith(dest_real + os.sep)
+
+    if zipfile.is_zipfile(archive):
+        with zipfile.ZipFile(archive) as zf:
+            for member in zf.namelist():
+                if not ok(member):
+                    raise ValueError(f"Entri keluar folder tujuan: {member}")
+            zf.extractall(dest)
+    else:
+        with tarfile.open(archive) as tf:
+            for member in tf.getmembers():
+                if not ok(member.name):
+                    raise ValueError(f"Entri keluar folder tujuan: {member.name}")
+            tf.extractall(dest)
+
+
+def _make_zip(sources, dest, ctx):
+    files, skipped, total, err = _zip_plan(sources, ctx)
+    if err:
+        return "Dibatalkan: " + err
+    if not files:
+        return "Tidak ada berkas yang bisa dikompres (semua dilewati karena rahasia, atau folder kosong)."
+    if not dest:
+        dest = os.path.normpath(sources[0]).rstrip("\\/") + ".zip"
+    elif not dest.lower().endswith(".zip"):
+        dest += ".zip"
+    if is_secret_path(dest):
+        return "Ditolak: nama berkas tujuan terlihat seperti berkas rahasia."
+    teks = f"Buat zip dari {len(files)} berkas ({_human(total)})?\n\nTujuan: {dest}"
+    if skipped:
+        teks += f"\n\n{len(skipped)} berkas rahasia DILEWATI (mis. {os.path.basename(skipped[0])})."
+    # Nomor 5: zip selalu minta persetujuan, juga saat akses penuh.
+    if not approve(ctx, teks, always_ask=True):
+        return "Dibatalkan oleh pemilik."
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        for full, arc in files:
+            zf.write(full, arc)
+    note = f"Zip dibuat: {dest} ({len(files)} berkas, {_human(total)})."
+    if skipped:
+        note += f" {len(skipped)} berkas rahasia dilewati demi keamanan."
+    return note
+
+
+def _extract(archive, dest, ctx):
+    if not os.path.isfile(archive):
+        return "Arsip tidak ditemukan."
+    names, total, err = _extract_plan(archive)
+    if err:
+        return "Dibatalkan: " + err
+    if not dest:
+        name = os.path.basename(archive)
+        for suffix in sorted(_EXTRACT_SUFFIXES, key=len, reverse=True):
+            if name.lower().endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        dest = os.path.join(os.path.dirname(archive), name or "hasil_ekstrak")
+    teks = (
+        f"Ekstrak {len(names)} berkas ({_human(total)}) dari {os.path.basename(archive)}?"
+        f"\n\nTujuan: {dest}"
+    )
+    # Nomor 5: ekstrak selalu minta persetujuan, juga saat akses penuh.
+    if not approve(ctx, teks, always_ask=True):
+        return "Dibatalkan oleh pemilik."
+    os.makedirs(dest, exist_ok=True)
+    _safe_extract(archive, dest)
+    return f"Diekstrak {len(names)} berkas ke {dest}."
+
+
 def handle_tool(name, tool_input, ctx):
     """Jalankan satu alat klien dan kembalikan hasilnya sebagai teks.
 
@@ -471,8 +702,10 @@ def handle_tool(name, tool_input, ctx):
                 teks = f"Jalankan perintah ini?\n\n{perintah}"
                 if alasan:
                     teks += f"\n\nAlasan: {alasan}"
-                # Perintah yang menyebut berkas rahasia selalu ditanyakan.
-                if not approve(ctx, teks, always_ask=mentions_secret(perintah)):
+                # Perintah yang menyebut berkas rahasia atau mengompres/
+                # mengekstrak arsip selalu ditanyakan (nomor 5).
+                always = mentions_secret(perintah) or is_archive_command(perintah)
+                if not approve(ctx, teks, always_ask=always):
                     return "Dibatalkan oleh pemilik."
             return _run(perintah, ctx.get("website_dir"))[1]
 
@@ -503,6 +736,18 @@ def handle_tool(name, tool_input, ctx):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(isi)
             return f"Berhasil ditulis: {path} ({len(isi)} karakter)."
+
+        if name == "buat_zip":
+            sources = [_resolve(ctx, s.strip()) for s in tool_input.get("sumber", "").splitlines() if s.strip()]
+            if not sources:
+                return "Tidak ada sumber yang disebutkan."
+            dest = tool_input.get("tujuan", "").strip()
+            return _make_zip(sources, _resolve(ctx, dest) if dest else "", ctx)
+
+        if name == "ekstrak":
+            archive = _resolve(ctx, tool_input.get("arsip", "").strip())
+            dest = tool_input.get("tujuan", "").strip()
+            return _extract(archive, _resolve(ctx, dest) if dest else "", ctx)
 
         if name == "deploy_website":
             pesan = tool_input.get("pesan_commit", "").strip() or "update dari It's Me"

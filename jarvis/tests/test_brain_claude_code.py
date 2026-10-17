@@ -112,6 +112,15 @@ class DecideTest(unittest.TestCase):
         self.assertIn(r"Website toko — C:\proyek\toko", text)
         self.assertNotIn("Sudah dihapus", text)
 
+    def test_archive_command_always_asks_even_in_full_access(self):
+        notes = []
+        self.ctx.update(full_access=True, notify=notes.append)
+        self.confirm.return_value = False
+        allowed, _ = self.decide("PowerShell", {"command": "Compress-Archive -Path proyek -DestinationPath p.zip"})
+        self.assertFalse(allowed)  # nomor 5: zip/ekstrak tetap minta tombol
+        self.confirm.assert_called_once()
+        self.assertEqual(notes, [])
+
     def test_hook_answers_in_claude_code_format(self):
         self.confirm.return_value = False
         hook = cc._hook(self.ctx, self.site)

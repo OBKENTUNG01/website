@@ -106,8 +106,10 @@ def decide(name, inp, ctx, cwd):
         text = f"Jalankan perintah ini?\n\n{command}"
         if inp.get("description"):
             text += f"\n\nAlasan: {inp['description']}"
-        # Perintah yang menyebut berkas rahasia selalu ditanyakan, juga di akses penuh.
-        return _ask(ctx, text, always_ask=tools.mentions_secret(command))
+        # Perintah yang menyebut berkas rahasia atau mengompres/mengekstrak arsip
+        # selalu ditanyakan, juga di akses penuh (nomor 5).
+        always = tools.mentions_secret(command) or tools.is_archive_command(command)
+        return _ask(ctx, text, always_ask=always)
     path = inp.get("file_path") or inp.get("notebook_path") or inp.get("path") or cwd
     path = path if os.path.isabs(path) else os.path.join(cwd, path)
     if tools.is_secret_path(path):

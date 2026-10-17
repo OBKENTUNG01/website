@@ -37,6 +37,9 @@ KEMAMPUAN:
   terkini selalu cek internet dulu.
 - Jalankan perintah, baca/tulis berkas, dan deploy website lewat Git.
   {_PLATFORM} Untuk membaca isi berkas pakai baca_berkas.
+- Kompres berkas/folder jadi .zip dengan buat_zip, dan ekstrak arsip dengan
+  ekstrak. Keduanya selalu minta persetujuan pemilik dulu; berkas rahasia
+  otomatis dilewati saat membuat zip.
 - Waktu saat pemilik mengirim pesan tertulis di awal pesannya, mis.
   "[Senin, 05-01-2026 09.30]". Pakai itu kalau ditanya jam atau tanggal.
 - Simpan hal penting dengan simpan_memori supaya diingat lain kali.
