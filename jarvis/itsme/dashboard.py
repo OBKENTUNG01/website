@@ -14,19 +14,27 @@ Keamanan:
   halaman web lain tidak bisa diam-diam menyuruh dashboard lewat browsermu.
 """
 
+import asyncio
 import json
 import logging
 import os
 import re
 import secrets
 import threading
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import httpx
+
 from . import access, brain, config, updater
 
 log = logging.getLogger("itsme")
+
+# Pekerjaan chat yang sedang berjalan: id -> concurrent.futures.Future.
+# Chat bisa makan waktu (otak lokal/konfirmasi), jadi dimulai lalu di-poll.
+_JOBS = {}
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost", ""}
 # Token & token bot yang mungkin terlihat di log tidak boleh ikut ditampilkan.
@@ -74,7 +82,28 @@ def status(app):
         "access": "full" if access.full() else "safe",
         "version": (updater.installed_version() or "")[:7],
         "memory_chars": len(app.memory.text()),
+        "uptime": max(0, (datetime.now() - app.started).total_seconds()) if getattr(app, "started", None) else 0,
     }
+
+
+def _ollama_up():
+    try:
+        return httpx.get(f"{config.OLLAMA_URL}/api/version", timeout=2).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def info():
+    """Bagian status yang perlu jaringan (dipanggil sesekali, bukan tiap detik)."""
+    out = {"ollama_up": _ollama_up(), "quota": None}
+    if config.OPENROUTER_API_KEY and config.OPENROUTER_MODEL.endswith(":free"):
+        try:
+            from .brain_openrouter import free_quota
+
+            out["quota"] = free_quota()
+        except Exception:  # noqa: BLE001 - info tambahan, jangan sampai menggagalkan halaman
+            out["quota"] = None
+    return out
 
 
 def _logs(limit=120):
@@ -187,6 +216,10 @@ def _make_handler(app, token):
                 return self._json({"text": app.memory.text()})
             if path == "/api/logs":
                 return self._json({"text": _logs()})
+            if path == "/api/info":
+                return self._json(info())
+            if path == "/api/chat":  # polling jawaban chat
+                return self._chat_poll()
             return self._json({"error": "not found"}, 404)
 
         # -- POST --
@@ -204,9 +237,38 @@ def _make_handler(app, token):
             elif path == "/api/memory":
                 ok, result = _memory(app, data.get("action", ""), data.get("text", ""))
                 return self._json({"ok": ok, "text": result} if ok else {"ok": False, "error": result}, 200 if ok else 400)
+            elif path == "/api/chat":
+                return self._chat_start(app, data)
             else:
                 return self._json({"error": "not found"}, 404)
             return self._json({"ok": ok, "message": msg, "status": status(app)}, 200 if ok else 400)
+
+        # -- chat (mulai + polling) --
+        def _chat_start(self, app, data):
+            text = (data.get("text") or "").strip()
+            if not text:
+                return self._json({"error": "pesan kosong"}, 400)
+            if not app.loop:
+                return self._json({"error": "bot belum siap"}, 503)
+            for jid in [k for k, f in list(_JOBS.items()) if f.done()][20:]:
+                _JOBS.pop(jid, None)  # buang job lama yang sudah selesai & tak diambil
+            job = secrets.token_hex(8)
+            _JOBS[job] = asyncio.run_coroutine_threadsafe(app.ask(text), app.loop)
+            return self._json({"job": job})
+
+        def _chat_poll(self):
+            job = (self._query().get("id") or [""])[0]
+            fut = _JOBS.get(job)
+            if fut is None:
+                return self._json({"error": "job tidak ada"}, 404)
+            if not fut.done():
+                return self._json({"done": False})
+            _JOBS.pop(job, None)
+            try:
+                reply = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                reply = f"⚠️ Error: {type(exc).__name__}: {exc}"
+            return self._json({"done": True, "reply": reply})
 
     return Handler
 
@@ -284,11 +346,39 @@ pre{background:var(--bg);border:1px solid var(--border);border-radius:10px;paddi
   padding:10px 16px;border-radius:10px;opacity:0;transition:.2s;pointer-events:none;max-width:90%}
 #toast.show{opacity:1}
 .spread{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.info{display:flex;flex-wrap:wrap;gap:6px;margin:-6px 0 16px}
+.badge{font-size:.78rem;padding:3px 10px;border-radius:999px;background:var(--card);border:1px solid var(--border);color:var(--muted)}
+.badge.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--border))}
+.badge.bad{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,var(--border))}
+.chat{display:flex;flex-direction:column;gap:8px;max-height:330px;overflow:auto;padding:2px}
+.chat:empty::before{content:"Belum ada pesan. Sapa It's Me di bawah.";color:var(--muted);font-size:.9rem}
+.msg{max-width:88%;padding:9px 12px;border-radius:14px;white-space:pre-wrap;word-break:break-word;font-size:.95rem}
+.msg.user{align-self:flex-end;background:var(--accent);color:var(--accent-text);border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:var(--bg);border:1px solid var(--border);border-bottom-left-radius:4px}
+.msg.thinking{opacity:.65;font-style:italic}
+.chatbar{display:flex;gap:8px;margin-top:10px}
+.chatbar input{flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:11px;font:inherit}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header><span class="dot" title="sedang jalan"></span><h1 id="name">It's Me</h1></header>
+  <header><span class="dot" title="sedang jalan"></span><h1>🫡 <span id="name">It's Me</span></h1></header>
+
+  <div id="info" class="info">
+    <span id="bUptime" class="badge"></span>
+    <span id="bOllama" class="badge">Ollama…</span>
+    <span id="bQuota" class="badge" hidden></span>
+  </div>
+
+  <div class="card">
+    <h2>Ngobrol</h2>
+    <div id="chat" class="chat"></div>
+    <div class="chatbar">
+      <input id="chatInput" placeholder="Ketik pesan untuk It's Me…" autocomplete="off">
+      <button class="primary" onclick="sendChat()">Kirim</button>
+    </div>
+    <div class="sub">Berbagi konteks dengan Telegram. Saat akses aman, konfirmasi aksi muncul di Telegram.</div>
+  </div>
 
   <div class="card">
     <h2>Otak</h2>
@@ -366,6 +456,7 @@ function renderStatus(s){
     : 'Aksi yang mengubah sesuatu minta tombol di Telegram.';
   document.getElementById('btnSafe').classList.toggle('active', !full);
   document.getElementById('btnFull').classList.toggle('active', full);
+  document.getElementById('bUptime').textContent = fmtUptime(s.uptime);
 }
 function loadStatus(){ api('/api/status').then(renderStatus).catch(e=>toast(e.message)); }
 function switchBrain(name){
@@ -393,8 +484,51 @@ function clearMemory(){
     .catch(e => toast(e.message));
 }
 function loadLogs(){ api('/api/logs').then(d => { document.getElementById('logs').textContent = d.text; }).catch(e=>toast(e.message)); }
-loadStatus(); loadMemory(); loadLogs();
+function fmtUptime(sec){
+  sec = Math.floor(sec||0); const h = Math.floor(sec/3600), m = Math.floor(sec%3600/60);
+  return 'nyala ' + (h ? h+'j '+m+'m' : m+'m');
+}
+function loadInfo(){
+  api('/api/info').then(d => {
+    const o = document.getElementById('bOllama');
+    o.textContent = 'Ollama ' + (d.ollama_up ? 'nyala' : 'mati');
+    o.className = 'badge ' + (d.ollama_up ? 'ok' : 'bad');
+    const q = document.getElementById('bQuota');
+    if(d.quota){ q.hidden = false; q.textContent = 'Kuota gratis: ' + d.quota.remaining + '/' + d.quota.limit; }
+    else q.hidden = true;
+  }).catch(()=>{});
+}
+function addMsg(who, text){
+  const c = document.getElementById('chat');
+  const d = document.createElement('div'); d.className = 'msg ' + who; d.textContent = text;
+  c.appendChild(d); c.scrollTop = c.scrollHeight; return d;
+}
+function pollChat(job){
+  return new Promise((resolve, reject) => {
+    const tick = () => api('/api/chat?id=' + job)
+      .then(d => d.done ? resolve(d.reply) : setTimeout(tick, 1200))
+      .catch(reject);
+    setTimeout(tick, 600);
+  });
+}
+async function sendChat(){
+  const inp = document.getElementById('chatInput');
+  const text = inp.value.trim(); if(!text) return;
+  inp.value = ''; addMsg('user', text);
+  const bubble = addMsg('bot', "It's Me sedang berpikir…"); bubble.classList.add('thinking');
+  try{
+    const r = await api('/api/chat', {method:'POST', body:JSON.stringify({text})});
+    bubble.textContent = await pollChat(r.job);
+  }catch(e){ bubble.textContent = '⚠️ ' + e.message; }
+  bubble.classList.remove('thinking');
+  document.getElementById('chat').scrollTop = 1e9;
+}
+document.getElementById('chatInput').addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ e.preventDefault(); sendChat(); }
+});
+loadStatus(); loadMemory(); loadLogs(); loadInfo();
 setInterval(loadStatus, 5000);
+setInterval(loadInfo, 30000);
 </script>
 </body>
 </html>"""

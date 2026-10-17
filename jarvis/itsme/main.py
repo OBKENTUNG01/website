@@ -123,6 +123,7 @@ class App:
         self._tasks = set()
         self._failed_updates = set()  # commit yang gagal dipasang; tidak dicoba lagi
         self._update_warning = None  # masalah pembaruan yang sudah dilaporkan
+        self.started = None  # waktu It's Me menyala (diisi di run())
 
     # --- util ---------------------------------------------------------------
     def _spawn(self, coro):
@@ -437,6 +438,21 @@ class App:
             reply = await self._think(chat_id, history, ctx)
             await self.tg.send(chat_id, reply)
 
+    async def ask(self, text):
+        """Jalankan satu giliran untuk pemilik dari dashboard; kembalikan
+        jawabannya. Berbagi riwayat & konteks dengan Telegram — konfirmasi aksi
+        (saat akses aman) tetap muncul sebagai tombol di Telegram."""
+        chat_id = config.OWNER_ID
+        async with self._lock(chat_id):
+            history = self.histories.setdefault(chat_id, [])
+            history.append({"role": "user", "content": _stamped(text)})
+            ctx = self._ctx_for(chat_id)
+            try:
+                return await asyncio.to_thread(run_agent, history, ctx)
+            except Exception as exc:  # noqa: BLE001 - pemilik harus selalu dapat jawaban
+                log.exception("otak gagal menjawab (dashboard)")
+                return f"⚠️ Maaf, terjadi error: {type(exc).__name__}: {exc}"
+
     async def _handle_callback(self, cb):
         data = cb.get("data", "")
         user_id = cb.get("from", {}).get("id")
@@ -553,6 +569,7 @@ class App:
     async def run(self):
         """Layani Telegram. Kembalikan EXIT_UPDATED setelah pembaruan terpasang."""
         self.loop = asyncio.get_running_loop()
+        self.started = datetime.now()
         brain.restore()
         dashboard.start(self)
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())

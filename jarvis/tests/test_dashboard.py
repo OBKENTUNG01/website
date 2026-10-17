@@ -1,9 +1,13 @@
 """Uji dashboard web (nomor 4) lewat HTTP sungguhan ke server tiruan."""
 
+import asyncio
 import os
 import shutil
 import tempfile
+import threading
+import time
 import unittest
+from datetime import datetime
 from unittest import mock
 
 import httpx
@@ -16,6 +20,10 @@ class FakeApp:
         self.memory = memory.Memory(os.path.join(data_dir, "memory.md"))
         self.histories = {7: [{"role": "user", "content": "lama"}]}
         self.loop = None  # histories.clear dipanggil langsung kalau None
+        self.started = datetime.now()
+
+    async def ask(self, text):
+        return "Jawaban: " + text
 
 
 class DashboardTest(unittest.TestCase):
@@ -100,6 +108,36 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("It's Me jalan", text)
         self.assertNotIn("123456789:AAbbccddeeffgghh", text)
         self.assertIn("***", text)
+
+    def test_status_has_uptime(self):
+        self.assertGreaterEqual(self.get("/api/status").json()["uptime"], 0)
+
+    def test_info_reports_ollama(self):
+        with mock.patch.object(dashboard, "_ollama_up", return_value=True):
+            d = self.get("/api/info").json()
+        self.assertTrue(d["ollama_up"])
+        self.assertIsNone(d["quota"])  # tanpa key OpenRouter
+
+    def test_chat_round_trip(self):
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        self.addCleanup(lambda: loop.call_soon_threadsafe(loop.stop))
+        self.app.loop = loop
+        job = self.post("/api/chat", {"text": "halo"}).json()["job"]
+        reply = None
+        for _ in range(100):
+            d = self.get("/api/chat?id=" + job).json()
+            if d.get("done"):
+                reply = d["reply"]
+                break
+            time.sleep(0.05)
+        self.assertEqual(reply, "Jawaban: halo")
+
+    def test_chat_empty_refused(self):
+        self.assertEqual(self.post("/api/chat", {"text": "  "}).status_code, 400)
+
+    def test_chat_needs_guard_header(self):
+        self.assertEqual(self.post("/api/chat", {"text": "halo"}, guard=False).status_code, 403)
 
 
 class DashboardTokenTest(unittest.TestCase):

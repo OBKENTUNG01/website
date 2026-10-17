@@ -262,9 +262,13 @@ mengaturnya. Buka di komputer tempat It's Me jalan:
 http://localhost:8750
 ```
 
-Di sana kamu bisa: lihat otak yang aktif dan ganti otak (lokal/cloud/Claude/
-Claude di komputer), lihat & ubah mode akses, lihat & edit memori, dan lihat
-log terbaru. Perubahan langsung berlaku pada It's Me yang sedang jalan.
+Di sana kamu bisa: **ngobrol langsung dengan It's Me** (berbagi konteks dengan
+Telegram), lihat otak yang aktif dan ganti otak (lokal/cloud/Claude/Claude di
+komputer), lihat & ubah mode akses, lihat & edit memori, lihat log terbaru,
+serta status ringkas (lama nyala, Ollama hidup/mati, sisa kuota cloud).
+Perubahan langsung berlaku pada It's Me yang sedang jalan. Saat mode akses
+masih "aman", konfirmasi aksi dari chat dashboard tetap muncul sebagai tombol
+di Telegram.
 
 Bawaannya dashboard **hanya bisa dibuka dari komputer itu sendiri**
 (`127.0.0.1`). Mau membukanya dari HP di WiFi yang sama? Set
