@@ -46,6 +46,10 @@ bot dari HP.
 - **Tidak diam saja** — selama berpikir, status "mengetik…" terus tampil, dan
   kalau lama It's Me memberi tahu. Error apa pun dikirim ke Telegram dan
   dicatat di `data/itsme.log`.
+- **Memperbarui diri sendiri** — setiap 2 menit It's Me memeriksa repo GitHub
+  ini. Kalau ada commit baru di cabang `main`, pesan yang sedang dikerjakan
+  diselesaikan dulu, kode baru dipasang (`.env` dan memori tetap), lalu It's Me
+  menyala ulang sendiri dan mengabarimu di Telegram.
 - Untuk sekarang hanya **pesan teks** yang dibaca (belum pesan suara/gambar).
 
 ## Cara paling gampang: satu perintah
@@ -69,8 +73,15 @@ curl -fsSL https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/set
 ```
 
 It's Me dipasang di `%USERPROFILE%\ItsMe` (Windows) atau `~/itsme`
-(macOS/Linux). Jalankan perintah yang sama lagi kapan saja untuk
-**memperbarui** — `.env` dan memori tidak ditimpa.
+(macOS/Linux). Setelah itu It's Me **memperbarui dirinya sendiri** dari GitHub
+dan menyala ulang otomatis. Menjalankan perintah yang sama lagi juga
+memperbarui — `.env` dan memori tidak ditimpa. Pemasangan dari sebelum ada
+pembaruan otomatis perlu menjalankan perintah setup itu sekali lagi.
+
+Kalau It's Me jalan dari folder **clone Git** repo ini, pembaruan dipasang
+dengan `git merge --ff-only`; kalau ada perubahan yang belum di-commit atau
+commit lokal yang berbeda dari GitHub, pembaruan ditunda dan kamu diberi tahu
+lewat Telegram supaya pekerjaanmu tidak tertimpa.
 
 **Ada masalah?** Jalankan pemeriksa dari folder It's Me — ia memberi tahu
 apa yang salah dan cara membetulkannya:
@@ -202,6 +213,9 @@ bot-mu, kirim `/start`.
 
 **Biar jalan terus:** biarkan jendela terminal itu tetap terbuka, dan matikan
 mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
+Di Windows, It's Me yang dinyalakan manual seperti ini berhenti setelah
+memasang pembaruan otomatis — jalankan `python -m itsme.main` lagi, atau pakai
+skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 
 ## Menghubungkan ke website Hostinger
 
@@ -245,6 +259,10 @@ mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 | `ITSME_SEARCH_REGION` | `id-id` | Wilayah pencarian web (`id-id`, `us-en`, …) |
 | `OLLAMA_URL` | `http://localhost:11434` | Alamat Ollama |
 | `WEBSITE_REPO_DIR` | — | Folder repo website untuk fitur deploy |
+| `ITSME_AUTO_UPDATE` | `1` | Pasang commit baru dari GitHub & menyala ulang sendiri (`0` = matikan) |
+| `ITSME_UPDATE_INTERVAL` | `120` | Jeda antar pemeriksaan GitHub (detik, minimal 60) |
+| `ITSME_UPDATE_REPO` | `OBKENTUNG01/website` | Repo GitHub yang diikuti |
+| `ITSME_UPDATE_BRANCH` | `main` | Cabang yang diikuti |
 
 ## Memakai otak Claude (opsional)
 

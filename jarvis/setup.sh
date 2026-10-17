@@ -119,6 +119,9 @@ install_files() {
     # Salin kode saja; .env, memori (data/), dan .venv milikmu tidak disentuh.
     (cd "$SRC" && tar -cf - --exclude=.env --exclude=data --exclude=.venv --exclude=__pycache__ .) \
       | (cd "$DIR" && tar -xf -)
+    # Catatan versi untuk pembaruan otomatis sudah tidak cocok dengan kode yang
+    # baru disalin; It's Me mencatat versi terbaru saat menyala.
+    rm -f "$DIR/data/version.json"
   fi
   cd "$DIR"
   DIR="$(pwd)"  # selalu absolut — systemd & launchd butuh path absolut
@@ -562,7 +565,7 @@ main() {
   info "Ganti otak     : kirim /cloud atau /lokal ke bot (/otak untuk melihat)"
   info "Lihat log      : $LOG_HINT"
   info "Hentikan       : $STOP_HINT"
-  info "Perbarui       : jalankan perintah setup yang sama lagi"
+  info "Perbarui       : otomatis — It's Me memeriksa GitHub dan menyala ulang sendiri"
 
   if [ "$CLOUD" = 1 ] && [ "$OLLAMA_READY" = 1 ]; then
     step "Tambahan: model cadangan untuk otak lokal"

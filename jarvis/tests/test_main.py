@@ -1,6 +1,7 @@
 """Uji alur bot Telegram It's Me dengan Telegram tiruan (tanpa jaringan)."""
 
 import asyncio
+import contextlib
 import io
 import logging
 import os
@@ -21,6 +22,8 @@ class FakeTelegram:
         self.actions = 0
         self.answers = []
         self.markups = []
+        self.incoming = []  # batch update yang akan dikembalikan get_updates
+        self.acked = False
 
     async def send(self, chat_id, text, reply_markup=None):
         self.sent.append((chat_id, text, reply_markup))
@@ -39,7 +42,19 @@ class FakeTelegram:
         pass
 
     async def get_updates(self):
-        return []
+        await asyncio.sleep(0.01)  # seperti long-polling: beri giliran ke task lain
+        return self.incoming.pop(0) if self.incoming else []
+
+    async def ack_updates(self):
+        self.acked = True
+
+
+class FakeUpdate:
+    sha = "abc1234def5678"
+    short = "abc1234"
+
+    def describe(self):
+        return "abc1234 — perbaikan"
 
 
 class AppTest(unittest.IsolatedAsyncioTestCase):
@@ -148,6 +163,63 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
         await self.app._handle_callback({"id": "c2", "data": f"ok:{cid}", "from": {"id": 42}})
         await task
         self.assertNotIn("ingat ini", self.app.memory.text())
+
+    # --- pembaruan otomatis ---------------------------------------------------
+    def _updates_patched(self, **check):
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(config, "AUTO_UPDATE", True))
+        stack.enter_context(mock.patch.object(config, "UPDATE_INTERVAL", 0.01))
+        stack.enter_context(mock.patch.object(main, "_FIRST_UPDATE_CHECK", 0.05))
+        stack.enter_context(mock.patch.object(main.updater, "check", **check))
+        return stack
+
+    async def test_update_waits_for_running_work_then_restarts(self):
+        self.tg.incoming.append([{"update_id": 1, "message": self._msg("halo")}])
+
+        def slow_agent(messages, ctx):
+            time.sleep(0.3)
+            return "Halo Tuan"
+
+        with self._updates_patched(return_value=FakeUpdate()), mock.patch.object(
+            main, "run_agent", side_effect=slow_agent
+        ), mock.patch.object(main.updater, "apply") as apply:
+            code = await asyncio.wait_for(self.app.run(), 10)
+        self.assertEqual(code, main.EXIT_UPDATED)
+        texts = [t for _, t, _ in self.tg.sent]
+        restart = next(i for i, t in enumerate(texts) if t.startswith("🔄"))
+        self.assertLess(texts.index("Halo Tuan"), restart)  # jawaban dulu, baru menyala ulang
+        self.assertTrue(self.tg.acked)
+        apply.assert_called_once()
+        # Setelah menyala lagi, pemilik dikabari versi barunya.
+        restarted = main.App()
+        restarted.loop = asyncio.get_running_loop()
+        with mock.patch.object(config, "AUTO_UPDATE", False):
+            serving = asyncio.create_task(restarted.run())
+            await asyncio.sleep(0.05)
+            serving.cancel()
+            await asyncio.gather(serving, return_exceptions=True)
+        self.assertIn("abc1234", restarted.tg.sent[0][1])
+
+    async def test_failed_update_keeps_running_and_is_not_retried(self):
+        with mock.patch.object(main.updater, "apply", side_effect=RuntimeError("pip gagal")):
+            restart = await self.app._install(FakeUpdate())
+        self.assertFalse(restart)
+        self.assertIn("pip gagal", self.tg.sent[-1][1])
+        self.assertIn(FakeUpdate.sha, self.app._failed_updates)
+
+    async def test_blocked_update_reported_once(self):
+        blocked = main.updater.Blocked("ada perubahan yang belum di-commit")
+        with self._updates_patched(side_effect=[blocked, blocked, FakeUpdate()]):
+            update = await asyncio.wait_for(self.app._watch_updates(), 5)
+        self.assertEqual(update.sha, FakeUpdate.sha)
+        warnings = [t for _, t, _ in self.tg.sent if "belum di-commit" in t]
+        self.assertEqual(len(warnings), 1)
+
+    async def test_update_check_error_is_not_fatal(self):
+        with self._updates_patched(side_effect=[OSError("internet putus"), FakeUpdate()]):
+            update = await asyncio.wait_for(self.app._watch_updates(), 5)
+        self.assertEqual(update.sha, FakeUpdate.sha)
+        self.assertEqual(self.tg.sent, [])
 
 
 class ConsoleTest(unittest.TestCase):

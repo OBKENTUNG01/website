@@ -124,6 +124,9 @@ function Install-ItsMeFiles([string]$Src, [string]$Dir) {
         Get-ChildItem -Path $Src -Force |
             Where-Object { @('.env', 'data', '.venv', '__pycache__') -notcontains $_.Name } |
             ForEach-Object { Copy-Item -Path $_.FullName -Destination $Dir -Recurse -Force }
+        # Catatan versi untuk pembaruan otomatis sudah tidak cocok dengan kode
+        # yang baru disalin; It's Me mencatat versi terbaru saat menyala.
+        Remove-Item -Path (Join-Path (Join-Path $Dir 'data') 'version.json') -Force -ErrorAction SilentlyContinue
     }
     $envFile = Join-Path $Dir '.env'
     if (-not (Test-Path $envFile)) { Copy-Item -Path (Join-Path $Dir '.env.example') -Destination $envFile }
@@ -499,6 +502,7 @@ function Install-ItsMeLauncher([string]$Dir) {
         ':loop',
         '".venv\Scripts\python.exe" -m itsme.main',
         'if %ERRORLEVEL% EQU 3 exit /b 0',
+        'if %ERRORLEVEL% EQU 5 goto loop',
         'echo.',
         "echo It's Me berhenti. Menyala lagi dalam 10 detik... (tutup jendela ini untuk mematikan)",
         'timeout /t 10 /nobreak >nul',
@@ -599,7 +603,7 @@ function Install-ItsMe {
         Write-ItsMeInfo "Jendela 'It's Me' yang terkecilkan di taskbar = It's Me sedang jalan (tutup = mati)."
         if ($launcher.Autostart) { Write-ItsMeInfo "Menyala otomatis setiap kamu masuk Windows ($($launcher.Autostart))." }
         Write-ItsMeInfo "Nyalakan manual : $($launcher.StartCmd)"
-        Write-ItsMeInfo 'Perbarui        : jalankan perintah setup yang sama lagi'
+        Write-ItsMeInfo 'Perbarui        : otomatis - It''s Me memeriksa GitHub dan menyala ulang sendiri'
 
         if ($cloud -and $ollama) {
             Write-ItsMeStep 'Tambahan: model cadangan untuk otak lokal'

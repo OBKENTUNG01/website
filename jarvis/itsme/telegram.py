@@ -49,6 +49,19 @@ class Telegram:
             self._offset = updates[-1]["update_id"] + 1
         return updates
 
+    async def ack_updates(self):
+        """Tandai update yang sudah diambil sebagai selesai di Telegram, tanpa
+        mengambil yang baru — yang baru dikirim ulang setelah menyala lagi."""
+        if self._offset is None:
+            return
+        try:
+            await self._client.get(
+                f"{self._base}/getUpdates",
+                params={"offset": self._offset, "timeout": 0, "limit": 1},
+            )
+        except httpx.HTTPError:
+            pass
+
     async def send(self, chat_id, text, reply_markup=None):
         text = text or "…"
         chunks = [text[i : i + MAX_LEN] for i in range(0, len(text), MAX_LEN)]

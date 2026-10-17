@@ -19,5 +19,6 @@ Semua kode, cara pasang, dan pengaturannya ada di folder [`jarvis/`](jarvis/READ
 curl -fsSL https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/setup.sh | bash
 ```
 
-Jalankan perintah yang sama lagi kapan saja untuk memperbarui; `.env` dan
-memori tidak ditimpa.
+Setelah terpasang, It's Me memeriksa repo ini setiap 2 menit; kalau ada commit
+baru di `main`, ia memasangnya lalu menyala ulang sendiri. Menjalankan perintah
+yang sama lagi juga memperbarui; `.env` dan memori tidak ditimpa.

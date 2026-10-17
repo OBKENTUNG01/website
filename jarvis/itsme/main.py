@@ -11,6 +11,9 @@ Fitur utama:
   error apa pun dilaporkan ke pemilik serta dicatat di data/itsme.log.
 - Hanya satu It's Me yang boleh jalan sekaligus; dua bot dengan token yang
   sama akan saling berebut pesan dari Telegram.
+- Memperbarui diri sendiri: repo GitHub diperiksa berkala; kalau ada commit
+  baru, pekerjaan yang sedang jalan diselesaikan dulu, pembaruan dipasang,
+  lalu It's Me menyala ulang (lihat updater.py).
 """
 
 import asyncio
@@ -24,7 +27,7 @@ import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
-from . import brain, config
+from . import brain, config, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -55,6 +58,14 @@ _SLOW_NOTICE_AFTER = 25
 _TYPING_EVERY = 4.5
 # Exit code saat It's Me lain sudah jalan; skrip penyala berhenti mengulang.
 EXIT_ALREADY_RUNNING = 3
+# Exit code setelah pembaruan terpasang; skrip penyala langsung menyalakan lagi.
+EXIT_UPDATED = 5
+# Pemeriksaan pembaruan pertama, beberapa detik setelah menyala (berikutnya
+# tiap config.UPDATE_INTERVAL).
+_FIRST_UPDATE_CHECK = 30
+# Sebelum menyala ulang, pesan & tugas latar yang sedang jalan ditunggu selesai,
+# paling lama sekian detik.
+_UPDATE_MAX_WAIT = 600
 _HARI = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
 
 
@@ -79,6 +90,8 @@ class App:
         # Referensi ke task yang sedang jalan; tanpa ini asyncio boleh
         # membuangnya (garbage collect) di tengah pekerjaan.
         self._tasks = set()
+        self._failed_updates = set()  # commit yang gagal dipasang; tidak dicoba lagi
+        self._update_warning = None  # masalah pembaruan yang sudah dilaporkan
 
     # --- util ---------------------------------------------------------------
     def _spawn(self, coro):
@@ -313,15 +326,101 @@ class App:
         except Exception:  # noqa: BLE001
             log.exception("error saat menangani update Telegram")
 
+    # --- pembaruan otomatis dari GitHub --------------------------------------
+    async def _watch_updates(self):
+        """Periksa GitHub berkala; kembalikan pembaruan pertama yang siap dipasang."""
+        delay = _FIRST_UPDATE_CHECK
+        while True:
+            await asyncio.sleep(delay)
+            delay = config.UPDATE_INTERVAL
+            try:
+                update = await asyncio.to_thread(updater.check, self._failed_updates)
+            except updater.Blocked as exc:
+                if str(exc) != self._update_warning:  # cukup sekali per masalah
+                    self._update_warning = str(exc)
+                    log.warning("Pembaruan dilewati: %s", exc)
+                    await self.tg.send(
+                        config.OWNER_ID,
+                        f"⚠️ Ada pembaruan di GitHub, tapi belum bisa dipasang otomatis: {exc}",
+                    )
+                continue
+            except Exception as exc:  # noqa: BLE001 - internet/GitHub; coba lagi nanti
+                log.warning("Pemeriksaan pembaruan gagal: %s", exc)
+                continue
+            self._update_warning = None
+            if update:
+                return update
+
+    async def _wait_idle(self, limit):
+        """Tunggu sampai tidak ada pesan atau tugas latar yang sedang dikerjakan."""
+        deadline = self.loop.time() + limit
+        while self._tasks and self.loop.time() < deadline:
+            await asyncio.sleep(1)
+
+    async def _install(self, update):
+        """Pasang pembaruan; True kalau It's Me perlu dinyalakan ulang."""
+        await self.tg.ack_updates()
+        await self.tg.send(
+            config.OWNER_ID,
+            f"🔄 Ada pembaruan dari GitHub: {update.describe()}\nMemasang lalu menyala ulang…",
+        )
+        try:
+            await asyncio.to_thread(updater.apply, update)
+        except Exception as exc:  # noqa: BLE001 - pemilik harus tahu, bot tetap jalan
+            log.exception("pembaruan %s gagal dipasang", update.short)
+            self._failed_updates.add(update.sha)
+            await self.tg.send(
+                config.OWNER_ID,
+                f"⚠️ Pembaruan {update.short} gagal dipasang: {exc}\n"
+                "It's Me tetap jalan dengan versi lama.",
+            )
+            return False
+        updater.save_notice(f"✅ It's Me sudah diperbarui ke {update.describe()} dan menyala lagi.")
+        log.info("Pembaruan %s terpasang, menyala ulang.", update.short)
+        return True
+
     # --- loop utama ---------------------------------------------------------
+    async def _poll(self):
+        while True:
+            updates = await self.tg.get_updates()
+            for update in updates:
+                self._spawn(self._dispatch(update))
+
+    async def _serve_until_update(self):
+        """Layani Telegram sampai ada pembaruan dari GitHub, lalu kembalikan
+        pembaruan itu setelah pekerjaan yang sedang jalan selesai."""
+        poll = asyncio.create_task(self._poll())
+        watch = asyncio.create_task(self._watch_updates()) if config.AUTO_UPDATE else None
+        try:
+            await asyncio.wait({t for t in (poll, watch) if t}, return_when=asyncio.FIRST_COMPLETED)
+            if poll.done():
+                poll.result()  # error saat mengambil pesan diteruskan
+            update = watch.result()
+            log.info("Pembaruan ditemukan: %s", update.describe())
+            await self._wait_idle(_UPDATE_MAX_WAIT)
+            # Tidak ada await antara pemeriksaan terakhir di atas dan
+            # poll.cancel() di bawah, jadi tidak ada pesan baru yang terambil
+            # lalu terputus di tengah jalan; pesan yang belum diambil dikirim
+            # ulang Telegram setelah It's Me menyala lagi.
+            return update
+        finally:
+            poll.cancel()
+            if watch:
+                watch.cancel()
+            await asyncio.gather(*(t for t in (poll, watch) if t), return_exceptions=True)
+
     async def run(self):
+        """Layani Telegram. Kembalikan EXIT_UPDATED setelah pembaruan terpasang."""
         self.loop = asyncio.get_running_loop()
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
         try:
+            notice = updater.pop_notice()
+            if notice:
+                await self.tg.send(config.OWNER_ID, notice)
             while True:
-                updates = await self.tg.get_updates()
-                for update in updates:
-                    self._spawn(self._dispatch(update))
+                update = await self._serve_until_update()
+                if await self._install(update):
+                    return EXIT_UPDATED
         finally:
             await self.tg.close()
 
@@ -400,9 +499,27 @@ def _single_instance_lock():
     return handle  # tetap terbuka (dan terkunci) selama proses hidup
 
 
+def _restart(lock, listener):
+    """Nyalakan ulang It's Me dengan kode yang baru dipasang.
+
+    Di macOS/Linux proses ini langsung diganti (PID tetap sama, jadi systemd,
+    launchd, dan itsme.pid tetap cocok). Di Windows exec tidak mengganti
+    proses: It's Me keluar dengan EXIT_UPDATED dan start-itsme.cmd langsung
+    menyalakannya lagi.
+    """
+    if os.name == "nt":
+        print("[itsme] Pembaruan terpasang, menyala ulang...")
+        return
+    if listener:
+        listener.stop()  # atexit tidak dijalankan oleh exec
+    lock.close()
+    os.chdir(updater.APP_DIR)
+    os.execv(sys.executable, [sys.executable, "-m", "itsme.main"])
+
+
 def main():
     _disable_quick_edit()
-    _setup_logging()
+    listener = _setup_logging()
     problems = config.check()
     if problems:
         print("Konfigurasi belum lengkap:")
@@ -418,10 +535,13 @@ def main():
         )
         return EXIT_ALREADY_RUNNING
     try:
-        asyncio.run(App().run())
+        code = asyncio.run(App().run())
     except KeyboardInterrupt:
         print("\n[itsme] berhenti.")
-    return 0
+        return 0
+    if code == EXIT_UPDATED:
+        _restart(lock, listener)
+    return code
 
 
 if __name__ == "__main__":

@@ -115,6 +115,17 @@ MAX_STEPS = int(_get("ITSME_MAX_STEPS", "16"))
 # Kosongkan kalau belum dipakai.
 WEBSITE_REPO_DIR = _get("WEBSITE_REPO_DIR", "")
 
+# --- Pembaruan otomatis dari GitHub -------------------------------------------
+# Selama jalan, It's Me memeriksa repo GitHub-nya. Kalau ada commit baru di
+# cabang ini, kodenya dipasang (.env & memori tidak disentuh) lalu It's Me
+# menyala ulang sendiri. Isi 0 untuk mematikan.
+AUTO_UPDATE = (_get("ITSME_AUTO_UPDATE", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+UPDATE_REPO = _get("ITSME_UPDATE_REPO", "OBKENTUNG01/website")
+UPDATE_BRANCH = _get("ITSME_UPDATE_BRANCH", "main")
+# Jeda antar pemeriksaan (detik). Minimal 60: tanpa login, GitHub hanya
+# melayani 60 pemeriksaan per jam.
+UPDATE_INTERVAL = max(60.0, float(_get("ITSME_UPDATE_INTERVAL", "120")))
+
 # --- Memori & berkas data -----------------------------------------------------
 DATA_DIR = _get("ITSME_DATA_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
 MEMORY_FILE = _get("ITSME_MEMORY_FILE", os.path.join(DATA_DIR, "memory.md"))
