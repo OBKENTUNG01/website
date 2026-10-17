@@ -117,7 +117,40 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_message_gets_answer(self):
         await self.app._handle_message(self._msg(voice={"file_id": "x"}))
-        self.assertIn("pesan teks", self.tg.sent[-1][1])
+        self.assertIn("belum bisa kubaca", self.tg.sent[-1][1])
+
+    async def test_photo_is_downloaded_and_passed_to_brain(self):
+        inbox = os.path.join(self.dir, "inbox")
+        path = os.path.join(inbox, "1_foto.jpg")
+        got = {}
+
+        async def download(file_id, dest, name=None):
+            got["args"] = (file_id, dest, name)
+            return path
+
+        def fake(messages, ctx):
+            got["content"] = messages[-1]["content"]
+            return "ok"
+
+        self.tg.download_file = download
+        photo = [{"file_id": "kecil", "file_unique_id": "u1"}, {"file_id": "besar", "file_unique_id": "u2"}]
+        with mock.patch.object(config, "INBOX_DIR", inbox), mock.patch.object(
+            main, "run_agent", side_effect=fake
+        ):
+            await self.app._handle_message(self._msg(photo=photo, caption="ini apa?"))
+        self.assertEqual(got["args"][0], "besar")
+        self.assertIn("ini apa?", got["content"])
+        self.assertIn(path, got["content"])
+
+    async def test_failed_download_is_reported(self):
+        async def download(*args, **kwargs):
+            return None
+
+        self.tg.download_file = download
+        with mock.patch.object(main, "run_agent") as agent:
+            await self.app._handle_message(self._msg(document={"file_id": "d", "file_name": "a.pdf"}))
+        agent.assert_not_called()
+        self.assertIn("gagal kuunduh", self.tg.sent[-1][1])
 
     async def test_stranger_ignored(self):
         message = self._msg("halo")

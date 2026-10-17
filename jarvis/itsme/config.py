@@ -148,6 +148,7 @@ UPDATE_INTERVAL = max(60.0, float(_get("ITSME_UPDATE_INTERVAL", "120")))
 
 # --- Memori & berkas data -----------------------------------------------------
 DATA_DIR = _get("ITSME_DATA_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"))
+INBOX_DIR = os.path.join(DATA_DIR, "inbox")  # foto & berkas kiriman pemilik
 MEMORY_FILE = _get("ITSME_MEMORY_FILE", os.path.join(DATA_DIR, "memory.md"))
 # Catatan jalannya bot (error, otak yang dipakai). Berguna saat bot "diam saja"
 # dan jendelanya terkecilkan, sehingga pesan error tidak terlihat.

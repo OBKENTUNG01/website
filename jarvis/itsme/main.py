@@ -18,6 +18,7 @@ Fitur utama:
 
 import asyncio
 import atexit
+import base64
 import logging
 import os
 import queue
@@ -105,6 +106,36 @@ def _stamped(text):
     tanpa system prompt yang berubah-ubah (lihat persona.py)."""
     now = datetime.now()
     return f"[{_HARI[now.weekday()]}, {now:%d-%m-%Y %H.%M}] {text}"
+
+
+_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # batas gambar Claude API
+
+
+def _attachment(message):
+    """(file_id, nama, gambar?) untuk foto atau berkas kiriman pemilik, atau None."""
+    if message.get("photo"):
+        photo = message["photo"][-1]  # ukuran terbesar
+        return photo["file_id"], f"foto_{photo['file_unique_id']}.jpg", True
+    doc = message.get("document")
+    if doc:
+        name = doc.get("file_name") or "berkas"
+        is_image = os.path.splitext(name)[1].lower() in _IMAGE_TYPES
+        return doc["file_id"], name, is_image
+    return None
+
+
+def _with_image(text, image_path):
+    """Isi pesan pemilik; berisi gambar (format Anthropic) kalau ada."""
+    if not image_path or os.path.getsize(image_path) > _MAX_IMAGE_BYTES:
+        return text
+    media = _IMAGE_TYPES[os.path.splitext(image_path)[1].lower()]
+    with open(image_path, "rb") as f:
+        data = base64.standard_b64encode(f.read()).decode()
+    return [
+        {"type": "image", "source": {"type": "base64", "media_type": media, "data": data}},
+        {"type": "text", "text": text},
+    ]
 
 
 class App:
@@ -353,12 +384,32 @@ class App:
             # Bukan pemilik — abaikan diam-diam (keamanan).
             return
 
-        if not text.strip():
+        image_path = None
+        attachment = _attachment(message)
+        if attachment:
+            file_id, name, is_image = attachment
+            path = await self.tg.download_file(file_id, config.INBOX_DIR, name)
+            if not path:
+                await self.tg.send(
+                    chat_id,
+                    "Maaf, berkasnya gagal kuunduh (batas bot Telegram 20 MB, atau internet bermasalah).",
+                )
+                return
+            caption = (message.get("caption") or "").strip()
+            text = (
+                f"{caption or 'Tolong lihat dan analisis berkas ini.'}\n\n"
+                f"[Pemilik mengirim {'gambar' if is_image else 'berkas'}, tersimpan di: {path}]"
+            )
+            if is_image and brain.current_backend() == "claude":
+                image_path = path  # dikirim langsung ke model sebagai gambar
+            elif is_image and brain.current_backend() in ("ollama", "openrouter"):
+                text += "\n(Otak ini tidak bisa melihat gambar; sarankan /claudepc atau /claude.)"
+        elif not text.strip():
             if any(kind in message for kind in _NON_TEXT):
                 await self.tg.send(
                     chat_id,
-                    "Maaf, untuk sekarang aku hanya bisa membaca pesan teks "
-                    "(belum bisa mendengar suara atau melihat gambar). Ketik saja pesanmu, ya.",
+                    "Maaf, suara, video, stiker, dan sejenisnya belum bisa kubaca. "
+                    "Foto dan berkas (PDF, dokumen, teks, kode) bisa — kirim saja, ya.",
                 )
             return
 
@@ -433,7 +484,7 @@ class App:
 
         async with self._lock(chat_id):
             history = self.histories.setdefault(chat_id, [])
-            history.append({"role": "user", "content": _stamped(text)})
+            history.append({"role": "user", "content": _with_image(_stamped(text), image_path)})
             ctx = self._ctx_for(chat_id)
             reply = await self._think(chat_id, history, ctx)
             await self.tg.send(chat_id, reply)

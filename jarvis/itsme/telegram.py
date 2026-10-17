@@ -7,6 +7,8 @@ kalau panjang), tombol konfirmasi inline, dan menjawab callback.
 import asyncio
 import json
 import logging
+import os
+import time
 
 import httpx
 
@@ -19,6 +21,7 @@ MAX_LEN = 4000  # batas aman di bawah 4096 milik Telegram
 class Telegram:
     def __init__(self, token, api=API):
         self._base = f"{api.rstrip('/')}/bot{token}"
+        self._file_base = f"{api.rstrip('/')}/file/bot{token}"
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(70.0))
         self._offset = None
 
@@ -77,6 +80,27 @@ class Telegram:
             except httpx.HTTPError:
                 last = None
         return last
+
+    async def download_file(self, file_id, dest_dir, name=None):
+        """Unduh berkas kiriman pemilik ke dest_dir; kembalikan jalurnya, atau
+        None kalau gagal (mis. lebih dari 20 MB, batas bot Telegram)."""
+        try:
+            r = await self._client.get(f"{self._base}/getFile", params={"file_id": file_id})
+            info = r.json()
+            if not info.get("ok"):
+                return None
+            remote = info["result"]["file_path"]
+            r = await self._client.get(f"{self._file_base}/{remote}")
+            if r.status_code != 200:
+                return None
+        except (httpx.HTTPError, ValueError, KeyError):
+            return None
+        os.makedirs(dest_dir, exist_ok=True)
+        name = os.path.basename(name or remote) or "berkas"
+        path = os.path.join(dest_dir, f"{int(time.time())}_{name}")
+        with open(path, "wb") as f:
+            f.write(r.content)
+        return path
 
     async def send_chat_action(self, chat_id, action="typing"):
         try:

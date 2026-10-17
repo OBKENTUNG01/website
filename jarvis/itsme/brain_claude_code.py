@@ -121,7 +121,11 @@ def decide(name, inp, ctx, cwd):
         )
     if name in _READ:
         base = ctx.get("website_dir")
-        if ctx.get("full_access") or (base and tools._inside(path, base)):
+        if (
+            ctx.get("full_access")
+            or (base and tools._inside(path, base))
+            or tools._inside(path, config.INBOX_DIR)  # kiriman pemilik sendiri
+        ):
             return True, None
         return _ask(ctx, f"Baca berkas di luar folder website?\n\n{path}")
     if name in _WRITE:
