@@ -5,16 +5,18 @@
                OpenRouter tidak bisa dipakai, otak lokal otomatis mengambil
                alih (bisa dimatikan dengan ITSME_FALLBACK_LOCAL=0).
   claude     → Claude lewat Anthropic API.
+  claude_code → Claude di komputer (Claude Code) dengan akun Claude-mu.
 
 Otak awal diambil dari ITSME_BACKEND, lalu bisa diganti saat bot berjalan
-lewat perintah Telegram /lokal, /cloud, dan /claude. Modul tiap otak di-import saat
-dipakai, jadi pemakai satu otak tidak butuh perlengkapan otak lainnya.
+lewat perintah Telegram /lokal, /cloud, /claude, dan /claudepc. Modul tiap
+otak di-import saat dipakai, jadi pemakai satu otak tidak butuh perlengkapan
+otak lainnya.
 """
 
-from . import config
+from . import config, keys
 from .agentutil import text_only
 
-BACKENDS = ("ollama", "openrouter", "claude")
+BACKENDS = ("ollama", "openrouter", "claude", "claude_code")
 
 _state = {"backend": config.BACKEND}
 
@@ -37,7 +39,19 @@ def set_backend(name):
             "Belum ada ANTHROPIC_API_KEY. Kirim /kunci <key Claude> (pesannya "
             "langsung kuhapus), atau isi di .env lalu nyalakan ulang It's Me."
         )
+    if name == "claude_code" and not claude_code_ready():
+        from .brain_claude_code import LOGIN_HINT
+
+        raise ValueError(LOGIN_HINT)
     _state["backend"] = name
+
+
+def claude_code_ready():
+    """Token akun Claude ada? Dibaca ulang dari .env kalau perlu, karena
+    `python -m itsme.claude_login` menyimpannya dari proses lain."""
+    if not config.CLAUDE_CODE_OAUTH_TOKEN:
+        keys.refresh_from_env("CLAUDE_CODE_OAUTH_TOKEN")
+    return bool(config.CLAUDE_CODE_OAUTH_TOKEN)
 
 
 def describe(name=None):
@@ -50,6 +64,9 @@ def describe(name=None):
         return f"cloud {config.OPENROUTER_MODEL} (OpenRouter{extra})"
     if name == "claude":
         return f"Claude {config.MODEL} (effort {config.EFFORT})"
+    if name == "claude_code":
+        model = config.CLAUDE_CODE_MODEL or "model bawaan akunmu"
+        return f"Claude di komputer ({model}, akun Claude-mu, tanpa API key)"
     return f"lokal {config.OLLAMA_MODEL} (Ollama)"
 
 
@@ -57,6 +74,11 @@ def run_agent(messages, ctx):
     backend = current_backend()
     if backend == "claude":
         from .brain_claude import run_agent as run
+
+        return run(messages, ctx)
+
+    if backend == "claude_code":
+        from .brain_claude_code import run_agent as run
 
         return run(messages, ctx)
 

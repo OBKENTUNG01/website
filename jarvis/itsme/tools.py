@@ -271,7 +271,7 @@ def _preview(text, limit=700):
 
 # --- menjalankan program ----------------------------------------------------------
 # Rahasia milik It's Me tidak ikut diwariskan ke program yang dijalankan.
-_SECRET_ENV = ("TELEGRAM_BOT_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY")
+_SECRET_ENV = ("TELEGRAM_BOT_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 
 def _child_env():

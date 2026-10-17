@@ -19,8 +19,10 @@ log = logging.getLogger("itsme")
 # Berkas .env yang dibaca config.py (folder jarvis/).
 ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 
-# jenis -> (awalan key, nama di .env & config, nama untuk pemilik)
+# jenis -> (awalan key, nama di .env & config, nama untuk pemilik). Urutan
+# penting: token akun (sk-ant-oat…) juga diawali sk-ant-.
 KINDS = {
+    "claude_code": ("sk-ant-oat", "CLAUDE_CODE_OAUTH_TOKEN", "akun Claude (Claude di komputer)"),
     "claude": ("sk-ant-", "ANTHROPIC_API_KEY", "Claude (Anthropic)"),
     "openrouter": ("sk-or-", "OPENROUTER_API_KEY", "OpenRouter"),
 }
@@ -56,6 +58,17 @@ def verify(kind, key):
     Melempar KeyRejected kalau key ditolak; error lain berarti belum bisa
     diperiksa (mis. internet putus).
     """
+    if kind == "claude_code":
+        from .brain_claude_code import LOGIN_HINT, check_login
+
+        try:
+            import claude_agent_sdk  # noqa: F401
+        except ImportError as exc:
+            raise KeyRejected("Claude Code belum terpasang di komputer. " + LOGIN_HINT) from exc
+        # Satu jawaban pendek ("OK") memakai sedikit kuota akunmu.
+        if check_login(key) == "rejected":
+            raise KeyRejected("Token akun Claude ditolak (salah atau kedaluwarsa).")
+        return
     if kind == "claude":
         import anthropic  # hanya dipakai di sini dan di otak Claude
 
@@ -81,6 +94,18 @@ def save(kind, key):
     _set_env(ENV_FILE, name, key)
     setattr(config, name, key)
     log.info("API key %s diganti lewat Telegram.", label(kind))
+
+
+def refresh_from_env(name):
+    """Baca ulang satu nilai dari .env (mis. baru disimpan proses lain)."""
+    try:
+        from dotenv import dotenv_values
+
+        value = dotenv_values(ENV_FILE).get(name)
+    except Exception:  # noqa: BLE001 - python-dotenv opsional, .env bisa tidak ada
+        return
+    if value:
+        setattr(config, name, value)
 
 
 def _set_env(path, name, value):

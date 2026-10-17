@@ -1,5 +1,6 @@
 """Uji pemeriksa & penyimpan API key yang dikirim lewat /kunci (tanpa jaringan)."""
 
+import importlib.util
 import os
 import shutil
 import tempfile
@@ -13,12 +14,15 @@ from itsme import config, keys
 
 CLAUDE = "sk-ant-api03-" + "x" * 40 + "a1b2"
 OPENROUTER = "sk-or-v1-" + "y" * 40 + "c3d4"
+ACCOUNT = "sk-ant-oat01-" + "t" * 40 + "e5f6"
 
 
 class DetectTest(unittest.TestCase):
     def test_kinds(self):
         self.assertEqual(keys.detect(CLAUDE), "claude")
         self.assertEqual(keys.detect(OPENROUTER), "openrouter")
+        self.assertEqual(keys.detect(ACCOUNT), "claude_code")
+        self.assertEqual(keys.mask(ACCOUNT), "sk-ant-oat…e5f6")
         self.assertIsNone(keys.detect("sk-lain-" + "z" * 40))
         self.assertIsNone(keys.detect("sk-ant-pendek"))
 
@@ -62,6 +66,13 @@ class SaveTest(unittest.TestCase):
         self.assertEqual(self._env(), f"OPENROUTER_API_KEY={OPENROUTER}\n")
         self.assertEqual(config.OPENROUTER_API_KEY, OPENROUTER)
 
+    def test_value_saved_by_another_process_is_picked_up(self):
+        with open(self.env, "w", encoding="utf-8") as f:
+            f.write(f"CLAUDE_CODE_OAUTH_TOKEN={ACCOUNT}\n")
+        with mock.patch.object(config, "CLAUDE_CODE_OAUTH_TOKEN", None):
+            keys.refresh_from_env("CLAUDE_CODE_OAUTH_TOKEN")
+            self.assertEqual(config.CLAUDE_CODE_OAUTH_TOKEN, ACCOUNT)
+
     def test_appended_when_missing(self):
         with open(self.env, "w", encoding="utf-8") as f:
             f.write("TELEGRAM_BOT_TOKEN=t")
@@ -88,6 +99,17 @@ class VerifyTest(unittest.TestCase):
         self.assertEqual(make.call_args.kwargs["api_key"], CLAUDE)
         client.models.list.assert_called_once()
         client.messages.create.assert_not_called()
+
+    @unittest.skipUnless(importlib.util.find_spec("claude_agent_sdk"), "claude-agent-sdk tidak terpasang")
+    def test_account_token_checked_with_claude_code(self):
+        from itsme import brain_claude_code
+
+        with mock.patch.object(brain_claude_code, "check_login", return_value="rejected"):
+            with self.assertRaises(keys.KeyRejected):
+                keys.verify("claude_code", ACCOUNT)
+        with mock.patch.object(brain_claude_code, "check_login", return_value="ok") as check:
+            keys.verify("claude_code", ACCOUNT)
+        check.assert_called_once_with(ACCOUNT)
 
     def test_openrouter_key_rejected(self):
         with mock.patch.object(keys.httpx, "get", return_value=mock.Mock(status_code=401)):

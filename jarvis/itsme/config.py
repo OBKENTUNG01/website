@@ -37,7 +37,9 @@ TELEGRAM_API_URL = (_get("TELEGRAM_API_URL", "https://api.telegram.org") or "").
 # "ollama" (bawaan): model lokal di komputermu, gratis, tanpa API key.
 # "openrouter": model cloud lewat OpenRouter (butuh OPENROUTER_API_KEY).
 # "claude": Claude lewat Anthropic API (butuh ANTHROPIC_API_KEY).
-# Bisa diganti saat bot berjalan lewat perintah Telegram /lokal, /cloud, dan /claude.
+# "claude_code": Claude di komputer dengan akun Claude-mu (butuh CLAUDE_CODE_OAUTH_TOKEN).
+# Bisa diganti saat bot berjalan lewat perintah Telegram /lokal, /cloud,
+# /claude, dan /claudepc.
 BACKEND = (_get("ITSME_BACKEND", "ollama") or "ollama").strip().lower()
 
 # --- Otak cloud lewat OpenRouter (opsional) ----------------------------------
@@ -110,6 +112,15 @@ MAX_TOKENS = int(_get("ITSME_MAX_TOKENS", "64000"))
 # Batas langkah tool dalam satu giliran, supaya tidak berputar tanpa henti.
 MAX_STEPS = int(_get("ITSME_MAX_STEPS", "16"))
 
+# --- Otak Claude di komputer (akun Claude-mu, tanpa API key) -------------------
+# Token akun dari `claude setup-token`. Paling gampang diisi dengan menjalankan
+# `python -m itsme.claude_login` di komputer, atau /kunci dari Telegram.
+CLAUDE_CODE_OAUTH_TOKEN = _get("CLAUDE_CODE_OAUTH_TOKEN")
+# Kosong = model bawaan akunmu. Bisa juga: sonnet, opus, haiku.
+CLAUDE_CODE_MODEL = _get("ITSME_CLAUDE_CODE_MODEL")
+# Batas langkah Claude Code dalam satu giliran.
+CLAUDE_CODE_MAX_TURNS = int(_get("ITSME_CLAUDE_CODE_MAX_TURNS", "40"))
+
 # --- Website (edit lewat Git) ----------------------------------------------
 # Folder clone lokal dari repo website yang mau diedit It's Me.
 # Kosongkan kalau belum dipakai.
@@ -147,12 +158,18 @@ def check():
         problems.append("TELEGRAM_BOT_TOKEN belum diisi.")
     if not OWNER_ID:
         problems.append("OWNER_TELEGRAM_ID belum diisi (wajib, demi keamanan).")
-    if BACKEND not in ("ollama", "openrouter", "claude"):
+    if BACKEND not in ("ollama", "openrouter", "claude", "claude_code"):
         problems.append(
-            f"ITSME_BACKEND harus 'ollama', 'openrouter', atau 'claude', bukan '{BACKEND}'."
+            "ITSME_BACKEND harus 'ollama', 'openrouter', 'claude', atau 'claude_code', "
+            f"bukan '{BACKEND}'."
         )
     if BACKEND == "openrouter" and not OPENROUTER_API_KEY:
         problems.append("OPENROUTER_API_KEY belum diisi (wajib untuk ITSME_BACKEND=openrouter).")
     if BACKEND == "claude" and not ANTHROPIC_API_KEY:
         problems.append("ANTHROPIC_API_KEY belum diisi (wajib untuk ITSME_BACKEND=claude).")
+    if BACKEND == "claude_code" and not CLAUDE_CODE_OAUTH_TOKEN:
+        problems.append(
+            "CLAUDE_CODE_OAUTH_TOKEN belum diisi (wajib untuk ITSME_BACKEND=claude_code; "
+            "jalankan python -m itsme.claude_login)."
+        )
     return problems

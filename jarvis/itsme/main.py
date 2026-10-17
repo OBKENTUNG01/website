@@ -42,9 +42,10 @@ HELP = (
     "/help — bantuan ini\n"
     "/otak — lihat otak yang sedang dipakai\n"
     "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
+    "/claudepc — pakai Claude di komputer (akun Claude-mu, tanpa API key)\n"
     "/claude — pakai otak Claude (Anthropic API, paling pintar)\n"
     "/lokal — pakai otak lokal (gratis, privat)\n"
-    "/kunci <key> — simpan API key Claude/OpenRouter (pesannya langsung kuhapus)\n"
+    "/kunci <key> — simpan API key atau token akun Claude (pesannya langsung kuhapus)\n"
     "/memori — lihat isi memori jangka panjang\n"
     "/hapus_memori — kosongkan memori\n"
     "/reset — mulai percakapan baru (lupakan konteks obrolan, memori tetap)\n"
@@ -53,12 +54,19 @@ HELP = (
 
 KUNCI_HELP = (
     "Kirim API key dengan: /kunci <key>\n\n"
-    "Key Claude diawali sk-ant-, key OpenRouter diawali sk-or-. Pesanmu "
-    "langsung kuhapus, key diperiksa dulu ke penyedianya, lalu disimpan ke "
-    ".env dan langsung aktif. Key tidak pernah dibaca otak AI."
+    "Key Claude diawali sk-ant-, token akun Claude (dari claude setup-token) "
+    "diawali sk-ant-oat, key OpenRouter diawali sk-or-. Pesanmu langsung "
+    "kuhapus, key diperiksa dulu ke penyedianya, lalu disimpan ke .env dan "
+    "langsung aktif. Key tidak pernah dibaca otak AI."
 )
-# Perintah Telegram untuk mengganti otak.
-_BRAIN_COMMANDS = {"/lokal": "ollama", "/cloud": "openrouter", "/claude": "claude"}
+# Perintah Telegram untuk mengganti otak, dan perintah yang memakai tiap jenis key.
+_BRAIN_COMMANDS = {
+    "/lokal": "ollama",
+    "/cloud": "openrouter",
+    "/claude": "claude",
+    "/claudepc": "claude_code",
+}
+_KEY_COMMANDS = {kind: cmd for cmd, kind in _BRAIN_COMMANDS.items()}
 # Pesan yang bukan teks (suara, foto, stiker, ...) belum bisa dibaca otaknya.
 _NON_TEXT = ("voice", "audio", "photo", "video", "video_note", "document", "sticker", "location", "contact")
 _URL = re.compile(r"https?://[^\s<>\"']+")
@@ -120,6 +128,10 @@ class App:
             lines.append(f"/claude — {brain.describe('claude')}")
         else:
             lines.append("/claude — belum aktif (kirim /kunci <key Claude>)")
+        if brain.claude_code_ready():
+            lines.append(f"/claudepc — {brain.describe('claude_code')}")
+        else:
+            lines.append("/claudepc — belum login (kirim /claudepc untuk caranya)")
         if brain.current_backend() == "openrouter" and config.FALLBACK_LOCAL:
             lines += ["", "Kalau otak cloud tidak bisa dipakai, otak lokal otomatis menjawab."]
         if config.OPENROUTER_API_KEY and config.OPENROUTER_MODEL.endswith(":free"):
@@ -280,7 +292,7 @@ class App:
         if brain.current_backend() == kind:
             usage = f"Otak {name} sekarang memakai key ini."
         else:
-            usage = f"Kirim {'/claude' if kind == 'claude' else '/cloud'} untuk memakainya."
+            usage = f"Kirim {_KEY_COMMANDS[kind]} untuk memakainya."
         await self.tg.send(
             chat_id,
             f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa, disimpan, dan langsung aktif. {usage}" + note,
@@ -337,7 +349,9 @@ class App:
                 self.memory.clear()
                 await self.tg.send(chat_id, "Memori sudah dikosongkan.")
             return
-        target = next((b for cmd, b in _BRAIN_COMMANDS.items() if text.startswith(cmd)), None)
+        # Cocokkan kata perintahnya utuh: "/claudepc" bukan "/claude".
+        command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        target = _BRAIN_COMMANDS.get(command)
         if target:
             try:
                 brain.set_backend(target)

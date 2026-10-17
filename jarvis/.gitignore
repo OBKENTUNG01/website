@@ -10,6 +10,7 @@ data/itsme.lock
 data/ollama_state.json
 data/version.json
 data/update_notice.txt
+data/claude/
 
 # Dibuat oleh skrip setup saat It's Me dipasang
 start-itsme.cmd

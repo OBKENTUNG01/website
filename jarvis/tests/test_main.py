@@ -194,6 +194,24 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.brain.current_backend(), "ollama")
         self.assertIn("ANTHROPIC_API_KEY", self.tg.sent[-1][1])
 
+    async def test_claudepc_without_login_explains_how(self):
+        with mock.patch.dict(main.brain._state, {"backend": "ollama"}), mock.patch.object(
+            config, "CLAUDE_CODE_OAUTH_TOKEN", None
+        ), mock.patch.object(main.keys, "ENV_FILE", os.path.join(self.dir, "tidak-ada.env")):
+            await self.app._handle_message(self._msg("/claudepc"))
+            self.assertEqual(main.brain.current_backend(), "ollama")
+        self.assertIn("itsme.claude_login", self.tg.sent[-1][1])
+
+    async def test_claudepc_and_claude_are_different_commands(self):
+        with mock.patch.dict(main.brain._state, {"backend": "ollama"}), mock.patch.object(
+            config, "CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-" + "t" * 40
+        ), mock.patch.object(config, "ANTHROPIC_API_KEY", "kunci-uji"):
+            await self.app._handle_message(self._msg("/claudepc"))
+            self.assertEqual(main.brain.current_backend(), "claude_code")
+            self.assertIn("akun Claude-mu", self.tg.sent[-1][1])
+            await self.app._handle_message(self._msg("/claude"))
+            self.assertEqual(main.brain.current_backend(), "claude")
+
     # --- API key lewat chat ----------------------------------------------------
     KEY = "sk-ant-api03-" + "x" * 40 + "a1b2"
 
@@ -224,6 +242,15 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sk-ant-…a1b2", self._texts()[0])
         self.assertFalse(any(self.KEY in t for t in self._texts()))
         self.assertNotIn(7, self.app.histories)  # tidak masuk riwayat obrolan
+
+    async def test_account_token_points_to_claudepc(self):
+        token = "sk-ant-oat01-" + "t" * 40 + "e5f6"
+        with self._keys_patched(return_value=None), mock.patch.object(config, "CLAUDE_CODE_OAUTH_TOKEN", None):
+            await self.app._handle_message(self._msg(f"/kunci {token}", message_id=60))
+            self.assertEqual(config.CLAUDE_CODE_OAUTH_TOKEN, token)
+            self.assertIsNone(config.ANTHROPIC_API_KEY)  # bukan API key
+        self.assertIn("/claudepc", self._texts()[-1])
+        self.assertFalse(any(token in t for t in self._texts()))
 
     async def test_rejected_key_not_saved(self):
         with self._keys_patched(side_effect=main.keys.KeyRejected("Anthropic menolak key ini.")):

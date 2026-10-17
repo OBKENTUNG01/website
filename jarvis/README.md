@@ -236,9 +236,10 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/start`, `/help` | Bantuan |
 | `/otak` | Lihat otak yang sedang dipakai |
 | `/cloud` | Pakai otak cloud (OpenRouter) |
+| `/claudepc` | Pakai Claude di komputer dengan akun Claude-mu, tanpa API key ([cara login](#memakai-akun-claude-mu-tanpa-api-key-claudepc)) |
 | `/claude` | Pakai otak Claude (Anthropic API, butuh `ANTHROPIC_API_KEY` di `.env`) |
 | `/lokal` | Pakai otak lokal (Ollama) |
-| `/kunci <key>` | Simpan API key Claude (`sk-ant-…`) atau OpenRouter (`sk-or-…`); pesannya langsung dihapus |
+| `/kunci <key>` | Simpan API key Claude (`sk-ant-…`), token akun Claude (`sk-ant-oat…`), atau key OpenRouter (`sk-or-…`); pesannya langsung dihapus |
 | `/memori` | Lihat isi memori jangka panjang |
 | `/hapus_memori` | Kosongkan memori (minta konfirmasi) |
 | `/reset` | Mulai percakapan baru (memori tetap) |
@@ -282,6 +283,34 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_UPDATE_INTERVAL` | `120` | Jeda antar pemeriksaan GitHub (detik, minimal 60) |
 | `ITSME_UPDATE_REPO` | `OBKENTUNG01/website` | Repo GitHub yang diikuti |
 | `ITSME_UPDATE_BRANCH` | `main` | Cabang yang diikuti |
+
+## Memakai akun Claude-mu tanpa API key (`/claudepc`)
+
+Punya langganan Claude (Pro/Max)? It's Me bisa memakai **Claude Code di
+komputermu dengan akun itu** — tanpa API key; pemakaiannya dihitung dari kuota
+paketmu. Claude Code bisa menjalankan perintah, membaca & mengubah berkas, dan
+mencari di internet, dengan aturan yang sama seperti otak lain: aksi yang
+mengubah sesuatu minta tombol "Ya" di Telegram, berkas rahasia selalu ditolak.
+
+Login aplikasi Claude desktop terkunci untuk aplikasi itu dan tidak bisa
+dipakai program lain — karena itu It's Me butuh token akunnya sendiri. **Sekali
+saja, di komputer**, buka PowerShell lalu jalankan:
+
+```powershell
+cd $HOME\ItsMe; .venv\Scripts\python -m itsme.claude_login
+```
+
+(macOS/Linux: `cd ~/itsme && .venv/bin/python -m itsme.claude_login`)
+
+Skrip itu memasang Claude Code (sekali, ±250 MB), membuka browser untuk login
+dengan akun Claude-mu, lalu meminta token yang muncul (`sk-ant-oat…`, berlaku
+±1 tahun) dan menyimpannya ke `.env`. Setelah itu kirim `/claudepc` ke bot dari
+HP — tidak perlu menyalakan ulang It's Me, dan tidak ada lagi link login di HP.
+Tokennya juga bisa dikirim lewat `/kunci` kalau kamu membuatnya di tempat lain.
+
+Model bawaan akunmu dipakai; ganti lewat `ITSME_CLAUDE_CODE_MODEL` (`sonnet`,
+`opus`, `haiku`). Kalau `ANTHROPIC_API_KEY` juga ada di `.env`, `/claudepc`
+tetap memakai akunmu (API key hanya untuk `/claude`).
 
 ## Memakai otak Claude (opsional)
 
