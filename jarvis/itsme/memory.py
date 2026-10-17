@@ -36,3 +36,10 @@ class Memory:
     def clear(self):
         with open(self.path, "w", encoding="utf-8") as f:
             f.write("# Memori It's Me\n\n")
+
+    def set(self, text):
+        """Timpa seluruh isi memori (dipakai saat diedit dari dashboard)."""
+        body = (text or "").strip() or "# Memori It's Me"
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(body + "\n")
+        return "Memori diperbarui."

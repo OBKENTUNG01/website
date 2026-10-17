@@ -121,6 +121,15 @@ CLAUDE_CODE_MODEL = _get("ITSME_CLAUDE_CODE_MODEL")
 # Batas langkah Claude Code dalam satu giliran.
 CLAUDE_CODE_MAX_TURNS = int(_get("ITSME_CLAUDE_CODE_MAX_TURNS", "40"))
 
+# --- Dashboard web (nomor 4) -------------------------------------------------
+# Halaman web untuk melihat status & mengatur It's Me (ganti otak, akses, memori,
+# log). Jalan di dalam proses bot. Isi 0 untuk mematikan.
+DASHBOARD_ENABLED = (_get("ITSME_DASHBOARD", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+# Bawaan 127.0.0.1 = hanya bisa dibuka dari komputer ini (paling aman). Isi
+# 0.0.0.0 untuk bisa dibuka dari HP di WiFi yang sama; saat itu wajib pakai token.
+DASHBOARD_HOST = (_get("ITSME_DASHBOARD_HOST", "127.0.0.1") or "127.0.0.1").strip()
+DASHBOARD_PORT = int(_get("ITSME_DASHBOARD_PORT", "8750"))
+
 # --- Website (edit lewat Git) ----------------------------------------------
 # Folder clone lokal dari repo website yang mau diedit It's Me.
 # Kosongkan kalau belum dipakai.

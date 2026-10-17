@@ -13,6 +13,7 @@ data/update_notice.txt
 data/claude/
 data/access.json
 data/brain.json
+data/dashboard_token.txt
 
 # Dibuat oleh skrip setup saat It's Me dipasang
 start-itsme.cmd

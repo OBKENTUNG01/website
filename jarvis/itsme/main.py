@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
-from . import access, brain, config, keys, updater
+from . import access, brain, config, dashboard, keys, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -554,6 +554,7 @@ class App:
         """Layani Telegram. Kembalikan EXIT_UPDATED setelah pembaruan terpasang."""
         self.loop = asyncio.get_running_loop()
         brain.restore()
+        dashboard.start(self)
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
         try:
             notice = updater.pop_notice()

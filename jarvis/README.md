@@ -253,6 +253,26 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/reset` | Mulai percakapan baru (memori tetap) |
 | `/id` | Tampilkan user id Telegram-mu |
 
+### Dashboard web
+
+Selain Telegram, It's Me punya **halaman web** untuk melihat status dan
+mengaturnya. Buka di komputer tempat It's Me jalan:
+
+```
+http://localhost:8750
+```
+
+Di sana kamu bisa: lihat otak yang aktif dan ganti otak (lokal/cloud/Claude/
+Claude di komputer), lihat & ubah mode akses, lihat & edit memori, dan lihat
+log terbaru. Perubahan langsung berlaku pada It's Me yang sedang jalan.
+
+Bawaannya dashboard **hanya bisa dibuka dari komputer itu sendiri**
+(`127.0.0.1`). Mau membukanya dari HP di WiFi yang sama? Set
+`ITSME_DASHBOARD_HOST=0.0.0.0` di `.env`, lalu buka
+`http://ALAMAT-IP-PC:8750/?token=ISI_TOKEN` dari HP. Tokennya dibuat otomatis,
+tersimpan di `data/dashboard_token.txt`, dan ditampilkan di log It's Me saat
+menyala. Matikan dashboard dengan `ITSME_DASHBOARD=0`.
+
 ### Akses penuh (`/akses_penuh`)
 
 Bawaannya It's Me memakai **akses aman**: aksi yang mengubah sesuatu, membaca
