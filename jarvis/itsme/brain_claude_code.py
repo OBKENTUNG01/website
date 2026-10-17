@@ -15,8 +15,12 @@ rahasia selalu ditolak.
 """
 
 import asyncio
+import importlib
 import json
 import os
+import site
+import sys
+import sysconfig
 
 from . import config, tools
 from .persona import claude_code_prompt
@@ -45,6 +49,32 @@ _READ = {"Read", "NotebookRead", "Grep"}
 _WRITE = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 # Konfirmasi lewat Telegram ditunggu paling lama 300 detik (main.py).
 _HOOK_TIMEOUT = 330
+# Paket Python murni yang bisa gagal setengah jalan saat pywin32 belum terbaca.
+_SDK_PACKAGES = ("claude_agent_sdk", "mcp")
+
+
+def load_sdk():
+    """Import claude_agent_sdk, juga kalau paketnya baru dipasang saat proses
+    ini sudah jalan (claude_login, atau It's Me yang sudah menyala).
+
+    Di Windows SDK butuh pywin32, yang jalurnya didaftarkan lewat berkas .pth —
+    dan .pth hanya dibaca saat Python menyala. Kalau import gagal, .pth di
+    folder paket dibaca ulang lalu dicoba sekali lagi. ImportError berarti
+    paketnya memang belum terpasang.
+    """
+    try:
+        import claude_agent_sdk
+    except ImportError:
+        # Buang modul setengah jadi dari percobaan tadi (mis. paket mcp tanpa
+        # atribut submodulnya), supaya percobaan kedua mengimpor ulang utuh.
+        for name in [n for n in sys.modules if n.split(".")[0] in _SDK_PACKAGES]:
+            del sys.modules[name]
+        paths = sysconfig.get_paths()
+        for folder in dict.fromkeys((paths["purelib"], paths["platlib"])):
+            site.addsitedir(folder)
+        importlib.invalidate_caches()
+        import claude_agent_sdk
+    return claude_agent_sdk
 
 
 # --- aturan alat ------------------------------------------------------------------
@@ -118,14 +148,13 @@ def _env(token=None):
 
 async def _collect(prompt, options):
     """Jalankan satu giliran; kembalikan ResultMessage terakhir (atau None)."""
-    from claude_agent_sdk import ResultError, ResultMessage, query
-
+    sdk = load_sdk()
     result = None
     try:
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, ResultMessage):
+        async for message in sdk.query(prompt=prompt, options=options):
+            if isinstance(message, sdk.ResultMessage):
                 result = message
-    except ResultError:
+    except sdk.ResultError:
         if result is None:
             raise  # error tanpa hasil yang bisa dijelaskan
     return result
@@ -138,9 +167,7 @@ def _is_auth_error(result):
 def check_login(token):
     """Coba token dengan satu jawaban pendek. "ok" atau "rejected"; error lain
     berarti belum bisa diperiksa."""
-    from claude_agent_sdk import ClaudeAgentOptions
-
-    options = ClaudeAgentOptions(
+    options = load_sdk().ClaudeAgentOptions(
         tools=[], max_turns=1, env=_env(token), cwd=os.path.expanduser("~")
     )
     result = asyncio.run(_collect("Balas hanya dengan: OK", options))
@@ -160,13 +187,13 @@ def run_agent(messages, ctx):
     if not config.CLAUDE_CODE_OAUTH_TOKEN:
         return LOGIN_HINT
     try:
-        from claude_agent_sdk import ClaudeAgentOptions, CLINotFoundError, HookMatcher
+        sdk = load_sdk()
     except ImportError:
         return "Paket Claude di komputer belum terpasang. " + LOGIN_HINT
 
     cwd = ctx.get("website_dir") or os.path.expanduser("~")
     session = next((m["session_id"] for m in reversed(messages) if m.get("session_id")), None)
-    options = ClaudeAgentOptions(
+    options = sdk.ClaudeAgentOptions(
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
@@ -177,11 +204,11 @@ def run_agent(messages, ctx):
         model=config.CLAUDE_CODE_MODEL,
         max_turns=config.CLAUDE_CODE_MAX_TURNS,
         env=_env(),
-        hooks={"PreToolUse": [HookMatcher(hooks=[_hook(ctx, cwd)], timeout=_HOOK_TIMEOUT)]},
+        hooks={"PreToolUse": [sdk.HookMatcher(hooks=[_hook(ctx, cwd)], timeout=_HOOK_TIMEOUT)]},
     )
     try:
         result = asyncio.run(_collect(messages[-1]["content"], options))
-    except CLINotFoundError:
+    except sdk.CLINotFoundError:
         return "Program Claude Code tidak ditemukan. " + LOGIN_HINT
     except Exception as exc:  # noqa: BLE001 - pemilik harus selalu dapat jawaban
         return f"Maaf, Claude di komputer error: {type(exc).__name__}: {exc}"

@@ -59,10 +59,10 @@ def verify(kind, key):
     diperiksa (mis. internet putus).
     """
     if kind == "claude_code":
-        from .brain_claude_code import LOGIN_HINT, check_login
+        from .brain_claude_code import LOGIN_HINT, check_login, load_sdk
 
         try:
-            import claude_agent_sdk  # noqa: F401
+            load_sdk()
         except ImportError as exc:
             raise KeyRejected("Claude Code belum terpasang di komputer. " + LOGIN_HINT) from exc
         # Satu jawaban pendek ("OK") memakai sedikit kuota akunmu.
