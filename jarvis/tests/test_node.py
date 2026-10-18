@@ -82,6 +82,15 @@ class FollowerTest(unittest.TestCase):
         self.status.return_value = _status(leader=None, phase="electing")
         self.assertEqual(self.f.decide(node.STANDBY), node.STANDBY)
 
+    def test_active_bot_waits_out_election(self):
+        """Node baru dipasang di komputer bot aktif: bot tidak berhenti selama pemilihan."""
+        self.status.return_value = _status(leader=None, phase="electing")
+        for _ in range(3):
+            self.assertEqual(self.f.decide(node.ACTIVE), node.ACTIVE)
+            self.clock.now += node.STEP_DOWN_AFTER
+        self.status.return_value = _status(leader=ME)
+        self.assertEqual(self.f.decide(node.ACTIVE), node.ACTIVE)
+
     def test_active_bot_steps_down_only_after_a_while(self):
         self.status.return_value = _status(leader=OTHER)
         self.assertEqual(self.f.decide(node.ACTIVE), node.ACTIVE)

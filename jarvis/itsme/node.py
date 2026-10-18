@@ -93,6 +93,11 @@ class Follower:
         self._unreachable_since = None
         self.leader = leader_name(st) or self.leader
         role = role_of(st)
+        if current == ACTIVE and (st.get("phase") != "running" or not st.get("leader")):
+            # Pemilihan sedang berjalan (mis. node baru dipasang): tunggu hasilnya,
+            # jangan berhenti hanya karena belum ada pemimpin.
+            self._standby_since = None
+            return ACTIVE
         if role == STANDBY and current == ACTIVE:
             if self._standby_since is None:
                 self._standby_since = now
