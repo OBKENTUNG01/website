@@ -18,6 +18,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import site
 import sys
 import sysconfig
@@ -237,6 +238,22 @@ def _is_auth_error(result):
     return result.api_error_status in (401, 403)
 
 
+# Jawaban Claude Code saat filter keamanan Claude menolak sebuah sesi, mis.
+# "API Error: Opus 5.5's safeguards flagged this session (…/legal/aup)".
+_FLAGGED = re.compile(r"safeguards? flagged|anthropic\.com/legal/aup", re.I)
+
+FLAGGED_REPLY = (
+    "⚠️ Filter keamanan Claude menolak percakapan ini. Filter itu kadang salah "
+    "sasaran untuk pekerjaan biasa, biasanya karena isi obrolan sebelumnya.\n\n"
+    "Konteks obrolan sudah saya mulai dari awal (memori tetap). Kirim ulang "
+    "permintaannya dengan kalimat yang jelas, sebutkan juga tujuannya."
+)
+
+
+def _is_flagged(result):
+    return bool(result.is_error and _FLAGGED.search(result.result or ""))
+
+
 def check_login(token):
     """Coba token dengan satu jawaban pendek. "ok" atau "rejected"; error lain
     berarti belum bisa diperiksa."""
@@ -274,27 +291,44 @@ def run_agent(messages, ctx):
     if drive.ready():
         mcp_servers = {_DRIVE_MCP: _drive_server(ctx)}
         append += _DRIVE_PROMPT
-    options = sdk.ClaudeAgentOptions(
-        system_prompt={"type": "preset", "preset": "claude_code", "append": append},
-        resume=session,
-        cwd=cwd,
-        model=config.CLAUDE_CODE_MODEL,
-        max_turns=config.CLAUDE_CODE_MAX_TURNS,
-        env=_env(),
-        mcp_servers=mcp_servers,
-        hooks={"PreToolUse": [sdk.HookMatcher(hooks=[_hook(ctx, cwd)], timeout=_HOOK_TIMEOUT)]},
-    )
+    prompt = messages[-1]["content"]
+
+    def ask(resume):
+        options = sdk.ClaudeAgentOptions(
+            system_prompt={"type": "preset", "preset": "claude_code", "append": append},
+            resume=resume,
+            cwd=cwd,
+            model=config.CLAUDE_CODE_MODEL,
+            max_turns=config.CLAUDE_CODE_MAX_TURNS,
+            env=_env(),
+            mcp_servers=mcp_servers,
+            hooks={"PreToolUse": [sdk.HookMatcher(hooks=[_hook(ctx, cwd)], timeout=_HOOK_TIMEOUT)]},
+        )
+        return asyncio.run(_collect(prompt, options))
+
     try:
-        result = asyncio.run(_collect(messages[-1]["content"], options))
+        result = ask(session)
+        if session and result is not None and _is_flagged(result):
+            # Sesi lama ditandai filter keamanan Claude, dan setiap giliran yang
+            # melanjutkannya ikut ditolak. Coba sekali lagi di sesi baru tanpa
+            # konteks lama (hanya pesan terakhir pemilik).
+            del messages[:-1]
+            result = ask(None)
     except sdk.CLINotFoundError:
         return "Program Claude Code tidak ditemukan. " + LOGIN_HINT
     except Exception as exc:  # noqa: BLE001 - pemilik harus selalu dapat jawaban
+        if _FLAGGED.search(str(exc)):
+            messages.clear()
+            return FLAGGED_REPLY
         return f"Maaf, Claude di komputer error: {type(exc).__name__}: {exc}"
     if result is None:
         return "Maaf, Claude di komputer tidak memberi jawaban."
     if result.is_error:
         if _is_auth_error(result):
             return "Token akun Claude ditolak (salah atau kedaluwarsa). " + LOGIN_HINT
+        if _is_flagged(result):
+            messages.clear()  # giliran berikutnya mulai dari sesi baru
+            return FLAGGED_REPLY
         return f"⚠️ Claude di komputer error: {result.result or result.subtype}"
     reply = (result.result or "").strip() or "(selesai)"
     messages.append({"role": "assistant", "content": reply, "session_id": result.session_id})

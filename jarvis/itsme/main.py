@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
-from . import access, brain, config, dashboard, devices, keys, updater
+from . import access, brain, config, dashboard, devices, keys, node, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -108,6 +108,8 @@ _FIRST_UPDATE_CHECK = 30
 # Sebelum menyala ulang, pesan & tugas latar yang sedang jalan ditunggu selesai,
 # paling lama sekian detik.
 _UPDATE_MAX_WAIT = 600
+# Jeda menanyakan pemimpin ke It's Me Node (detik).
+_NODE_CHECK_EVERY = 5
 _HARI = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
 
 
@@ -757,15 +759,34 @@ class App:
             for update in updates:
                 self._spawn(self._dispatch(update))
 
-    async def _serve_until_update(self):
-        """Layani Telegram sampai ada pembaruan dari GitHub, lalu kembalikan
-        pembaruan itu setelah pekerjaan yang sedang jalan selesai."""
+    async def _watch_leader(self, follower):
+        """Selesai kalau It's Me Node memilih komputer lain sebagai pemimpin."""
+        while True:
+            await asyncio.sleep(_NODE_CHECK_EVERY)
+            if await asyncio.to_thread(follower.decide, node.ACTIVE) == node.STANDBY:
+                return
+
+    async def _serve_until_update(self, follower=None):
+        """Layani Telegram sampai ada pembaruan dari GitHub (kembalikan pembaruan
+        itu setelah pekerjaan yang sedang jalan selesai), atau sampai komputer
+        lain menjadi pemimpin It's Me Node (kembalikan None)."""
         poll = asyncio.create_task(self._poll())
         watch = asyncio.create_task(self._watch_updates()) if config.AUTO_UPDATE else None
+        lead = asyncio.create_task(self._watch_leader(follower)) if follower and config.FOLLOW_NODE else None
+        tasks = {t for t in (poll, watch, lead) if t}
         try:
-            await asyncio.wait({t for t in (poll, watch) if t}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             if poll.done():
                 poll.result()  # error saat mengambil pesan diteruskan
+            if lead is not None and lead.done():
+                # Berhenti mengambil pesan sekarang juga (bot di pemimpin baru yang
+                # mengambilnya), tandai yang sudah terambil supaya tidak dijawab
+                # dua kali, lalu selesaikan pekerjaan yang sedang jalan.
+                poll.cancel()
+                await asyncio.gather(poll, return_exceptions=True)
+                await self.tg.ack_updates()
+                await self._wait_idle(_UPDATE_MAX_WAIT)
+                return None
             update = watch.result()
             log.info("Pembaruan ditemukan: %s", update.describe())
             await self._wait_idle(_UPDATE_MAX_WAIT)
@@ -775,10 +796,9 @@ class App:
             # ulang Telegram setelah It's Me menyala lagi.
             return update
         finally:
-            poll.cancel()
-            if watch:
-                watch.cancel()
-            await asyncio.gather(*(t for t in (poll, watch) if t), return_exceptions=True)
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def run_agent(self):
         """Mode perangkat: tanpa Telegram (biar tidak berebut token dengan Hub).
@@ -820,12 +840,52 @@ class App:
                         log.exception("pembaruan %s gagal dipasang", update.short)
                         self._failed_updates.add(update.sha)
 
+    async def run_standby(self, follower):
+        """It's Me Node memilih komputer lain sebagai pemimpin: jangan ambil pesan
+        Telegram (bot di komputer pemimpin yang menjawab). Tunggu sampai komputer
+        ini terpilih, lalu menyala ulang sebagai bot aktif. Memori, otak, dan
+        mode akses disalin node dari pemimpin selama siaga."""
+        log.info(
+            "%s siaga: bot Telegram sedang aktif di %s (pemimpin It's Me Node).",
+            config.NAME,
+            follower.leader or "komputer lain",
+        )
+        next_update = self.loop.time() + _FIRST_UPDATE_CHECK
+        while True:
+            await asyncio.sleep(_NODE_CHECK_EVERY)
+            if await asyncio.to_thread(follower.decide, node.STANDBY) == node.ACTIVE:
+                log.info("Komputer ini sekarang pemimpin, It's Me aktif.")
+                updater.save_notice(f"🔁 It's Me sekarang aktif di komputer {config.DEVICE_NAME}.")
+                return EXIT_UPDATED
+            if config.AUTO_UPDATE and self.loop.time() >= next_update:
+                next_update = self.loop.time() + config.UPDATE_INTERVAL
+                try:
+                    update = await asyncio.to_thread(updater.check, self._failed_updates)
+                except Exception:  # noqa: BLE001 - internet/GitHub; coba lagi nanti
+                    update = None
+                if update:
+                    try:
+                        await asyncio.to_thread(updater.apply, update)
+                    except Exception:  # noqa: BLE001
+                        log.exception("pembaruan %s gagal dipasang", update.short)
+                        self._failed_updates.add(update.sha)
+                    else:
+                        log.info("Pembaruan %s terpasang, menyala ulang.", update.short)
+                        return EXIT_UPDATED
+
     async def run(self):
-        """Layani Telegram. Kembalikan EXIT_UPDATED setelah pembaruan terpasang."""
+        """Layani Telegram. Kembalikan EXIT_UPDATED setelah pembaruan terpasang,
+        atau saat It's Me Node memindahkan bot ke komputer lain / ke sini."""
         if config.AGENT_MODE:
             return await self.run_agent()
         self.loop = asyncio.get_running_loop()
         self.started = datetime.now()
+        follower = node.Follower()
+        if follower.enabled and await asyncio.to_thread(follower.first_role) == node.STANDBY:
+            try:
+                return await self.run_standby(follower)
+            finally:
+                await self.tg.close()
         brain.restore()
         dashboard.start(self)
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
@@ -834,7 +894,13 @@ class App:
             if notice:
                 await self.tg.send(config.OWNER_ID, notice)
             while True:
-                update = await self._serve_until_update()
+                update = await self._serve_until_update(follower)
+                if update is None:
+                    log.info(
+                        "Pemimpin It's Me Node pindah ke %s; It's Me di sini siaga.",
+                        follower.leader or "komputer lain",
+                    )
+                    return EXIT_UPDATED
                 if await self._install(update):
                     return EXIT_UPDATED
         finally:
@@ -924,7 +990,7 @@ def _restart(lock, listener):
     menyalakannya lagi.
     """
     if os.name == "nt":
-        print("[itsme] Pembaruan terpasang, menyala ulang...")
+        print("[itsme] Menyala ulang...")
         return
     if listener:
         listener.stop()  # atexit tidak dijalankan oleh exec

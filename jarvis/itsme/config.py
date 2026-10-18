@@ -119,8 +119,8 @@ MAX_STEPS = int(_get("ITSME_MAX_STEPS", "16"))
 CLAUDE_CODE_OAUTH_TOKEN = _get("CLAUDE_CODE_OAUTH_TOKEN")
 # Kosong = model bawaan akunmu. Bisa juga: sonnet, opus, haiku.
 CLAUDE_CODE_MODEL = _get("ITSME_CLAUDE_CODE_MODEL")
-# Batas langkah Claude Code dalam satu giliran.
-CLAUDE_CODE_MAX_TURNS = int(_get("ITSME_CLAUDE_CODE_MAX_TURNS", "40"))
+# Batas langkah Claude Code dalam satu giliran. 0 = tanpa batas.
+CLAUDE_CODE_MAX_TURNS = int(_get("ITSME_CLAUDE_CODE_MAX_TURNS", "0")) or None
 
 # --- Dashboard web (nomor 4) -------------------------------------------------
 # Halaman web untuk melihat status & mengatur It's Me (ganti otak, akses, memori,
@@ -151,6 +151,13 @@ HUB_SECRET = _get("ITSME_HUB_SECRET", "")
 AGENT_MODE = bool(HUB_URL)
 # Jeda heartbeat perangkat ke Hub (detik).
 HUB_HEARTBEAT = float(_get("ITSME_HUB_HEARTBEAT", "60"))
+
+# --- It's Me Node: banyak komputer tanpa hub ----------------------------------
+# Kalau It's Me Node terpasang di komputer ini, bot Telegram hanya aktif di
+# komputer yang sedang menjadi pemimpin jaringan node; komputer lain siaga dan
+# otomatis mengambil alih kalau pemimpin mati. 0 = abaikan node.
+FOLLOW_NODE = (_get("ITSME_FOLLOW_NODE", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+NODE_URL = (_get("ITSME_NODE_URL", "http://127.0.0.1:7171") or "").strip().rstrip("/")
 
 # --- Website (edit lewat Git) ----------------------------------------------
 # Folder clone lokal dari repo website yang mau diedit It's Me.

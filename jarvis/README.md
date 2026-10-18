@@ -286,6 +286,28 @@ komputer: login/API key otak (mis. `/claudepc` perlu login Claude di komputer
 itu juga) dan Ollama kalau memakai otak lokal. Berkas & foto belum bisa
 diteruskan ke perangkat — kirim teks.
 
+### Tanpa komputer inti: bot pindah sendiri ([It's Me Node](https://github.com/OBKENTUNG01/itsme-node))
+
+Dengan Hub, bot mati kalau komputer Hub mati. Dengan **It's Me Node**, tidak ada
+komputer inti: semua komputer setara, satu dipilih menjadi **pemimpin**, dan bot
+Telegram hanya aktif di pemimpin. Kalau pemimpin mati, komputer lain dipilih
+dalam ±20 detik dan bot langsung aktif di sana.
+
+1. Di setiap komputer, pasang It's Me seperti biasa dengan **token bot yang
+   sama** (jangan isi `ITSME_HUB_URL`), lalu pasang node:
+   ```powershell
+   irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex
+   ```
+2. Selesai. It's Me di komputer yang bukan pemimpin **siaga** (tidak mengambil
+   pesan Telegram), dan node menyalin **memori**, **otak yang dipilih**, dan
+   **mode akses** dari pemimpin tiap 20 detik. Saat bot pindah, kamu dikabari
+   "🔁 It's Me sekarang aktif di komputer …".
+
+Yang tetap diurus per komputer: login otak (mis. `/claudepc` perlu
+`itsme.claude_login` di komputer itu) dan Ollama kalau memakai otak lokal.
+Riwayat obrolan mulai baru setelah bot pindah; memori tetap. Tanpa node,
+It's Me jalan seperti biasa. Matikan perilaku ini dengan `ITSME_FOLLOW_NODE=0`.
+
 ### Dashboard web
 
 Selain Telegram, It's Me punya **halaman web** untuk melihat status dan
@@ -392,6 +414,8 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_UPDATE_INTERVAL` | `120` | Jeda antar pemeriksaan GitHub (detik, minimal 60) |
 | `ITSME_UPDATE_REPO` | `OBKENTUNG01/website` | Repo GitHub yang diikuti |
 | `ITSME_UPDATE_BRANCH` | `main` | Cabang yang diikuti |
+| `ITSME_FOLLOW_NODE` | `1` | Kalau It's Me Node terpasang, bot hanya aktif di komputer pemimpin (`0` = abaikan node) |
+| `ITSME_NODE_URL` | `http://127.0.0.1:7171` | Alamat API node di komputer ini |
 
 ## Google Drive (opsional)
 
@@ -454,7 +478,14 @@ Tokennya juga bisa dikirim lewat `/kunci` kalau kamu membuatnya di tempat lain.
 
 Model bawaan akunmu dipakai; ganti lewat `ITSME_CLAUDE_CODE_MODEL` (`sonnet`,
 `opus`, `haiku`). Kalau `ANTHROPIC_API_KEY` juga ada di `.env`, `/claudepc`
-tetap memakai akunmu (API key hanya untuk `/claude`).
+tetap memakai akunmu (API key hanya untuk `/claude`). Batas langkah per pesan
+bawaannya tanpa batas; atur lewat `ITSME_CLAUDE_CODE_MAX_TURNS` kalau perlu.
+
+Kalau filter keamanan Claude menolak percakapan (pesan "safeguards flagged
+this session"; kadang salah sasaran untuk pekerjaan biasa), It's Me otomatis
+mencoba sekali lagi di sesi baru tanpa konteks lama. Kalau tetap ditolak, It's
+Me menjelaskannya dalam bahasa Indonesia dan memulai percakapan dari awal;
+memori tetap.
 
 ## Memakai otak Claude (opsional)
 

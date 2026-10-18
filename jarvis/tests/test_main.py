@@ -71,6 +71,7 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(config, "MEMORY_FILE", os.path.join(self.dir, "memory.md")),
             mock.patch.object(config, "DATA_DIR", self.dir),
             mock.patch.object(config, "LOG_FILE", os.path.join(self.dir, "itsme.log")),
+            mock.patch.object(config, "FOLLOW_NODE", False),  # It's Me Node di komputer penguji diabaikan
             mock.patch.object(main, "Telegram", FakeTelegram),
         ):
             patch.start()

@@ -184,6 +184,57 @@ class RunAgentTest(unittest.TestCase):
             self.assertEqual(collect.call_args[0][1].resume, "sesi-1")
         self.assertEqual(messages[-1]["session_id"], "sesi-1")
 
+    def test_flagged_session_retried_in_fresh_session(self):
+        flagged = _result(is_error=True, result="API Error: Opus 5.5's safeguards flagged this session "
+                          "(https://www.anthropic.com/legal/aup).")
+        messages = [
+            {"role": "user", "content": "lama"},
+            {"role": "assistant", "content": "ok", "session_id": "sesi-lama"},
+            {"role": "user", "content": "mana hasilnya?"},
+        ]
+        collect = mock.AsyncMock(side_effect=[flagged, _result(session_id="sesi-baru")])
+        with mock.patch.object(cc, "_collect", collect):
+            self.assertEqual(cc.run_agent(messages, self.ctx), "Halo Tuan")
+        first, second = (call[0][1] for call in collect.call_args_list)
+        self.assertEqual(first.resume, "sesi-lama")
+        self.assertIsNone(second.resume)
+        self.assertEqual(collect.call_args_list[1][0][0], "mana hasilnya?")
+        # Konteks lama dibuang; giliran berikutnya melanjutkan sesi baru.
+        self.assertEqual([m["content"] for m in messages], ["mana hasilnya?", "Halo Tuan"])
+        self.assertEqual(messages[-1]["session_id"], "sesi-baru")
+
+    def test_flagged_again_resets_context_and_explains(self):
+        flagged = _result(is_error=True, result="API Error: Opus 5.5's safeguards flagged this session")
+        messages = [
+            {"role": "assistant", "content": "ok", "session_id": "sesi-lama"},
+            {"role": "user", "content": "lanjut"},
+        ]
+        with mock.patch.object(cc, "_collect", mock.AsyncMock(return_value=flagged)) as collect:
+            reply = cc.run_agent(messages, self.ctx)
+        self.assertEqual(reply, cc.FLAGGED_REPLY)
+        self.assertNotIn("API Error", reply)
+        self.assertEqual(collect.call_count, 2)
+        self.assertEqual(messages, [])
+
+    def test_flagged_new_session_not_retried(self):
+        flagged = _result(is_error=True, result="safeguards flagged this session")
+        messages = [{"role": "user", "content": "halo"}]
+        with mock.patch.object(cc, "_collect", mock.AsyncMock(return_value=flagged)) as collect:
+            self.assertEqual(cc.run_agent(messages, self.ctx), cc.FLAGGED_REPLY)
+        self.assertEqual(collect.call_count, 1)
+        self.assertEqual(messages, [])
+
+    def test_other_errors_keep_context(self):
+        messages = [
+            {"role": "assistant", "content": "ok", "session_id": "sesi-lama"},
+            {"role": "user", "content": "lanjut"},
+        ]
+        result = _result(is_error=True, result="Overloaded")
+        with mock.patch.object(cc, "_collect", mock.AsyncMock(return_value=result)) as collect:
+            self.assertIn("Overloaded", cc.run_agent(messages, self.ctx))
+        self.assertEqual(collect.call_count, 1)
+        self.assertEqual(len(messages), 2)
+
     def test_rejected_token_explains_login(self):
         result = _result(is_error=True, result="Failed to authenticate. API Error: 401", api_error_status=401)
         with mock.patch.object(cc, "_collect", mock.AsyncMock(return_value=result)):
