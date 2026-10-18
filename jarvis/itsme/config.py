@@ -157,6 +157,15 @@ LOG_FILE = _get("ITSME_LOG_FILE", os.path.join(DATA_DIR, "itsme.log"))
 # crash), supaya tidak crash lagi setiap kali It's Me dinyalakan ulang.
 OLLAMA_STATE_FILE = os.path.join(DATA_DIR, "ollama_state.json")
 
+# --- Google Drive (opsional) --------------------------------------------------
+# Berkas kredensial OAuth dari Google Cloud (client_secret). Pemilik mengunduh
+# dan menyimpannya di sini, lalu menjalankan: python -m itsme.drive_login
+DRIVE_CREDENTIALS_FILE = _get("ITSME_DRIVE_CREDENTIALS", os.path.join(DATA_DIR, "drive_credentials.json"))
+# Token hasil login (dibuat otomatis oleh drive_login). Rahasia.
+DRIVE_TOKEN_FILE = os.path.join(DATA_DIR, "drive_token.json")
+# Folder tujuan bawaan saat mengunduh berkas dari Drive ke komputer.
+DRIVE_DOWNLOAD_DIR = _get("ITSME_DRIVE_DOWNLOAD_DIR", os.path.join(os.path.expanduser("~"), "Downloads"))
+
 # Nama persona.
 NAME = _get("ITSME_NAME", "It's Me")
 

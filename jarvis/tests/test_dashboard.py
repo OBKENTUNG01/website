@@ -206,6 +206,30 @@ class DashboardTest(unittest.TestCase):
     def test_fs_run_needs_guard_header(self):
         self.assertEqual(self.post("/api/fs/run", {"command": "whoami"}, guard=False).status_code, 403)
 
+    # --- Google Drive (panel) ---
+    def test_drive_status_not_ready(self):
+        self.assertFalse(self.get("/api/drive/status").json()["ready"])
+
+    def test_drive_list_without_login_gives_hint(self):
+        r = self.getp("/api/drive/list", folder="root")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("drive_login", r.json()["error"])
+
+    def test_drive_list_renders_items(self):
+        items = [{"id": "F", "name": "Foto", "folder": True, "size": 0, "mime": "", "modified": ""}]
+        with mock.patch.object(dashboard, "drive_list", return_value=({"items": [{"id": "F", "name": "Foto", "folder": True, "size": 0}]}, None)):
+            d = self.getp("/api/drive/list", folder="root").json()
+        self.assertEqual(d["items"][0]["name"], "Foto")
+
+    def test_drive_upload_routes_through_tool(self):
+        with mock.patch.object(dashboard.tools, "handle_drive_tool", return_value="Terunggah ke Drive: f.txt") as h:
+            r = self.post("/api/drive/upload", {"path_lokal": "C:/x/f.txt", "folder_id": "F1"}).json()
+        self.assertIn("Terunggah", r["message"])
+        self.assertEqual(h.call_args[0][0], "drive_unggah")
+
+    def test_drive_upload_needs_guard_header(self):
+        self.assertEqual(self.post("/api/drive/upload", {"path_lokal": "x"}, guard=False).status_code, 403)
+
 
 class DashboardTokenTest(unittest.TestCase):
     """Saat dibuka ke jaringan (bukan localhost), wajib token."""

@@ -355,6 +355,38 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_UPDATE_REPO` | `OBKENTUNG01/website` | Repo GitHub yang diikuti |
 | `ITSME_UPDATE_BRANCH` | `main` | Cabang yang diikuti |
 
+## Google Drive (opsional)
+
+It's Me bisa mengakses Google Drive-mu — **cari, unggah, unduh, dan kelola**
+berkas/folder — lewat chat (otak lokal/cloud/Claude API) maupun **panel Google
+Drive di dashboard** (berfungsi untuk otak apa pun, termasuk Claude di komputer).
+
+**Hubungkan sekali, di komputer:**
+1. Buka [console.cloud.google.com](https://console.cloud.google.com/), buat/pilih
+   sebuah project, lalu di **APIs & Services → Library** aktifkan **Google Drive API**.
+2. Di **OAuth consent screen**: pilih *External*, isi nama aplikasi, dan tambahkan
+   email Google-mu sebagai **Test user**.
+3. Di **Credentials → Create credentials → OAuth client ID**, pilih jenis
+   **Desktop app**, lalu unduh berkas JSON-nya.
+4. Simpan berkas JSON itu sebagai `data\drive_credentials.json` di folder It's Me.
+5. Jalankan:
+   ```powershell
+   cd $HOME\ItsMe; .venv\Scripts\python -m itsme.drive_login
+   ```
+   Browser terbuka untuk login Google (pilih akun, izinkan akses Drive). Token
+   disimpan ke `data\drive_token.json`. Paket Google dipasang otomatis saat ini.
+
+Setelah itu, dari HP tinggal minta It's Me (mis. *"cari laporan di Google
+Drive"*, *"unggah C:\…\laporan.pdf ke Drive"*, *"buat folder Arsip di Drive"*),
+atau pakai panel **Google Drive** di dashboard untuk menjelajah, mengunggah,
+mengunduh, dan mengelola.
+
+Aturan keamanan sama seperti fitur lain: **unggah, unduh, buat folder, ganti
+nama, pindah** minta persetujuan (tombol Telegram saat akses aman); **hapus**
+selalu minta konfirmasi dan hanya membuang ke **sampah** Drive (bisa
+dipulihkan); berkas rahasia tidak ikut diunggah; dan `drive_token.json` /
+`drive_credentials.json` diperlakukan sebagai berkas rahasia.
+
 ## Memakai akun Claude-mu tanpa API key (`/claudepc`)
 
 Punya langganan Claude (Pro/Max)? It's Me bisa memakai **Claude Code di

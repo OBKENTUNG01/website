@@ -25,7 +25,7 @@ import sys
 import tarfile
 import zipfile
 
-from . import web
+from . import config, web
 
 IS_WINDOWS = os.name == "nt"
 
@@ -152,6 +152,75 @@ CLIENT_TOOLS = [
                 },
             },
             "required": ["arsip"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "drive_cari",
+        "description": (
+            "Cari berkas/folder di Google Drive pemilik berdasarkan nama. "
+            "Mengembalikan daftar berisi nama, jenis, ukuran, dan id. Pakai id-nya "
+            "untuk mengunduh atau mengelola."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"kata_kunci": {"type": "string"}},
+            "required": ["kata_kunci"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "drive_isi_folder",
+        "description": "Lihat isi sebuah folder Google Drive. folder_id kosong = folder utama (My Drive).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"folder_id": {"type": "string"}},
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "drive_unggah",
+        "description": (
+            "Unggah sebuah berkas dari komputer ke Google Drive. folder_id opsional "
+            "(tujuan), nama opsional. Minta konfirmasi pemilik dulu."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"path_lokal": {"type": "string"}, "folder_id": {"type": "string"}, "nama": {"type": "string"}},
+            "required": ["path_lokal"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "drive_unduh",
+        "description": (
+            "Unduh sebuah berkas Google Drive (pakai file_id dari drive_cari) ke "
+            "komputer. path_lokal opsional (bawaan folder Downloads). Minta konfirmasi dulu."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}, "path_lokal": {"type": "string"}},
+            "required": ["file_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "drive_kelola",
+        "description": (
+            "Kelola berkas/folder Google Drive. aksi: 'buat_folder' (nama; folder_id "
+            "opsional sebagai induk), 'ganti_nama' (file_id, nama), 'pindah' (file_id, "
+            "folder_id tujuan), 'hapus' (file_id, dibuang ke sampah). Minta konfirmasi dulu."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "aksi": {"type": "string"},
+                "file_id": {"type": "string"},
+                "folder_id": {"type": "string"},
+                "nama": {"type": "string"},
+            },
+            "required": ["aksi"],
             "additionalProperties": False,
         },
     },
@@ -684,6 +753,96 @@ def _extract(archive, dest, ctx):
     return f"Diekstrak {len(names)} berkas ke {dest}."
 
 
+# --- Google Drive ------------------------------------------------------------------
+_DRIVE_TOOLS = ("drive_cari", "drive_isi_folder", "drive_unggah", "drive_unduh", "drive_kelola")
+
+
+def _drive_list(items):
+    if not items:
+        return "(tidak ada hasil)"
+    lines = []
+    for it in items[:50]:
+        icon = "📁" if it["folder"] else "📄"
+        extra = "" if it["folder"] else f" · {_human(it['size'])}"
+        lines.append(f"{icon} {it['name']}{extra}  [id: {it['id']}]")
+    return "\n".join(lines)
+
+
+def _drive_manage(drive, inp, ctx):
+    aksi = (inp.get("aksi") or "").strip().lower()
+    if aksi == "buat_folder":
+        nama = (inp.get("nama") or "").strip()
+        if not nama:
+            return "Nama folder kosong."
+        if not approve(ctx, f"Buat folder di Google Drive: '{nama}'?"):
+            return "Dibatalkan oleh pemilik."
+        f = drive.make_folder(nama, inp.get("folder_id") or None)
+        return f"Folder dibuat di Drive: {f.get('name')} (id {f.get('id')})."
+    fid = (inp.get("file_id") or "").strip()
+    if not fid:
+        return "file_id kosong."
+    nama_skrg = drive.name_of(fid)
+    if aksi == "ganti_nama":
+        baru = (inp.get("nama") or "").strip()
+        if not baru:
+            return "Nama baru kosong."
+        if not approve(ctx, f"Ganti nama di Drive: '{nama_skrg}' → '{baru}'?"):
+            return "Dibatalkan oleh pemilik."
+        drive.rename(fid, baru)
+        return f"Nama diganti menjadi '{baru}'."
+    if aksi == "pindah":
+        folder = (inp.get("folder_id") or "").strip()
+        if not folder:
+            return "folder_id tujuan kosong."
+        if not approve(ctx, f"Pindahkan '{nama_skrg}' ke folder {folder} di Drive?"):
+            return "Dibatalkan oleh pemilik."
+        drive.move(fid, folder)
+        return f"'{nama_skrg}' dipindahkan."
+    if aksi == "hapus":
+        # Penghapusan selalu minta konfirmasi, juga di akses penuh.
+        if not approve(ctx, f"Buang '{nama_skrg}' ke sampah Google Drive?", always_ask=True):
+            return "Dibatalkan oleh pemilik."
+        drive.delete(fid)
+        return f"'{nama_skrg}' dibuang ke sampah Drive (masih bisa dipulihkan)."
+    return f"Aksi Drive tidak dikenal: {aksi}"
+
+
+def handle_drive_tool(name, inp, ctx):
+    from . import drive
+
+    try:
+        if name == "drive_cari":
+            return _drive_list(drive.search(inp.get("kata_kunci", "")))
+        if name == "drive_isi_folder":
+            return _drive_list(drive.list_folder(inp.get("folder_id") or "root"))
+        if name == "drive_unggah":
+            path = _resolve(ctx, inp["path_lokal"])
+            if is_secret_path(path):
+                return "Ditolak: berkas rahasia tidak diunggah lewat bot."
+            dest = f"\n→ folder {inp['folder_id']}" if inp.get("folder_id") else ""
+            if not approve(ctx, f"Unggah ke Google Drive?\n\n{path}{dest}"):
+                return "Dibatalkan oleh pemilik."
+            f = drive.upload(path, inp.get("folder_id") or None, inp.get("nama") or None)
+            return f"Terunggah ke Drive: {f.get('name')} (id {f.get('id')})."
+        if name == "drive_unduh":
+            fid = inp["file_id"]
+            nama = drive.name_of(fid)
+            dest = (inp.get("path_lokal") or "").strip()
+            dest = _resolve(ctx, dest) if dest else os.path.join(config.DRIVE_DOWNLOAD_DIR, nama)
+            if is_secret_path(dest):
+                return "Ditolak: tujuan terlihat seperti berkas rahasia."
+            if not approve(ctx, f"Unduh dari Drive '{nama}' ke:\n\n{dest}"):
+                return "Dibatalkan oleh pemilik."
+            return f"Terunduh dari Drive: {drive.download(fid, dest)['path']}"
+        if name == "drive_kelola":
+            return _drive_manage(drive, inp, ctx)
+    except drive.DriveError as exc:
+        return str(exc)
+    except Exception as exc:  # noqa: BLE001 - laporkan error apa pun ke pemakai
+        return f"Google Drive error: {type(exc).__name__}: {exc}"
+    return f"Alat Drive tidak dikenal: {name}"
+
+
 def handle_tool(name, tool_input, ctx):
     """Jalankan satu alat klien dan kembalikan hasilnya sebagai teks.
 
@@ -776,6 +935,9 @@ def handle_tool(name, tool_input, ctx):
             if ctx.get("in_background"):
                 return "Tugas latar tidak bisa membuat tugas latar lagi. Kerjakan langsung di sini."
             return ctx["schedule_background"](tool_input.get("instruksi", ""))
+
+        if name in _DRIVE_TOOLS:
+            return handle_drive_tool(name, tool_input, ctx)
 
         return f"Alat tidak dikenal: {name}"
     except FileNotFoundError:

@@ -242,6 +242,37 @@ def _extract(app, arsip, tujuan):
     return tools._extract((arsip or "").strip(), (tujuan or "").strip(), app.owner_ctx())
 
 
+# --- Google Drive (panel, berfungsi untuk otak apa pun) ----------------------------
+def _drive_items(items):
+    return [{"id": i["id"], "name": i["name"], "folder": i["folder"], "size": i["size"]} for i in items]
+
+
+def drive_list(folder_id):
+    from . import drive
+    try:
+        return {"items": _drive_items(drive.list_folder(folder_id or "root"))}, None
+    except drive.DriveError as exc:
+        return None, str(exc)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Google Drive error: {type(exc).__name__}: {exc}"
+
+
+def drive_search(q):
+    from . import drive
+    try:
+        return {"items": _drive_items(drive.search(q or ""))}, None
+    except drive.DriveError as exc:
+        return None, str(exc)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Google Drive error: {type(exc).__name__}: {exc}"
+
+
+def drive_action(app, name, inp):
+    # Pakai jalur alat yang sama dengan chat: persetujuan lewat Telegram pemilik,
+    # berkas rahasia dijaga, pesan hasil siap tampil.
+    return tools.handle_drive_tool(name, inp, app.owner_ctx())
+
+
 # --- server ------------------------------------------------------------------------
 def _make_handler(app, token):
     require_token = bool(token)
@@ -320,6 +351,15 @@ def _make_handler(app, token):
             if path == "/api/fs/read":
                 data, err = _read_file((self._query().get("path") or [""])[0])
                 return self._json(data or {"error": err}, 200 if data else 400)
+            if path == "/api/drive/status":
+                from . import drive
+                return self._json({"ready": drive.ready()})
+            if path == "/api/drive/list":
+                data, err = drive_list((self._query().get("folder") or [""])[0])
+                return self._json(data or {"error": err}, 200 if data else 400)
+            if path == "/api/drive/search":
+                data, err = drive_search((self._query().get("q") or [""])[0])
+                return self._json(data or {"error": err}, 200 if data else 400)
             return self._json({"error": "not found"}, 404)
 
         # -- POST --
@@ -347,6 +387,12 @@ def _make_handler(app, token):
                 return self._json({"ok": True, "message": _zip(app, data.get("sumber", ""), data.get("tujuan", ""))})
             elif path == "/api/fs/extract":
                 return self._json({"ok": True, "message": _extract(app, data.get("arsip", ""), data.get("tujuan", ""))})
+            elif path == "/api/drive/upload":
+                return self._json({"message": drive_action(app, "drive_unggah", {"path_lokal": data.get("path_lokal", ""), "folder_id": data.get("folder_id", ""), "nama": data.get("nama", "")})})
+            elif path == "/api/drive/download":
+                return self._json({"message": drive_action(app, "drive_unduh", {"file_id": data.get("file_id", ""), "path_lokal": data.get("path_lokal", "")})})
+            elif path == "/api/drive/manage":
+                return self._json({"message": drive_action(app, "drive_kelola", {k: data.get(k, "") for k in ("aksi", "file_id", "folder_id", "nama")})})
             else:
                 return self._json({"error": "not found"}, 404)
             return self._json({"ok": ok, "message": msg, "status": status(app)}, 200 if ok else 400)
@@ -544,6 +590,29 @@ input{background:var(--bg);color:var(--text);border:1px solid var(--border);bord
   </div>
 
   <div class="card">
+    <h2>Google Drive</h2>
+    <div id="driveOff" class="sub" hidden></div>
+    <button id="driveCheck" onclick="drvStatus()" hidden>Cek lagi</button>
+    <div id="driveOn" hidden>
+      <div class="row" style="gap:6px">
+        <button onclick="drvHome()">🏠 My Drive</button>
+        <input id="drvSearch" placeholder="cari di Drive…" style="flex:1" autocomplete="off">
+        <button onclick="drvFind()">Cari</button>
+      </div>
+      <div id="drvList" class="fslist"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="drvDl" onclick="drvDownload()" disabled>Unduh</button>
+        <button id="drvRn" onclick="drvRename()" disabled>Ganti nama</button>
+        <button class="danger" id="drvDel" onclick="drvDelete()" disabled>Hapus</button>
+        <button onclick="drvNewFolder()">+ Folder</button>
+      </div>
+      <div class="sub" style="margin-top:8px">Unggah berkas:
+        <input id="drvUp" placeholder="path berkas di komputer" style="width:50%">
+        <button onclick="drvUpload()">Unggah ke sini</button></div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Memori</h2>
     <textarea id="memory" placeholder="(memori kosong)"></textarea>
     <div class="row" style="margin-top:10px">
@@ -727,7 +796,58 @@ function runCmd(){
 document.getElementById('fsPath').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); fsGo(); } });
 document.getElementById('cmd').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); runCmd(); } });
 
-loadStatus(); loadMemory(); loadLogs(); loadInfo(); fsGo('');
+// --- Google Drive ---
+let drvFolder = 'root', drvSel = null, drvSelName = '', drvSelFolder = false;
+function drvStatus(){
+  api('/api/drive/status').then(d => {
+    document.getElementById('driveOn').hidden = !d.ready;
+    document.getElementById('driveOff').hidden = d.ready;
+    document.getElementById('driveCheck').hidden = d.ready;
+    if(d.ready) drvHome();
+    else document.getElementById('driveOff').textContent =
+      'Belum terhubung. Jalankan di komputer: .venv\\Scripts\\python -m itsme.drive_login (lihat README).';
+  }).catch(()=>{});
+}
+function drvHome(){ drvFolder = 'root'; drvLoad(); }
+function drvLoad(){ api('/api/drive/list?folder=' + encodeURIComponent(drvFolder)).then(drvRender).catch(e=>toast(e.message)); }
+function drvFind(){
+  const q = document.getElementById('drvSearch').value.trim();
+  if(!q) return drvHome();
+  api('/api/drive/search?q=' + encodeURIComponent(q)).then(drvRender).catch(e=>toast(e.message));
+}
+function drvDisable(){ ['drvDl','drvRn','drvDel'].forEach(id => document.getElementById(id).disabled = true); }
+function drvRender(d){
+  drvSel = null; drvDisable();
+  const box = document.getElementById('drvList'); box.innerHTML = '';
+  if(!d.items.length){ box.innerHTML = '<div class="fsrow">(kosong)</div>'; return; }
+  for(const it of d.items){
+    const row = document.createElement('div'); row.className = 'fsrow';
+    row.innerHTML = '<span>' + (it.folder?'📁':'📄') + '</span><span class="nm"></span>'
+      + (it.folder?'':'<span class="sz">' + fmtBytes(it.size) + '</span>');
+    row.querySelector('.nm').textContent = it.name;
+    row.onclick = () => it.folder ? (drvFolder = it.id, drvLoad()) : drvPick(row, it);
+    box.appendChild(row);
+  }
+}
+function drvPick(row, it){
+  document.querySelectorAll('#drvList .fsrow.sel').forEach(r => r.classList.remove('sel'));
+  row.classList.add('sel'); drvSel = it.id; drvSelName = it.name; drvSelFolder = it.folder;
+  document.getElementById('drvDl').disabled = it.folder;
+  document.getElementById('drvRn').disabled = false;
+  document.getElementById('drvDel').disabled = false;
+}
+function drvPost(path, data){ return api('/api/drive/' + path, {method:'POST', body:JSON.stringify(data)}).then(d => toast(d.message)); }
+function drvDownload(){ if(drvSel) drvPost('download', {file_id: drvSel}); }
+function drvRename(){ if(!drvSel) return; const n = prompt('Nama baru:', drvSelName); if(n) drvPost('manage', {aksi:'ganti_nama', file_id:drvSel, nama:n}).then(drvLoad); }
+function drvDelete(){ if(drvSel && confirm('Buang "' + drvSelName + '" ke sampah Drive?')) drvPost('manage', {aksi:'hapus', file_id:drvSel}).then(drvLoad); }
+function drvNewFolder(){ const n = prompt('Nama folder baru:'); if(n) drvPost('manage', {aksi:'buat_folder', nama:n, folder_id:(drvFolder==='root'?'':drvFolder)}).then(drvLoad); }
+function drvUpload(){
+  const p = document.getElementById('drvUp').value.trim(); if(!p) return;
+  drvPost('upload', {path_lokal:p, folder_id:(drvFolder==='root'?'':drvFolder)}).then(()=>{ document.getElementById('drvUp').value=''; drvLoad(); });
+}
+document.getElementById('drvSearch').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); drvFind(); } });
+
+loadStatus(); loadMemory(); loadLogs(); loadInfo(); fsGo(''); drvStatus();
 setInterval(loadStatus, 5000);
 setInterval(loadInfo, 30000);
 </script>
