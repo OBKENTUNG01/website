@@ -23,6 +23,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -85,6 +86,7 @@ def status(app):
         "version": (updater.installed_version() or "")[:7],
         "memory_chars": len(app.memory.text()),
         "uptime": max(0, (datetime.now() - app.started).total_seconds()) if getattr(app, "started", None) else 0,
+        "login": bool(config.DASHBOARD_PASSWORD),
     }
 
 
@@ -274,8 +276,36 @@ def drive_action(app, name, inp):
 
 
 # --- server ------------------------------------------------------------------------
+# --- login (dipakai kalau ITSME_DASHBOARD_PASSWORD diisi) --------------------------
+_SESSIONS = {}  # session_id -> waktu kedaluwarsa (epoch)
+_SESSION_TTL = 7 * 24 * 3600
+
+
+def _new_session():
+    now = time.time()
+    for k in [k for k, exp in list(_SESSIONS.items()) if exp < now]:
+        _SESSIONS.pop(k, None)
+    sid = secrets.token_urlsafe(24)
+    _SESSIONS[sid] = now + _SESSION_TTL
+    return sid
+
+
+def _valid_session(sid):
+    exp = _SESSIONS.get(sid or "")
+    return bool(exp) and exp > time.time()
+
+
+def _check_login(user, password):
+    return (
+        bool(config.DASHBOARD_PASSWORD)
+        and secrets.compare_digest(user or "", config.DASHBOARD_USER)
+        and secrets.compare_digest(password or "", config.DASHBOARD_PASSWORD)
+    )
+
+
 def _make_handler(app, token):
     require_token = bool(token)
+    login_required = bool(config.DASHBOARD_PASSWORD)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -287,19 +317,21 @@ def _make_handler(app, token):
         def _query(self):
             return parse_qs(urlparse(self.path).query)
 
-        def _cookie_token(self):
+        def _cookie(self, name):
             for part in (self.headers.get("Cookie") or "").split(";"):
-                if part.strip().startswith("itsme_token="):
+                if part.strip().startswith(name + "="):
                     return part.split("=", 1)[1].strip()
             return ""
 
         def _authed(self):
+            if login_required:
+                return _valid_session(self._cookie("itsme_session"))
             if not require_token:
                 return True
             given = (
                 self.headers.get("X-Itsme-Token")
                 or (self._query().get("token") or [""])[0]
-                or self._cookie_token()
+                or self._cookie("itsme_token")
             )
             return bool(given) and secrets.compare_digest(given, token)
 
@@ -315,8 +347,8 @@ def _make_handler(app, token):
             self.end_headers()
             self.wfile.write(data)
 
-        def _json(self, obj, code=200):
-            self._send(code, json.dumps(obj))
+        def _json(self, obj, code=200, cookie=None):
+            self._send(code, json.dumps(obj), cookie=cookie)
 
         def _body(self):
             try:
@@ -327,12 +359,16 @@ def _make_handler(app, token):
 
         # -- GET --
         def do_GET(self):
-            if not self._authed():
-                return self._send(HTTPStatus.UNAUTHORIZED, _NEED_TOKEN_HTML, "text/html; charset=utf-8")
             path = urlparse(self.path).path
-            if path in ("/", "/index.html"):
+            if not self._authed():
+                if login_required and path in ("/", "/index.html", "/login"):
+                    return self._send(HTTPStatus.OK, _LOGIN_PAGE, "text/html; charset=utf-8")
+                if not login_required and path in ("/", "/index.html"):
+                    return self._send(HTTPStatus.UNAUTHORIZED, _NEED_TOKEN_HTML, "text/html; charset=utf-8")
+                return self._json({"error": "unauthorized"}, 401)
+            if path in ("/", "/index.html", "/login"):
                 cookie = None
-                if require_token:
+                if require_token and not login_required:
                     cookie = f"itsme_token={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000"
                 return self._send(HTTPStatus.OK, _PAGE, "text/html; charset=utf-8", cookie=cookie)
             if path == "/api/status":
@@ -364,12 +400,20 @@ def _make_handler(app, token):
 
         # -- POST --
         def do_POST(self):
-            if not self._authed():
-                return self._json({"error": "token salah"}, 401)
             if self.headers.get(_GUARD_HEADER) != "1":
                 return self._json({"error": "permintaan ditolak (tanpa header dashboard)"}, 403)
             path = urlparse(self.path).path
             data = self._body()
+            if path == "/login":
+                if _check_login(data.get("user", ""), data.get("password", "")):
+                    cookie = f"itsme_session={_new_session()}; Path=/; HttpOnly; SameSite=Strict; Max-Age={_SESSION_TTL}"
+                    return self._json({"ok": True}, cookie=cookie)
+                return self._json({"ok": False, "error": "User atau password salah."}, 401)
+            if path == "/logout":
+                _SESSIONS.pop(self._cookie("itsme_session"), None)
+                return self._json({"ok": True}, cookie="itsme_session=; Path=/; Max-Age=0")
+            if not self._authed():
+                return self._json({"error": "unauthorized"}, 401)
             if path == "/api/brain":
                 ok, msg = _switch_brain(app, data.get("backend", ""))
             elif path == "/api/access":
@@ -433,7 +477,8 @@ def start(app):
         return None
     host = config.DASHBOARD_HOST
     on_lan = host not in _LOOPBACK
-    token = _load_or_make_token() if on_lan else ""
+    # Kalau login diaktifkan, token tidak dipakai.
+    token = _load_or_make_token() if (on_lan and not config.DASHBOARD_PASSWORD) else ""
     try:
         server = ThreadingHTTPServer((host, config.DASHBOARD_PORT), _make_handler(app, token))
     except OSError as exc:
@@ -442,7 +487,9 @@ def start(app):
     threading.Thread(target=server.serve_forever, name="itsme-dashboard", daemon=True).start()
     shown = "localhost" if not on_lan else host
     log.info("Dashboard: http://%s:%s", shown, config.DASHBOARD_PORT)
-    if on_lan:
+    if config.DASHBOARD_PASSWORD:
+        log.info("Dashboard pakai login (user: %s).", config.DASHBOARD_USER)
+    elif on_lan:
         log.info("Dashboard token (buka ...?token=... sekali): %s", token)
     return server
 
@@ -454,6 +501,47 @@ _NEED_TOKEN_HTML = (
     "dan ditampilkan di log It's Me saat menyala.</p></body>"
 )
 
+_LOGIN_PAGE = r"""<!doctype html>
+<html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Masuk · It's Me</title>
+<style>
+:root{--bg:#eef1f6;--card:#fff;--text:#13161d;--muted:#616b7a;--border:#e2e6ee;--accent:#6366f1;--accent2:#8b5cf6;--accent-text:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#0b0d12;--card:#161922;--text:#e9ecf3;--muted:#9aa3b2;--border:#262b36;--accent:#818cf8;--accent2:#a78bfa;--accent-text:#0b0d12}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  background:radial-gradient(900px 500px at 100% -10%,color-mix(in srgb,var(--accent) 16%,transparent),transparent),
+             radial-gradient(800px 460px at -10% 0,color-mix(in srgb,var(--accent2) 16%,transparent),transparent),var(--bg)}
+.box{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:28px;width:min(360px,92vw);box-shadow:0 20px 50px rgba(20,25,40,.14)}
+h1{margin:0 0 4px;font-size:1.3rem}
+h1 b{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+p{margin:0 0 18px;color:var(--muted);font-size:.9rem}
+label{display:block;font-size:.8rem;color:var(--muted);margin:12px 0 5px}
+input{width:100%;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:11px;padding:11px;font:inherit}
+input:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent)}
+button{width:100%;margin-top:20px;border:0;border-radius:11px;padding:12px;cursor:pointer;font:inherit;font-weight:700;
+  color:var(--accent-text);background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.err{color:#e11d48;font-size:.85rem;margin-top:12px;min-height:1em}
+</style></head><body>
+<form class="box" onsubmit="return masuk(event)">
+  <h1>🫡 <b>It's Me</b></h1>
+  <p>Masuk untuk membuka dashboard.</p>
+  <label>User</label><input id="user" value="admin" autocomplete="username">
+  <label>Password</label><input id="pw" type="password" autocomplete="current-password" autofocus>
+  <button type="submit">Masuk</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+async function masuk(e){
+  e.preventDefault();
+  const r = await fetch('/login', {method:'POST', headers:{'Content-Type':'application/json','X-Itsme-Dashboard':'1'},
+    body:JSON.stringify({user:document.getElementById('user').value, password:document.getElementById('pw').value})});
+  const d = await r.json().catch(()=>({}));
+  if(r.ok && d.ok) location.href = '/';
+  else document.getElementById('err').textContent = (d.error || 'Gagal masuk.');
+  return false;
+}
+</script></body></html>"""
+
 _PAGE = r"""<!doctype html>
 <html lang="id">
 <head>
@@ -462,59 +550,81 @@ _PAGE = r"""<!doctype html>
 <title>It's Me</title>
 <style>
 :root{
-  --bg:#f5f6f8; --card:#ffffff; --text:#14171f; --muted:#5b6472; --border:#e4e7ec;
-  --accent:#2563eb; --accent-text:#fff; --ok:#16a34a; --danger:#dc2626; --warnbg:#fef3c7; --warntext:#92400e;
+  --bg:#eef1f6; --bg2:#e8ecf4; --card:#ffffff; --text:#13161d; --muted:#616b7a; --border:#e2e6ee;
+  --accent:#6366f1; --accent2:#8b5cf6; --accent-text:#ffffff; --ok:#16a34a; --danger:#e11d48;
+  --warnbg:#fef3c7; --warntext:#92400e; --shadow:0 6px 24px rgba(20,25,40,.07); --radius:16px;
 }
-@media (prefers-color-scheme:dark){:root{
-  --bg:#0f1115; --card:#191c22; --text:#e8eaef; --muted:#99a1ad; --border:#2a2f3a;
-  --accent:#3b82f6; --accent-text:#fff; --ok:#22c55e; --danger:#f87171; --warnbg:#3a2f12; --warntext:#fcd34d;
+:root[data-theme="dark"]{
+  --bg:#0b0d12; --bg2:#10131a; --card:#161922; --text:#e9ecf3; --muted:#9aa3b2; --border:#262b36;
+  --accent:#818cf8; --accent2:#a78bfa; --accent-text:#0b0d12; --ok:#34d399; --danger:#fb7185;
+  --warnbg:#3a2f12; --warntext:#fcd34d; --shadow:0 10px 32px rgba(0,0,0,.45);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0b0d12; --bg2:#10131a; --card:#161922; --text:#e9ecf3; --muted:#9aa3b2; --border:#262b36;
+  --accent:#818cf8; --accent2:#a78bfa; --accent-text:#0b0d12; --ok:#34d399; --danger:#fb7185;
+  --warnbg:#3a2f12; --warntext:#fcd34d; --shadow:0 10px 32px rgba(0,0,0,.45);
 }}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
-  font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5}
-.wrap{max-width:720px;margin:0 auto;padding:16px}
-header{display:flex;align-items:center;gap:10px;margin:8px 0 18px}
-header h1{font-size:1.25rem;margin:0;font-weight:650}
-.dot{width:10px;height:10px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent)}
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px}
-.card h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0 0 12px;font-weight:600}
-.big{font-size:1.05rem;font-weight:600}
+body{margin:0;min-height:100vh;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;
+  background:radial-gradient(1100px 560px at 100% -10%,color-mix(in srgb,var(--accent) 13%,transparent),transparent),
+             radial-gradient(900px 500px at -10% 0,color-mix(in srgb,var(--accent2) 13%,transparent),transparent),var(--bg)}
+.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;padding:11px 16px;
+  background:color-mix(in srgb,var(--card) 70%,transparent);backdrop-filter:blur(14px) saturate(1.4);
+  -webkit-backdrop-filter:blur(14px) saturate(1.4);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:8px;font-size:1.05rem;font-weight:800}
+.brand b{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent)}
+.spacer{flex:1}
+.icon{border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:10px;padding:7px 11px;cursor:pointer;font:inherit}
+.icon:hover{border-color:var(--accent)}
+.badges{display:none;gap:6px}
+@media(min-width:660px){.badges{display:flex}}
+.badge{font-size:.76rem;padding:3px 10px;border-radius:999px;background:var(--card);border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.badge.ok{color:var(--ok)} .badge.bad{color:var(--danger)}
+.tabs{position:sticky;top:54px;z-index:19;display:flex;gap:6px;overflow-x:auto;padding:10px 16px;scrollbar-width:none;
+  background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.tabs::-webkit-scrollbar{display:none}
+.tabs button{flex:0 0 auto;border:1px solid transparent;background:transparent;color:var(--muted);padding:8px 15px;
+  border-radius:999px;cursor:pointer;font:inherit;font-weight:700;transition:.15s}
+.tabs button:hover{color:var(--text);background:var(--card)}
+.tabs button.active{color:var(--accent-text);background:linear-gradient(90deg,var(--accent),var(--accent2));box-shadow:var(--shadow)}
+.wrap{max-width:760px;margin:0 auto;padding:16px}
+.panel{display:none;animation:fade .25s ease}
+.panel.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:14px;box-shadow:var(--shadow)}
+.card h2{font-size:.76rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 12px;font-weight:700}
+.big{font-size:1.05rem;font-weight:650}
 .muted{color:var(--muted)}
 .row{display:flex;flex-wrap:wrap;gap:8px}
-button{font:inherit;cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--text);
-  padding:9px 14px;border-radius:10px;transition:.12s}
-button:hover:not(:disabled){border-color:var(--accent)}
+button{font:inherit;cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--text);padding:9px 14px;border-radius:11px;transition:.15s}
+button:hover:not(:disabled){border-color:var(--accent);transform:translateY(-1px)}
 button:disabled{opacity:.45;cursor:not-allowed}
-button.active{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
-button.primary{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+button.active{background:linear-gradient(90deg,var(--accent),var(--accent2));color:var(--accent-text);border-color:transparent}
+button.primary{background:linear-gradient(90deg,var(--accent),var(--accent2));color:var(--accent-text);border-color:transparent}
 button.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,var(--border))}
-.pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.82rem;font-weight:600}
+.pill{display:inline-block;padding:3px 11px;border-radius:999px;font-size:.82rem;font-weight:700}
 .pill.safe{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
 .pill.full{background:var(--warnbg);color:var(--warntext)}
-textarea{width:100%;min-height:150px;resize:vertical;background:var(--bg);color:var(--text);
-  border:1px solid var(--border);border-radius:10px;padding:10px;font:inherit}
-pre{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px;
-  overflow:auto;max-height:300px;font-size:.8rem;margin:0;white-space:pre-wrap;word-break:break-word}
-.sub{font-size:.85rem;color:var(--muted);margin-top:4px}
-#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--text);color:var(--bg);
-  padding:10px 16px;border-radius:10px;opacity:0;transition:.2s;pointer-events:none;max-width:90%}
-#toast.show{opacity:1}
+textarea{width:100%;min-height:150px;resize:vertical;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:11px;padding:11px;font:inherit}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:11px;overflow:auto;max-height:320px;font-size:.8rem;margin:0;white-space:pre-wrap;word-break:break-word}
+.sub{font-size:.85rem;color:var(--muted);margin-top:6px}
+input{background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:11px;padding:10px;font:inherit}
+input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:1px}
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(10px);background:var(--text);color:var(--bg);
+  padding:11px 18px;border-radius:12px;opacity:0;transition:.25s;pointer-events:none;max-width:90%;box-shadow:var(--shadow);z-index:50}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .spread{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
-.info{display:flex;flex-wrap:wrap;gap:6px;margin:-6px 0 16px}
-.badge{font-size:.78rem;padding:3px 10px;border-radius:999px;background:var(--card);border:1px solid var(--border);color:var(--muted)}
-.badge.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--border))}
-.badge.bad{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,var(--border))}
-.chat{display:flex;flex-direction:column;gap:8px;max-height:330px;overflow:auto;padding:2px}
-.chat:empty::before{content:"Belum ada pesan. Sapa It's Me di bawah.";color:var(--muted);font-size:.9rem}
-.msg{max-width:88%;padding:9px 12px;border-radius:14px;white-space:pre-wrap;word-break:break-word;font-size:.95rem}
-.msg.user{align-self:flex-end;background:var(--accent);color:var(--accent-text);border-bottom-right-radius:4px}
-.msg.bot{align-self:flex-start;background:var(--bg);border:1px solid var(--border);border-bottom-left-radius:4px}
-.msg.thinking{opacity:.65;font-style:italic}
-.chatbar{display:flex;gap:8px;margin-top:10px}
-.chatbar input{flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:11px;font:inherit}
-input{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px;font:inherit}
-.fslist{max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:10px;margin-top:10px;background:var(--bg)}
-.fsrow{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:.9rem}
+.chat{display:flex;flex-direction:column;gap:9px;max-height:52vh;min-height:220px;overflow:auto;padding:4px}
+.chat:empty::before{content:"Belum ada pesan. Sapa It's Me di bawah.";color:var(--muted);font-size:.9rem;margin:auto}
+.msg{max-width:85%;padding:10px 13px;border-radius:16px;white-space:pre-wrap;word-break:break-word;font-size:.95rem;box-shadow:var(--shadow)}
+.msg.user{align-self:flex-end;background:linear-gradient(90deg,var(--accent),var(--accent2));color:var(--accent-text);border-bottom-right-radius:5px}
+.msg.bot{align-self:flex-start;background:var(--bg2);border:1px solid var(--border);border-bottom-left-radius:5px}
+.msg.thinking{opacity:.7;font-style:italic}
+.chatbar{display:flex;gap:8px;margin-top:12px}
+.chatbar input{flex:1}
+.fslist{max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:12px;margin-top:10px;background:var(--bg2)}
+.fsrow{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:.9rem}
 .fsrow:last-child{border-bottom:0}
 .fsrow:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .fsrow.sel{background:color-mix(in srgb,var(--accent) 22%,transparent)}
@@ -524,17 +634,29 @@ input{background:var(--bg);color:var(--text);border:1px solid var(--border);bord
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header><span class="dot" title="sedang jalan"></span><h1>🫡 <span id="name">It's Me</span></h1></header>
-
-  <div id="info" class="info">
+<div class="topbar">
+  <div class="brand"><span>🫡</span><b id="name">It's Me</b><span class="dot" title="sedang jalan"></span></div>
+  <div class="badges" id="info">
     <span id="bUptime" class="badge"></span>
     <span id="bOllama" class="badge">Ollama…</span>
     <span id="bQuota" class="badge" hidden></span>
   </div>
-
+  <div class="spacer"></div>
+  <button class="icon" id="themeBtn" onclick="toggleTheme()" title="Ganti tema">🌙</button>
+  <button class="icon" id="logoutBtn" onclick="logout()" hidden>Keluar</button>
+</div>
+<nav class="tabs" id="tabs">
+  <button data-tab="chat" class="active">💬 Ngobrol</button>
+  <button data-tab="settings">⚙️ Pengaturan</button>
+  <button data-tab="files">📁 Berkas</button>
+  <button data-tab="drive">☁️ Drive</button>
+  <button data-tab="memori">🧠 Memori</button>
+  <button data-tab="log">📜 Log</button>
+</nav>
+<main class="wrap">
+  <section data-panel="chat" class="panel active">
   <div class="card">
-    <h2>Ngobrol</h2>
+    <h2>Ngobrol dengan It's Me</h2>
     <div id="chat" class="chat"></div>
     <div class="chatbar">
       <input id="chatInput" placeholder="Ketik pesan untuk It's Me…" autocomplete="off">
@@ -543,6 +665,8 @@ input{background:var(--bg);color:var(--text);border:1px solid var(--border);bord
     <div class="sub">Berbagi konteks dengan Telegram. Saat akses aman, konfirmasi aksi muncul di Telegram.</div>
   </div>
 
+  </section>
+  <section data-panel="settings" class="panel">
   <div class="card">
     <h2>Otak</h2>
     <div class="big" id="brainDesc">…</div>
@@ -560,6 +684,8 @@ input{background:var(--bg);color:var(--text);border:1px solid var(--border);bord
     </div>
   </div>
 
+  </section>
+  <section data-panel="files" class="panel">
   <div class="card">
     <h2>Berkas komputer</h2>
     <div class="row" style="gap:6px">
@@ -589,6 +715,8 @@ input{background:var(--bg);color:var(--text);border:1px solid var(--border);bord
     <div class="sub">Perintah yang mengubah sesuatu minta persetujuan di Telegram saat akses aman; berkas rahasia dijaga.</div>
   </div>
 
+  </section>
+  <section data-panel="drive" class="panel">
   <div class="card">
     <h2>Google Drive</h2>
     <div id="driveOff" class="sub" hidden></div>
@@ -612,6 +740,8 @@ input{background:var(--bg);color:var(--text);border:1px solid var(--border);bord
     </div>
   </div>
 
+  </section>
+  <section data-panel="memori" class="panel">
   <div class="card">
     <h2>Memori</h2>
     <textarea id="memory" placeholder="(memori kosong)"></textarea>
@@ -622,13 +752,16 @@ input{background:var(--bg);color:var(--text);border:1px solid var(--border);bord
     </div>
   </div>
 
+  </section>
+  <section data-panel="log" class="panel">
   <div class="card">
-    <h2 class="spread">Log <button onclick="loadLogs()" style="padding:4px 10px;font-size:.8rem">Muat ulang</button></h2>
-    <pre id="logs">…</pre>
+    <h2 class="spread">Log <button onclick="loadLogs()" style="padding:5px 11px;font-size:.8rem">Muat ulang</button></h2>
+    <pre id="logs" style="max-height:60vh">…</pre>
   </div>
+  </section>
 
-  <p class="muted" style="text-align:center;font-size:.8rem">It's Me · dashboard di komputermu</p>
-</div>
+  <p class="muted" style="text-align:center;font-size:.8rem;margin:18px 0 6px">It's Me · dashboard di komputermu</p>
+</main>
 <div id="toast"></div>
 
 <script>
@@ -649,9 +782,21 @@ function toast(msg){
   t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(()=>t.classList.remove('show'), 2600);
 }
+// --- tab, tema, logout ---
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === b.dataset.tab));
+});
+function curTheme(){ const a = document.documentElement.getAttribute('data-theme'); return a || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'); }
+function applyTheme(t){ if(t) document.documentElement.setAttribute('data-theme', t); document.getElementById('themeBtn').textContent = curTheme()==='dark' ? '☀️' : '🌙'; }
+function toggleTheme(){ const t = curTheme()==='dark' ? 'light' : 'dark'; try{ localStorage.setItem('itsme_theme', t); }catch(e){} applyTheme(t); }
+function logout(){ api('/logout', {method:'POST'}).then(()=>location.reload()).catch(()=>location.reload()); }
+try{ applyTheme(localStorage.getItem('itsme_theme') || null); }catch(e){ applyTheme(null); }
+
 function renderStatus(s){
   document.getElementById('name').textContent = s.name;
   document.title = s.name;
+  if('login' in s) document.getElementById('logoutBtn').hidden = !s.login;
   document.getElementById('brainDesc').textContent = s.brain_desc;
   const box = document.getElementById('brains'); box.innerHTML = '';
   for(const [key, b] of Object.entries(s.brains)){

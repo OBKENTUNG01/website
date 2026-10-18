@@ -129,6 +129,11 @@ DASHBOARD_ENABLED = (_get("ITSME_DASHBOARD", "1") or "1").strip().lower() not in
 # 0.0.0.0 untuk bisa dibuka dari HP di WiFi yang sama; saat itu wajib pakai token.
 DASHBOARD_HOST = (_get("ITSME_DASHBOARD_HOST", "127.0.0.1") or "127.0.0.1").strip()
 DASHBOARD_PORT = int(_get("ITSME_DASHBOARD_PORT", "8750"))
+# Login dashboard (disarankan kalau dibuka lewat Tailscale/Cloudflare Tunnel).
+# Kalau ITSME_DASHBOARD_PASSWORD diisi, dashboard minta login user+password dan
+# token tidak dipakai lagi. Kosong = perilaku lama (localhost bebas, LAN pakai token).
+DASHBOARD_USER = (_get("ITSME_DASHBOARD_USER", "admin") or "admin").strip()
+DASHBOARD_PASSWORD = _get("ITSME_DASHBOARD_PASSWORD", "")
 
 # --- Website (edit lewat Git) ----------------------------------------------
 # Folder clone lokal dari repo website yang mau diedit It's Me.

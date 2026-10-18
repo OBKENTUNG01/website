@@ -282,12 +282,17 @@ dan dilewati saat nge-zip. Karena dashboard bisa mengendalikan komputer,
 biarkan bawaannya hanya di `127.0.0.1`, pakai token kalau diakses dari HP, dan
 aktifkan verifikasi dua langkah Telegram.
 
+Tampilannya modern: top bar, **tab** (Ngobrol, Pengaturan, Berkas, Drive,
+Memori, Log), mode terang/gelap (tombol di kanan atas), dan responsif untuk HP.
+
 Bawaannya dashboard **hanya bisa dibuka dari komputer itu sendiri**
-(`127.0.0.1`). Mau membukanya dari HP di WiFi yang sama? Set
-`ITSME_DASHBOARD_HOST=0.0.0.0` di `.env`, lalu buka
-`http://ALAMAT-IP-PC:8750/?token=ISI_TOKEN` dari HP. Tokennya dibuat otomatis,
-tersimpan di `data/dashboard_token.txt`, dan ditampilkan di log It's Me saat
-menyala. Matikan dashboard dengan `ITSME_DASHBOARD=0`.
+(`127.0.0.1`). Untuk membukanya dari **HP atau internet** (mis. domain
+`ai.yantah-rutari.com`) **dengan login**, lihat panduan lengkap:
+[`PANDUAN_AKSES_JARAK_JAUH.md`](PANDUAN_AKSES_JARAK_JAUH.md) — ringkasnya: isi
+`ITSME_DASHBOARD_PASSWORD` di `.env` untuk menyalakan **login user+password**,
+lalu pakai **Tailscale** (privat, gratis) atau **Cloudflare Tunnel + Access**.
+Untuk HP di WiFi yang sama tanpa login, bisa juga `ITSME_DASHBOARD_HOST=0.0.0.0`
++ token (`data/dashboard_token.txt`, tampil di log). Matikan dengan `ITSME_DASHBOARD=0`.
 
 ### Akses penuh (`/akses_penuh`)
 

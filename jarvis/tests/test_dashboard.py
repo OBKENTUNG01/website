@@ -231,6 +231,58 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.post("/api/drive/upload", {"path_lokal": "x"}, guard=False).status_code, 403)
 
 
+class DashboardLoginTest(unittest.TestCase):
+    """Login user+password saat ITSME_DASHBOARD_PASSWORD diisi."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        for p in (
+            mock.patch.object(config, "DATA_DIR", self.dir),
+            mock.patch.object(config, "LOG_FILE", os.path.join(self.dir, "itsme.log")),
+            mock.patch.object(config, "DASHBOARD_ENABLED", True),
+            mock.patch.object(config, "DASHBOARD_HOST", "127.0.0.1"),
+            mock.patch.object(config, "DASHBOARD_PORT", 0),
+            mock.patch.object(config, "DASHBOARD_USER", "admin"),
+            mock.patch.object(config, "DASHBOARD_PASSWORD", "rahasia123"),
+            mock.patch.dict(brain._state, {"backend": "ollama"}),
+            mock.patch.dict(dashboard._SESSIONS, {}, clear=True),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        open(os.path.join(self.dir, "itsme.log"), "w").close()
+        self.app = FakeApp(self.dir)
+        self.server = dashboard.start(self.app)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.hdr = {"X-Itsme-Dashboard": "1"}
+
+    def test_login_page_shown_and_api_blocked(self):
+        page = httpx.get(self.base + "/", timeout=5)
+        self.assertIn("Masuk", page.text)
+        self.assertNotIn("data-tab", page.text)  # bukan dashboard penuh
+        self.assertEqual(httpx.get(self.base + "/api/status", timeout=5).status_code, 401)
+
+    def test_correct_login_opens_dashboard(self):
+        with httpx.Client(base_url=self.base, timeout=5) as c:
+            r = c.post("/login", json={"user": "admin", "password": "rahasia123"}, headers=self.hdr)
+            self.assertTrue(r.json()["ok"])
+            self.assertIn("data-tab", c.get("/").text)  # sekarang dashboard penuh
+            self.assertEqual(c.get("/api/status").status_code, 200)
+
+    def test_wrong_password_rejected(self):
+        r = httpx.post(self.base + "/login", json={"user": "admin", "password": "salah"}, headers=self.hdr, timeout=5)
+        self.assertEqual(r.status_code, 401)
+        self.assertFalse(r.json()["ok"])
+
+    def test_logout_ends_session(self):
+        with httpx.Client(base_url=self.base, timeout=5) as c:
+            c.post("/login", json={"user": "admin", "password": "rahasia123"}, headers=self.hdr)
+            self.assertEqual(c.get("/api/status").status_code, 200)
+            c.post("/logout", headers=self.hdr)
+            self.assertEqual(c.get("/api/status").status_code, 401)
+
+
 class DashboardTokenTest(unittest.TestCase):
     """Saat dibuka ke jaringan (bukan localhost), wajib token."""
 
