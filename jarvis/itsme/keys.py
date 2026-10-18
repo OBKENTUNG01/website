@@ -25,6 +25,7 @@ KINDS = {
     "claude_code": ("sk-ant-oat", "CLAUDE_CODE_OAUTH_TOKEN", "akun Claude (Claude di komputer)"),
     "claude": ("sk-ant-", "ANTHROPIC_API_KEY", "Claude (Anthropic)"),
     "openrouter": ("sk-or-", "OPENROUTER_API_KEY", "OpenRouter"),
+    "tailscale": ("tskey-api-", "TAILSCALE_API_KEY", "Tailscale"),
 }
 # Key hanya berisi huruf, angka, - dan _; selain itu bisa merusak .env.
 _KEY_CHARS = re.compile(r"[A-Za-z0-9_-]{20,300}")
@@ -77,6 +78,16 @@ def verify(kind, key):
             client.models.list(limit=1)  # daftar model: tidak memanggil model, gratis
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
             raise KeyRejected("Anthropic menolak key ini (salah, sudah dicabut, atau tanpa izin).") from exc
+        return
+    if kind == "tailscale":
+        r = httpx.get(
+            "https://api.tailscale.com/api/v2/tailnet/-/keys",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=20,
+        )
+        if r.status_code in (401, 403):
+            raise KeyRejected("Tailscale menolak key ini (salah, kedaluwarsa, atau tanpa izin).")
+        r.raise_for_status()
         return
     r = httpx.get(
         f"{config.OPENROUTER_URL}/key",

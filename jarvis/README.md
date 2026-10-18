@@ -244,7 +244,7 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/claudepc` | Pakai Claude di komputer dengan akun Claude-mu, tanpa API key ([cara login](#memakai-akun-claude-mu-tanpa-api-key-claudepc)) |
 | `/claude` | Pakai otak Claude (Anthropic API, butuh `ANTHROPIC_API_KEY` di `.env`) |
 | `/lokal` | Pakai otak lokal (Ollama) |
-| `/kunci <key>` | Simpan API key Claude (`sk-ant-…`), token akun Claude (`sk-ant-oat…`), atau key OpenRouter (`sk-or-…`); pesannya langsung dihapus |
+| `/kunci <key>` | Simpan API key Claude (`sk-ant-…`), token akun Claude (`sk-ant-oat…`), key OpenRouter (`sk-or-…`), atau API key Tailscale (`tskey-api-…`, untuk `/pasang` tanpa login); pesannya langsung dihapus |
 | `/akses` | Lihat mode akses: 🔒 aman (bawaan) atau 🔓 penuh |
 | `/akses_penuh` | Langsung bertindak tanpa tombol ([lihat di bawah](#akses-penuh-akses_penuh)) |
 | `/akses_aman` | Kembali minta tombol "Ya" untuk aksi yang mengubah sesuatu |
@@ -253,6 +253,7 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/reset` | Mulai percakapan baru (memori tetap) |
 | `/perangkat` | Daftar komputer lain yang terhubung ([lihat di bawah](#banyak-komputer-satu-bot)) |
 | `/pakai <nama>` | Pesan berikutnya dikerjakan komputer itu; `/pakai` saja = kembali ke komputer utama |
+| `/pasang` | Satu baris PowerShell untuk memasang It's Me + node di komputer lain tanpa mengetik token (lihat "Tanpa komputer inti" di bawah) |
 | `/id` | Tampilkan user id Telegram-mu |
 
 ### Banyak komputer, satu bot
@@ -293,12 +294,18 @@ komputer inti: semua komputer setara, satu dipilih menjadi **pemimpin**, dan bot
 Telegram hanya aktif di pemimpin. Kalau pemimpin mati, komputer lain dipilih
 dalam ±20 detik dan bot langsung aktif di sana.
 
-1. Di setiap komputer, pasang It's Me seperti biasa dengan **token bot yang
-   sama** (jangan isi `ITSME_HUB_URL`), lalu pasang node:
+1. Di komputer yang sudah menjalankan It's Me, pasang node sekali:
    ```powershell
    irm https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1 | iex
    ```
-2. Selesai. It's Me di komputer yang bukan pemimpin **siaga** (tidak mengambil
+2. Untuk setiap komputer lain, kirim **`/pasang`** ke bot. Bot membalas satu
+   baris PowerShell berisi kode undangan sekali pakai (hangus dalam 30 menit).
+   Tempel di PowerShell komputer itu dan klik **Ya** untuk izin Administrator.
+   Node dan It's Me terpasang sekaligus; token bot, pemilik, dan kunci otak
+   diambil sendiri dari komputer ini lewat Tailscale, jadi tidak ada yang
+   diketik. Dengan `/kunci tskey-api-…` (API key Tailscale), login Tailscale
+   di komputer baru pun tidak perlu.
+3. Selesai. It's Me di komputer yang bukan pemimpin **siaga** (tidak mengambil
    pesan Telegram), dan node menyalin **memori**, **otak yang dipilih**, dan
    **mode akses** dari pemimpin tiap 20 detik. Saat bot pindah, kamu dikabari
    "🔁 It's Me sekarang aktif di komputer …".
@@ -416,6 +423,7 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_UPDATE_BRANCH` | `main` | Cabang yang diikuti |
 | `ITSME_FOLLOW_NODE` | `1` | Kalau It's Me Node terpasang, bot hanya aktif di komputer pemimpin (`0` = abaikan node) |
 | `ITSME_NODE_URL` | `http://127.0.0.1:7171` | Alamat API node di komputer ini |
+| `TAILSCALE_API_KEY` | — | Opsional. Dengan ini `/pasang` ikut membawa izin Tailscale sekali pakai, jadi komputer baru tidak perlu login Tailscale |
 
 ## Google Drive (opsional)
 

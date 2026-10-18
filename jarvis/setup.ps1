@@ -21,6 +21,7 @@
 #   ITSME_OLLAMA_MODEL   model lokal (bawaan: qwen3.5:9b), ikut disimpan ke .env
 #   ITSME_NO_SLEEP       1 = cegah komputer tidur, 0 = jangan ubah (tanpa ditanya)
 #   ITSME_AUTOSTART=0    jangan pasang penyalaan otomatis
+#   ITSME_UNATTENDED=1   jangan tanya kunci opsional (dipakai pemasang /pasang)
 #
 # Berkas ini sengaja hanya berisi karakter ASCII: Windows PowerShell 5.1
 # salah membaca karakter lain pada berkas tanpa BOM.
@@ -296,7 +297,7 @@ function Set-ItsMeOpenRouter([string]$EnvFile) {
     if ($info) {
         Write-ItsMeInfo 'API key OpenRouter tersimpan masih valid.'
     } else {
-        if ([Console]::IsInputRedirected) {
+        if ([Console]::IsInputRedirected -or $env:ITSME_UNATTENDED -eq '1') {
             Write-ItsMeInfo 'Otak cloud OpenRouter dilewati (opsional).'
             return
         }

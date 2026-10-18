@@ -158,6 +158,9 @@ HUB_HEARTBEAT = float(_get("ITSME_HUB_HEARTBEAT", "60"))
 # otomatis mengambil alih kalau pemimpin mati. 0 = abaikan node.
 FOLLOW_NODE = (_get("ITSME_FOLLOW_NODE", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
 NODE_URL = (_get("ITSME_NODE_URL", "http://127.0.0.1:7171") or "").strip().rstrip("/")
+# Opsional: API key Tailscale (tskey-api-…). Kalau diisi, perintah /pasang ikut
+# membawa izin Tailscale sekali pakai, jadi komputer baru tidak perlu login.
+TAILSCALE_API_KEY = _get("TAILSCALE_API_KEY", "")
 
 # --- Website (edit lewat Git) ----------------------------------------------
 # Folder clone lokal dari repo website yang mau diedit It's Me.

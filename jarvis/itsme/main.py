@@ -55,13 +55,14 @@ HELP = (
     "/reset — mulai percakapan baru (lupakan konteks obrolan, memori tetap)\n"
     "/perangkat — daftar komputer lain yang terhubung\n"
     "/pakai <nama> — pesan berikutnya dikerjakan komputer itu (/pakai saja = kembali ke sini)\n"
+    "/pasang — satu baris perintah untuk memasang It's Me di komputer lain\n"
     "/id — tampilkan user id Telegram-mu"
 )
 # Perintah yang tetap dikerjakan Hub walau ada perangkat tujuan (/pakai).
 # Memori & mode akses Hub disalin ke semua perangkat, jadi diatur di sini.
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
-    "/memori", "/hapus_memori", "/perangkat", "/pakai", "/id",
+    "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/id",
 }
 # Paling lama Hub menunggu jawaban dari perangkat (detik).
 _DEVICE_REPLY_TIMEOUT = 3600
@@ -69,7 +70,8 @@ _DEVICE_REPLY_TIMEOUT = 3600
 KUNCI_HELP = (
     "Kirim API key dengan: /kunci <key>\n\n"
     "Key Claude diawali sk-ant-, token akun Claude (dari claude setup-token) "
-    "diawali sk-ant-oat, key OpenRouter diawali sk-or-. Pesanmu langsung "
+    "diawali sk-ant-oat, key OpenRouter diawali sk-or-, API key Tailscale "
+    "(untuk /pasang tanpa login) diawali tskey-api-. Pesanmu langsung "
     "kuhapus, key diperiksa dulu ke penyedianya, lalu disimpan ke .env dan "
     "langsung aktif. Key tidak pernah dibaca otak AI."
 )
@@ -365,7 +367,7 @@ class App:
             await self.tg.send(
                 chat_id,
                 "Key tidak dikenali. Key Claude diawali sk-ant-, key OpenRouter "
-                "diawali sk-or-. Contoh: /kunci sk-ant-…" + note,
+                "diawali sk-or-, key Tailscale diawali tskey-api-. Contoh: /kunci sk-ant-…" + note,
             )
             return
         kind = keys.detect(key)
@@ -389,7 +391,9 @@ class App:
         except OSError as exc:
             await self.tg.send(chat_id, f"⚠️ Key {name} gagal disimpan ke .env: {exc.strerror or exc}" + note)
             return
-        if brain.current_backend() == kind:
+        if kind == "tailscale":
+            usage = "Mulai sekarang komputer yang dipasang lewat /pasang tidak perlu login Tailscale."
+        elif brain.current_backend() == kind:
             usage = f"Otak {name} sekarang memakai key ini."
         else:
             usage = f"Kirim {_KEY_COMMANDS[kind]} untuk memakainya."
@@ -416,6 +420,9 @@ class App:
         first = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
         if first == "/perangkat":
             await self.tg.send(chat_id, self._devices_status())
+            return
+        if first == "/pasang":
+            await self._invite(chat_id)
             return
         if first == "/pakai":
             await self.tg.send(chat_id, self._use_device(text.split(maxsplit=1)[1] if " " in text.strip() else ""))
@@ -557,6 +564,51 @@ class App:
         lines.append(f"Tujuan pesan sekarang: {target or 'komputer ini (Hub)'}")
         lines.append("/pakai <nama> — kerjakan di komputer itu · /pakai — kembali ke sini")
         return "\n".join(lines)
+
+    async def _invite(self, chat_id):
+        """/pasang: satu baris PowerShell berisi kode undangan sekali pakai. Komputer
+        baru mengambil sendiri kode gabung node dan isi .env bot dari node di sini."""
+        if not node.installed():
+            await self.tg.send(
+                chat_id,
+                "It's Me Node belum terpasang di komputer ini, jadi belum bisa mengundang "
+                "komputer lain. Pasang dulu di komputer ini (PowerShell):\n\n"
+                f"irm {node.INSTALL_URL} | iex\n\nSetelah itu kirim /pasang lagi.",
+            )
+            return
+        code = node.new_invite_code()
+        env = await asyncio.to_thread(node.invite_env, keys.ENV_FILE)
+        if not await asyncio.to_thread(node.create_invite, code, env):
+            await self.tg.send(
+                chat_id,
+                "Node di komputer ini belum menjawab (mungkin baru menyala atau sedang "
+                "diperbarui). Coba /pasang lagi sebentar lagi.",
+            )
+            return
+        ts_key, ts_note = None, ""
+        if config.TAILSCALE_API_KEY:
+            try:
+                ts_key = await asyncio.to_thread(node.tailscale_auth_key, config.TAILSCALE_API_KEY)
+            except Exception as exc:  # noqa: BLE001 - tanpa izin otomatis pun tetap bisa
+                log.warning("Izin Tailscale untuk /pasang gagal dibuat: %s", type(exc).__name__)
+                ts_note = "\n⚠️ Izin Tailscale otomatis gagal dibuat, jadi komputer baru perlu login Tailscale."
+        login = (
+            "Tailscale tersambung otomatis."
+            if ts_key
+            else "Browser akan terbuka untuk login Tailscale: pilih akun yang sama dengan komputer ini."
+        )
+        await self.tg.send(
+            chat_id,
+            "Pasang di komputer lain:\n"
+            "1. Buka PowerShell di komputer itu.\n"
+            "2. Tempel satu baris di pesan berikut, lalu Enter.\n"
+            "3. Klik Ya saat Windows meminta izin Administrator.\n\n"
+            f"{login} Token bot, pemilik, kunci otak, memori, dan kode jaringan disalin "
+            "sendiri dari komputer ini. Tidak ada yang perlu diketik.\n\n"
+            f"Kode hanya bisa dipakai sekali dan hangus dalam {node.INVITE_TTL // 60} menit. "
+            "Untuk komputer berikutnya, kirim /pasang lagi." + ts_note,
+        )
+        await self.tg.send(chat_id, node.install_command(code, ts_key))
 
     @staticmethod
     def _use_device(name):

@@ -120,3 +120,65 @@ class Follower:
             if time.monotonic() >= deadline:
                 return ACTIVE
             time.sleep(every)
+
+
+# --- /pasang: undangan sekali pakai untuk komputer baru ------------------------
+INSTALL_URL = "https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1"
+INVITE_TTL = 30 * 60
+# Isi .env yang khusus komputer ini (folder, alamat, perangkat keras): tidak ikut
+# disalin ke komputer baru.
+_LOCAL_ONLY = {
+    "ITSME_DATA_DIR", "ITSME_DEVICE_NAME", "ITSME_DRIVE_CREDENTIALS", "ITSME_DRIVE_DOWNLOAD_DIR",
+    "ITSME_FOLLOW_NODE", "ITSME_HUB_URL", "ITSME_HUB_SECRET", "ITSME_HUB_HEARTBEAT",
+    "ITSME_LOG_FILE", "ITSME_MEMORY_FILE", "ITSME_NODE_URL", "ITSME_OLLAMA_MODEL",
+    "ITSME_OLLAMA_NUM_CTX", "ITSME_OLLAMA_NUM_GPU", "OLLAMA_URL", "WEBSITE_REPO_DIR",
+}
+_CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # tanpa huruf/angka yang mirip
+
+
+def new_invite_code():
+    import secrets
+
+    raw = "".join(secrets.choice(_CODE_CHARS) for _ in range(12))
+    return "-".join(raw[i : i + 4] for i in range(0, 12, 4))
+
+
+def invite_env(env_file):
+    """Isi .env bot untuk komputer baru (token bot, pemilik, kunci otak, ...)."""
+    from dotenv import dotenv_values
+
+    return {k: v for k, v in dotenv_values(env_file).items()
+            if v and k not in _LOCAL_ONLY and "\n" not in v}
+
+
+def create_invite(code, env, ttl=INVITE_TTL, timeout=5):
+    """Titipkan undangan ke node di komputer ini. True kalau diterima."""
+    body = json.dumps({"code": code, "ttl": ttl, "env": env}).encode()
+    req = urllib.request.Request(config.NODE_URL + "/invite-new", data=body,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return bool(json.loads(r.read()).get("ok"))
+    except (OSError, ValueError):
+        return False
+
+
+def tailscale_auth_key(api_key, ttl=INVITE_TTL):
+    """Izin Tailscale sekali pakai (tskey-auth-…) supaya komputer baru tidak perlu login."""
+    import httpx
+
+    r = httpx.post(
+        "https://api.tailscale.com/api/v2/tailnet/-/keys",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"capabilities": {"devices": {"create": {
+                  "reusable": False, "ephemeral": False, "preauthorized": True}}},
+              "expirySeconds": ttl, "description": "itsme-pasang"},
+        timeout=20,
+    )
+    r.raise_for_status()
+    return r.json()["key"]
+
+
+def install_command(code, ts_key=None):
+    invite = f"{code}~{ts_key}" if ts_key else code
+    return f"$env:ITSME_INVITE='{invite}'; irm {INSTALL_URL} | iex"
