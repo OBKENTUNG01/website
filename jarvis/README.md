@@ -361,6 +361,9 @@ It's Me bisa mengakses Google Drive-mu — **cari, unggah, unduh, dan kelola**
 berkas/folder — lewat chat (otak lokal/cloud/Claude API) maupun **panel Google
 Drive di dashboard** (berfungsi untuk otak apa pun, termasuk Claude di komputer).
 
+> **Panduan lengkap langkah demi langkah (bahasa Indonesia, untuk pemula):**
+> lihat [`PANDUAN_GOOGLE_DRIVE.md`](PANDUAN_GOOGLE_DRIVE.md). Ringkasannya di bawah.
+
 **Hubungkan sekali, di komputer:**
 1. Buka [console.cloud.google.com](https://console.cloud.google.com/), buat/pilih
    sebuah project, lalu di **APIs & Services → Library** aktifkan **Google Drive API**.
