@@ -45,6 +45,10 @@ _REDACT = re.compile(r"(sk-[a-z]+-[A-Za-z0-9_-]{6,}|\d{6,}:[A-Za-z0-9_-]{20,})")
 # Header yang hanya bisa dipasang oleh JavaScript dashboard sendiri (bukan oleh
 # form dari situs lain): penjaga sederhana terhadap CSRF.
 _GUARD_HEADER = "x-itsme-dashboard"
+# Jalur yang dipakai perangkat lain untuk berbicara dengan Hub (lihat devices.py).
+_DEVICE_PATHS = {
+    f"/api/devices/{p}" for p in ("register", "poll", "result", "message", "confirm", "memory", "sync")
+}
 
 
 def _token_file():
@@ -276,6 +280,96 @@ def drive_action(app, name, inp):
 
 
 # --- server ------------------------------------------------------------------------
+# --- perangkat (Hub: terima pendaftaran, daftar) -----------------------------------
+def _notify_owner(app, text):
+    tg = getattr(app, "tg", None)
+    loop = getattr(app, "loop", None)
+    if tg and config.OWNER_ID and loop:
+        try:
+            asyncio.run_coroutine_threadsafe(tg.send(config.OWNER_ID, text), loop)
+        except Exception:  # noqa: BLE001 - kabar gagal tidak boleh mengganggu
+            pass
+
+
+def _secret_ok(data):
+    return bool(config.HUB_SECRET) and secrets.compare_digest(str(data.get("secret") or ""), config.HUB_SECRET)
+
+
+def register_device(app, client_ip, data):
+    """Hub menerima pendaftaran dari sebuah perangkat. Diamankan secret bersama."""
+    from . import devices
+
+    if not _secret_ok(data):
+        return {"ok": False, "error": "secret salah"}, 403
+    try:
+        port = int(data.get("port") or config.DASHBOARD_PORT)
+    except (TypeError, ValueError):
+        port = config.DASHBOARD_PORT
+    name = (data.get("name") or client_ip)
+    url = f"http://{client_ip}:{port}"
+    is_new = devices.register(name, url)
+    if is_new:
+        _notify_owner(app, f"🔌 Perangkat baru online: {name} ({url})\nKirim /pakai {name} untuk menyuruhnya bekerja.")
+    return {"ok": True, "new": is_new}, 200
+
+
+def _ask_owner(app, text):
+    """Tampilkan tombol Ya/Batal di Telegram pemilik dari thread dashboard."""
+    ask = getattr(app, "_ask_confirm", None)
+    if not (ask and getattr(app, "tg", None) and app.loop and config.OWNER_ID):
+        return False
+    try:
+        return bool(asyncio.run_coroutine_threadsafe(ask(config.OWNER_ID, text), app.loop).result(timeout=330))
+    except Exception:  # noqa: BLE001 - gagal/habis waktu = batal
+        return False
+
+
+def device_api(app, path, client_ip, data):
+    """Permintaan dari perangkat ke Hub (/api/devices/...). Diamankan secret bersama,
+    bukan login dashboard. Kembalikan (isi JSON, kode HTTP)."""
+    from . import devices
+
+    if config.AGENT_MODE:
+        return {"ok": False, "error": "komputer ini perangkat, bukan Hub"}, 404
+    if path == "/api/devices/register":
+        return register_device(app, client_ip, data)
+    if not _secret_ok(data):
+        return {"ok": False, "error": "secret salah"}, 403
+    name = (data.get("name") or client_ip).strip()[:60]
+    if path == "/api/devices/poll":
+        register_device(app, client_ip, data)  # sekaligus heartbeat
+        try:
+            wait = min(float(data.get("wait") or 0), devices.POLL_WAIT)
+        except (TypeError, ValueError):
+            wait = 0
+        task = devices.take(name, wait)
+        return {"ok": True, "task": task, "sync": devices.sync_bundle(app)["version"]}, 200
+    if path == "/api/devices/result":
+        text = str(data.get("text") or "")
+        if not devices.resolve(str(data.get("id") or ""), text):
+            _notify_owner(app, f"🖥️ {name}:\n{text}")  # tak ada yang menunggu (mis. Hub menyala ulang)
+        return {"ok": True}, 200
+    if path == "/api/devices/message":
+        _notify_owner(app, f"🖥️ {name}: {data.get('text') or ''}")
+        return {"ok": True}, 200
+    if path == "/api/devices/confirm":
+        return {"ok": True, "yes": _ask_owner(app, f"[🖥️ {name}] {data.get('text') or ''}")}, 200
+    if path == "/api/devices/memory":
+        action, text = data.get("action"), data.get("text") or ""
+        if action == "add":
+            app.memory.add(f"{text} (dari {name})")
+        elif action == "set":
+            app.memory.set(text)
+        elif action == "clear":
+            app.memory.clear()
+        else:
+            return {"ok": False, "error": "aksi memori tidak dikenal"}, 400
+        return {"ok": True}, 200
+    if path == "/api/devices/sync":
+        return {"ok": True, **devices.sync_bundle(app)}, 200
+    return {"ok": False, "error": "not found"}, 404
+
+
 # --- login (dipakai kalau ITSME_DASHBOARD_PASSWORD diisi) --------------------------
 _SESSIONS = {}  # session_id -> waktu kedaluwarsa (epoch)
 _SESSION_TTL = 7 * 24 * 3600
@@ -396,6 +490,9 @@ def _make_handler(app, token):
             if path == "/api/drive/search":
                 data, err = drive_search((self._query().get("q") or [""])[0])
                 return self._json(data or {"error": err}, 200 if data else 400)
+            if path == "/api/devices":
+                from . import devices
+                return self._json({"devices": devices.listing(), "is_hub": not config.AGENT_MODE, "target": devices.get_target()})
             return self._json({"error": "not found"}, 404)
 
         # -- POST --
@@ -404,6 +501,9 @@ def _make_handler(app, token):
                 return self._json({"error": "permintaan ditolak (tanpa header dashboard)"}, 403)
             path = urlparse(self.path).path
             data = self._body()
+            if path in _DEVICE_PATHS:  # dari perangkat ke Hub (secret, bukan login)
+                obj, code = device_api(app, path, self.client_address[0], data)
+                return self._json(obj, code)
             if path == "/login":
                 if _check_login(data.get("user", ""), data.get("password", "")):
                     cookie = f"itsme_session={_new_session()}; Path=/; HttpOnly; SameSite=Strict; Max-Age={_SESSION_TTL}"
@@ -437,6 +537,16 @@ def _make_handler(app, token):
                 return self._json({"message": drive_action(app, "drive_unduh", {"file_id": data.get("file_id", ""), "path_lokal": data.get("path_lokal", "")})})
             elif path == "/api/drive/manage":
                 return self._json({"message": drive_action(app, "drive_kelola", {k: data.get(k, "") for k in ("aksi", "file_id", "folder_id", "nama")})})
+            elif path == "/api/devices/forget":
+                from . import devices
+                return self._json({"ok": devices.forget(data.get("name", ""))})
+            elif path == "/api/devices/target":
+                from . import devices
+                dev = devices.find(data.get("name") or "") if data.get("name") else None
+                if data.get("name") and not dev:
+                    return self._json({"ok": False, "error": "perangkat tidak ditemukan"}, 400)
+                devices.set_target(dev["name"] if dev else None)
+                return self._json({"ok": True, "target": devices.get_target()})
             else:
                 return self._json({"error": "not found"}, 404)
             return self._json({"ok": ok, "message": msg, "status": status(app)}, 200 if ok else 400)
@@ -650,6 +760,7 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
   <button data-tab="settings">⚙️ Pengaturan</button>
   <button data-tab="files">📁 Berkas</button>
   <button data-tab="drive">☁️ Drive</button>
+  <button data-tab="devices">🖥️ Perangkat</button>
   <button data-tab="memori">🧠 Memori</button>
   <button data-tab="log">📜 Log</button>
 </nav>
@@ -741,6 +852,15 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
   </div>
 
   </section>
+  <section data-panel="devices" class="panel">
+  <div class="card">
+    <h2 class="spread">Perangkat <button onclick="loadDevices()" style="padding:5px 11px;font-size:.8rem">Muat ulang</button></h2>
+    <div id="devRole" class="sub" style="margin-bottom:6px"></div>
+    <div id="devList" class="fslist"></div>
+    <div class="sub" id="devHint" style="margin-top:10px"></div>
+  </div>
+
+  </section>
   <section data-panel="memori" class="panel">
   <div class="card">
     <h2>Memori</h2>
@@ -786,6 +906,7 @@ function toast(msg){
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === b.dataset.tab));
+  if(b.dataset.tab === 'devices') loadDevices();
 });
 function curTheme(){ const a = document.documentElement.getAttribute('data-theme'); return a || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'); }
 function applyTheme(t){ if(t) document.documentElement.setAttribute('data-theme', t); document.getElementById('themeBtn').textContent = curTheme()==='dark' ? '☀️' : '🌙'; }
@@ -992,7 +1113,61 @@ function drvUpload(){
 }
 document.getElementById('drvSearch').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); drvFind(); } });
 
-loadStatus(); loadMemory(); loadLogs(); loadInfo(); fsGo(''); drvStatus();
+// --- Perangkat (banyak komputer, satu bot) ---
+function fmtSeen(ts){
+  const d = Math.max(0, Date.now()/1000 - (ts||0));
+  if(!ts) return '';
+  if(d < 60) return 'baru saja';
+  if(d < 3600) return Math.floor(d/60) + ' menit lalu';
+  if(d < 86400) return Math.floor(d/3600) + ' jam lalu';
+  return Math.floor(d/86400) + ' hari lalu';
+}
+function devForget(name){
+  if(!confirm('Lupakan perangkat "' + name + '" dari daftar?')) return;
+  api('/api/devices/forget', {method:'POST', body:JSON.stringify({name})}).then(loadDevices).catch(e=>toast(e.message));
+}
+function loadDevices(){
+  api('/api/devices').then(d => {
+    const role = document.getElementById('devRole'), hint = document.getElementById('devHint');
+    if(d.is_hub){
+      role.textContent = 'Komputer ini Hub (memakai bot Telegram). Perangkat lain mendaftar ke sini.';
+      hint.innerHTML = 'Tambah perangkat: di komputer lain, pasang It\'s Me lalu isi di berkas .env-nya '
+        + '<code>ITSME_HUB_URL</code> (alamat dashboard Hub ini, mis. lewat Tailscale) dan '
+        + '<code>ITSME_HUB_SECRET</code> (sama persis dengan Hub). Perangkat itu akan muncul di sini. '
+        + 'Satu bot, satu token, satu id — tidak perlu bikin bot baru. Di Telegram: /perangkat untuk daftar, '
+        + '/pakai &lt;nama&gt; untuk menyuruh perangkat itu bekerja, /pakai saja untuk kembali ke komputer ini.';
+    } else {
+      role.textContent = 'Komputer ini perangkat (agent) yang terhubung ke Hub. Daftar lengkap perangkat ada di Hub.';
+      hint.textContent = '';
+    }
+    const box = document.getElementById('devList'); box.innerHTML = '';
+    if(!d.devices.length){ box.innerHTML = '<div class="fsrow"><span class="nm">(belum ada perangkat lain)</span></div>'; return; }
+    for(const dev of d.devices){
+      const row = document.createElement('div'); row.className = 'fsrow';
+      row.innerHTML = '<span>' + (dev.online ? '🟢' : '⚪') + '</span>'
+        + '<span class="nm"></span>'
+        + '<span class="sz">' + (dev.online ? 'online' : fmtSeen(dev.last_seen)) + '</span>';
+      row.querySelector('.nm').textContent = dev.name + (d.target === dev.name ? '  🎯 tujuan Telegram' : '');
+      if(d.is_hub){
+        const on = d.target === dev.name, use = document.createElement('button');
+        use.textContent = on ? 'Berhenti' : 'Pakai'; use.style.cssText = 'padding:4px 10px;font-size:.8rem';
+        use.title = 'Pesan Telegram berikutnya dikerjakan perangkat ini';
+        use.onclick = () => api('/api/devices/target', {method:'POST', body:JSON.stringify({name: on ? '' : dev.name})}).then(loadDevices).catch(e=>toast(e.message));
+        row.appendChild(use);
+      }
+      const open = document.createElement('button');
+      open.textContent = 'Buka'; open.style.cssText = 'padding:4px 10px;font-size:.8rem';
+      open.onclick = () => window.open(dev.url, '_blank');
+      const forget = document.createElement('button');
+      forget.textContent = 'Lupakan'; forget.className = 'danger'; forget.style.cssText = 'padding:4px 10px;font-size:.8rem';
+      forget.onclick = () => devForget(dev.name);
+      row.appendChild(open); row.appendChild(forget);
+      box.appendChild(row);
+    }
+  }).catch(e=>toast(e.message));
+}
+
+loadStatus(); loadMemory(); loadLogs(); loadInfo(); fsGo(''); drvStatus(); loadDevices();
 setInterval(loadStatus, 5000);
 setInterval(loadInfo, 30000);
 </script>

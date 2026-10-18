@@ -251,7 +251,40 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/memori` | Lihat isi memori jangka panjang |
 | `/hapus_memori` | Kosongkan memori (minta konfirmasi) |
 | `/reset` | Mulai percakapan baru (memori tetap) |
+| `/perangkat` | Daftar komputer lain yang terhubung ([lihat di bawah](#banyak-komputer-satu-bot)) |
+| `/pakai <nama>` | Pesan berikutnya dikerjakan komputer itu; `/pakai` saja = kembali ke komputer utama |
 | `/id` | Tampilkan user id Telegram-mu |
+
+### Banyak komputer, satu bot
+
+It's Me bisa dipasang di beberapa komputer dan semuanya dikendalikan dari
+**bot Telegram yang sama** — tidak perlu bikin bot baru.
+
+- **Hub** = komputer utama, memakai token Telegram seperti biasa.
+- **Perangkat** = komputer lain. Ia tidak memakai token; ia menghubungi
+  dashboard Hub dan menunggu perintah dari sana.
+
+Cara menambah perangkat:
+
+1. Di Hub, isi `ITSME_HUB_SECRET` (kata sandi acak yang panjang) di `.env`,
+   dan buat dashboard-nya bisa dijangkau komputer lain (mis. lewat Tailscale,
+   lihat `PANDUAN_AKSES_JARAK_JAUH.md`, dengan `ITSME_DASHBOARD_HOST=0.0.0.0`).
+   Nyalakan ulang It's Me.
+2. Di komputer lain, pasang It's Me seperti biasa, lalu isi `.env`-nya:
+   `ITSME_HUB_URL=http://<alamat-hub>:8750`, `ITSME_HUB_SECRET=` (sama persis),
+   dan boleh `ITSME_DEVICE_NAME=Laptop`. Token Telegram tidak perlu diisi.
+3. Saat perangkat menyala, bot mengabari: "🔌 Perangkat baru online".
+
+Di Telegram, kirim `/pakai Laptop`; pesan berikutnya dikerjakan laptop itu dan
+jawabannya muncul di chat yang sama dengan awalan 🖥️ Laptop. Tombol Ya/Batal
+untuk aksi berisiko juga muncul di Telegram. Kirim `/pakai` untuk kembali.
+
+Supaya cara kerjanya sama persis dengan komputer utama, perangkat otomatis
+menyalin **memori**, **otak yang dipilih**, dan **mode akses** dari Hub (catatan
+memori yang dibuat di perangkat juga tersimpan di Hub). Yang tetap diurus per
+komputer: login/API key otak (mis. `/claudepc` perlu login Claude di komputer
+itu juga) dan Ollama kalau memakai otak lokal. Berkas & foto belum bisa
+diteruskan ke perangkat — kirim teks.
 
 ### Dashboard web
 

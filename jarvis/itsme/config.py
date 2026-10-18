@@ -6,6 +6,7 @@ ditulis di dalam kode. Jalankan salinan .env.example menjadi .env lalu isi.
 
 import os
 import re
+import socket
 
 try:
     from dotenv import load_dotenv
@@ -135,6 +136,22 @@ DASHBOARD_PORT = int(_get("ITSME_DASHBOARD_PORT", "8750"))
 DASHBOARD_USER = (_get("ITSME_DASHBOARD_USER", "admin") or "admin").strip()
 DASHBOARD_PASSWORD = _get("ITSME_DASHBOARD_PASSWORD", "")
 
+# --- Banyak perangkat, satu bot (Hub + Perangkat) ----------------------------
+# Satu komputer jadi "Hub" (memakai token Telegram). Komputer lain jadi
+# "Perangkat": jalan TANPA Telegram (mode dashboard saja) lalu mendaftar ke Hub.
+# Nama perangkat ini (muncul di daftar perangkat Hub).
+DEVICE_NAME = _get("ITSME_DEVICE_NAME", socket.gethostname() or "perangkat")
+# Alamat dashboard Hub, mis. http://100.x.y.z:8750 (lewat Tailscale). Kalau
+# DIISI, komputer ini menjadi PERANGKAT (agent) dan tidak memakai Telegram.
+HUB_URL = (_get("ITSME_HUB_URL", "") or "").strip().rstrip("/")
+# Secret bersama Hub & Perangkat (biar hanya perangkatmu yang bisa mendaftar).
+# JANGAN pernah ditaruh di repo publik; isi di .env tiap komputer.
+HUB_SECRET = _get("ITSME_HUB_SECRET", "")
+# Komputer ini = perangkat (agent)? True kalau HUB_URL diisi.
+AGENT_MODE = bool(HUB_URL)
+# Jeda heartbeat perangkat ke Hub (detik).
+HUB_HEARTBEAT = float(_get("ITSME_HUB_HEARTBEAT", "60"))
+
 # --- Website (edit lewat Git) ----------------------------------------------
 # Folder clone lokal dari repo website yang mau diedit It's Me.
 # Kosongkan kalau belum dipakai.
@@ -178,6 +195,13 @@ NAME = _get("ITSME_NAME", "It's Me")
 def check():
     """Kembalikan daftar masalah konfigurasi (kosong = siap jalan)."""
     problems = []
+    if AGENT_MODE:
+        # Mode perangkat: tanpa Telegram. Yang wajib: secret Hub & dashboard aktif.
+        if not HUB_SECRET:
+            problems.append("ITSME_HUB_SECRET belum diisi (wajib untuk mode perangkat).")
+        if not DASHBOARD_ENABLED:
+            problems.append("Dashboard harus aktif untuk mode perangkat (jangan ITSME_DASHBOARD=0).")
+        return problems
     if not TELEGRAM_TOKEN:
         problems.append("TELEGRAM_BOT_TOKEN belum diisi.")
     if not OWNER_ID:

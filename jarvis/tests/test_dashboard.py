@@ -322,5 +322,89 @@ class DashboardTokenTest(unittest.TestCase):
         self.assertIn("itsme_token=", r.headers.get("set-cookie", ""))
 
 
+class DashboardDevicesTest(unittest.TestCase):
+    """Hub: terima pendaftaran perangkat (secret), tampilkan & lupakan.
+
+    Satu bot/token/id — perangkat lain hanya mendaftar lewat HTTP, tidak membuat
+    bot baru. Pendaftaran wajib secret bersama; daftar & lupakan butuh login biasa.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        for p in (
+            mock.patch.object(config, "DATA_DIR", self.dir),
+            mock.patch.object(config, "LOG_FILE", os.path.join(self.dir, "itsme.log")),
+            mock.patch.object(config, "DASHBOARD_ENABLED", True),
+            mock.patch.object(config, "DASHBOARD_HOST", "127.0.0.1"),
+            mock.patch.object(config, "DASHBOARD_PORT", 0),
+            mock.patch.object(config, "HUB_SECRET", "s3cr3t"),
+            mock.patch.object(config, "AGENT_MODE", False),
+            mock.patch.dict(brain._state, {"backend": "ollama"}),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        open(os.path.join(self.dir, "itsme.log"), "w").close()
+        self.app = FakeApp(self.dir)
+        self.server = dashboard.start(self.app)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def get(self, path):
+        return httpx.get(self.base + path, timeout=5)
+
+    def post(self, path, body, guard=True):
+        headers = {"X-Itsme-Dashboard": "1"} if guard else {}
+        return httpx.post(self.base + path, json=body, headers=headers, timeout=5)
+
+    def register(self, name="Laptop", secret="s3cr3t", **extra):
+        return self.post("/api/devices/register", {"name": name, "secret": secret, **extra})
+
+    def test_empty_list_and_is_hub(self):
+        d = self.get("/api/devices").json()
+        self.assertEqual(d["devices"], [])
+        self.assertTrue(d["is_hub"])
+
+    def test_register_requires_correct_secret(self):
+        self.assertEqual(self.register(secret="salah").status_code, 403)
+        self.assertEqual(self.get("/api/devices").json()["devices"], [])
+
+    def test_register_adds_device_with_client_url(self):
+        r = self.register(port=8751)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["new"])
+        devs = self.get("/api/devices").json()["devices"]
+        self.assertEqual(len(devs), 1)
+        self.assertEqual(devs[0]["name"], "Laptop")
+        self.assertEqual(devs[0]["url"], "http://127.0.0.1:8751")
+        self.assertTrue(devs[0]["online"])
+
+    def test_second_register_not_new(self):
+        self.register()
+        self.assertFalse(self.register().json()["new"])
+
+    def test_register_needs_guard_header(self):
+        self.assertEqual(self.post("/api/devices/register", {"name": "L", "secret": "s3cr3t"}, guard=False).status_code, 403)
+
+    def test_notifies_owner_only_on_new_device(self):
+        with mock.patch.object(dashboard, "_notify_owner") as notify:
+            self.register()   # baru -> kabari
+            self.register()   # sudah ada -> diam
+        self.assertEqual(notify.call_count, 1)
+        self.assertIn("Laptop", notify.call_args[0][1])
+
+    def test_forget_device(self):
+        self.register()
+        self.assertTrue(self.post("/api/devices/forget", {"name": "Laptop"}).json()["ok"])
+        self.assertEqual(self.get("/api/devices").json()["devices"], [])
+
+    def test_forget_needs_guard_header(self):
+        self.assertEqual(self.post("/api/devices/forget", {"name": "x"}, guard=False).status_code, 403)
+
+    def test_agent_mode_reports_not_hub(self):
+        with mock.patch.object(config, "AGENT_MODE", True):
+            self.assertFalse(self.get("/api/devices").json()["is_hub"])
+
+
 if __name__ == "__main__":
     unittest.main()

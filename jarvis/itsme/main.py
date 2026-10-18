@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
-from . import access, brain, config, dashboard, keys, updater
+from . import access, brain, config, dashboard, devices, keys, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -53,8 +53,18 @@ HELP = (
     "/memori — lihat isi memori jangka panjang\n"
     "/hapus_memori — kosongkan memori\n"
     "/reset — mulai percakapan baru (lupakan konteks obrolan, memori tetap)\n"
+    "/perangkat — daftar komputer lain yang terhubung\n"
+    "/pakai <nama> — pesan berikutnya dikerjakan komputer itu (/pakai saja = kembali ke sini)\n"
     "/id — tampilkan user id Telegram-mu"
 )
+# Perintah yang tetap dikerjakan Hub walau ada perangkat tujuan (/pakai).
+# Memori & mode akses Hub disalin ke semua perangkat, jadi diatur di sini.
+_HUB_ONLY = {
+    "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
+    "/memori", "/hapus_memori", "/perangkat", "/pakai", "/id",
+}
+# Paling lama Hub menunggu jawaban dari perangkat (detik).
+_DEVICE_REPLY_TIMEOUT = 3600
 
 KUNCI_HELP = (
     "Kirim API key dengan: /kunci <key>\n\n"
@@ -140,8 +150,10 @@ def _with_image(text, image_path):
 
 class App:
     def __init__(self):
-        self.tg = Telegram(config.TELEGRAM_TOKEN, config.TELEGRAM_API_URL)
-        self.memory = Memory(config.MEMORY_FILE)
+        # Mode perangkat (agent): tanpa Telegram, hanya dashboard + daftar ke Hub.
+        self.tg = None if config.AGENT_MODE else Telegram(config.TELEGRAM_TOKEN, config.TELEGRAM_API_URL)
+        # Di perangkat, memori adalah salinan memori Hub (catatan baru ikut dikirim ke Hub).
+        self.memory = (devices.HubMemory if config.AGENT_MODE else Memory)(config.MEMORY_FILE)
         self.loop = None
         self.histories = {}  # chat_id -> list[message]
         self.chat_locks = {}  # chat_id -> asyncio.Lock (jaga konsistensi riwayat)
@@ -161,6 +173,13 @@ class App:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    async def _say(self, chat_id, text):
+        """Kirim pesan ke pemilik: lewat Telegram di Hub, lewat Hub di perangkat."""
+        if self.tg is not None:
+            await self.tg.send(chat_id, text)
+        else:
+            await asyncio.to_thread(devices.send_message, text)
 
     def _brain_status(self):
         lines = [f"Otak sekarang: {brain.describe()}", ""]
@@ -248,7 +267,8 @@ class App:
 
     async def _think(self, chat_id, messages, ctx):
         """Jalankan otak di thread terpisah. Error apa pun jadi pesan yang jelas."""
-        typing = asyncio.create_task(self._keep_typing(chat_id))
+        # Di perangkat tidak ada Telegram; status "mengetik" ditampilkan Hub.
+        typing = asyncio.create_task(self._keep_typing(chat_id)) if self.tg is not None else None
         try:
             return await asyncio.to_thread(run_agent, messages, ctx)
         except Exception as exc:  # noqa: BLE001 - pemilik harus selalu dapat jawaban
@@ -258,10 +278,14 @@ class App:
                 f"(Detailnya tercatat di {config.LOG_FILE})"
             )
         finally:
-            typing.cancel()
+            if typing:
+                typing.cancel()
 
     # --- konfirmasi (dari thread worker ke event loop) ---------------------
     def _confirm_blocking(self, chat_id, text):
+        if self.tg is None:
+            # Mode perangkat: tombol Ya/Batal ditampilkan Hub di Telegram pemilik.
+            return devices.ask_confirm(text)
         fut = asyncio.run_coroutine_threadsafe(
             self._ask_confirm(chat_id, text), self.loop
         )
@@ -274,6 +298,9 @@ class App:
     def _notify_blocking(self, chat_id, text):
         """Kabari pemilik tentang aksi yang langsung dijalankan (akses penuh)."""
         detail = text.split("\n\n", 1)[-1]  # tanpa baris pertanyaannya
+        if self.tg is None:  # mode perangkat: dikabarkan lewat Hub
+            devices.send_message(f"🔓 Langsung kujalankan (akses penuh):\n\n{detail}")
+            return
         fut = asyncio.run_coroutine_threadsafe(
             self.tg.send(chat_id, f"🔓 Langsung kujalankan (akses penuh):\n\n{detail}"), self.loop
         )
@@ -314,11 +341,11 @@ class App:
         return f"Oke, aku kerjakan di latar: {instruksi}"
 
     async def _run_background(self, chat_id, instruksi):
-        await self.tg.send(chat_id, f"⏳ Mulai di latar: {instruksi}")
+        await self._say(chat_id, f"⏳ Mulai di latar: {instruksi}")
         messages = [{"role": "user", "content": _stamped(instruksi)}]
         ctx = self._ctx_for(chat_id, in_background=True)
         reply = await self._think(chat_id, messages, ctx)
-        await self.tg.send(chat_id, f"✅ Tugas latar selesai: {instruksi}\n\n{reply}")
+        await self._say(chat_id, f"✅ Tugas latar selesai: {instruksi}\n\n{reply}")
 
     # --- API key lewat chat (/kunci) ----------------------------------------
     async def _save_key(self, chat_id, message):
@@ -382,6 +409,25 @@ class App:
 
         if user_id != config.OWNER_ID:
             # Bukan pemilik — abaikan diam-diam (keamanan).
+            return
+
+        first = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        if first == "/perangkat":
+            await self.tg.send(chat_id, self._devices_status())
+            return
+        if first == "/pakai":
+            await self.tg.send(chat_id, self._use_device(text.split(maxsplit=1)[1] if " " in text.strip() else ""))
+            return
+        device = devices.get_target()
+        if device and first not in _HUB_ONLY:
+            if _attachment(message) or not text.strip():
+                await self.tg.send(
+                    chat_id,
+                    f"Berkas, foto, dan suara belum bisa diteruskan ke {device}. Kirim teks saja, "
+                    "atau /pakai untuk kembali ke komputer ini.",
+                )
+                return
+            await self._forward(chat_id, device, text)
             return
 
         image_path = None
@@ -488,6 +534,118 @@ class App:
             ctx = self._ctx_for(chat_id)
             reply = await self._think(chat_id, history, ctx)
             await self.tg.send(chat_id, reply)
+
+    # --- banyak perangkat (sisi Hub) ------------------------------------------
+    @staticmethod
+    def _devices_status():
+        items = devices.listing()
+        target = devices.get_target()
+        if not items:
+            return (
+                "Belum ada komputer lain yang terhubung.\n\n"
+                "Cara menambah: pasang It's Me di komputer itu, lalu isi .env-nya dengan "
+                "ITSME_HUB_URL (alamat dashboard komputer ini, mis. lewat Tailscale) dan "
+                "ITSME_HUB_SECRET (sama persis dengan di sini)."
+            )
+        lines = ["Komputer yang terhubung:"]
+        for d in items:
+            mark = " 🎯" if target and d["name"].lower() == target.lower() else ""
+            lines.append(f"{'🟢' if d['online'] else '⚪'} {d['name']}{mark}")
+        lines.append("")
+        lines.append(f"Tujuan pesan sekarang: {target or 'komputer ini (Hub)'}")
+        lines.append("/pakai <nama> — kerjakan di komputer itu · /pakai — kembali ke sini")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _use_device(name):
+        name = (name or "").strip()
+        if not name or name.lower() in ("hub", "sini", "ini", "utama"):
+            devices.set_target(None)
+            return "Oke, pesan berikutnya kukerjakan di komputer ini (Hub)."
+        dev = devices.find(name)
+        if dev is None:
+            return f"Perangkat '{name}' tidak ditemukan.\n\n{App._devices_status()}"
+        devices.set_target(dev["name"])
+        note = "" if dev["online"] else "\n⚠️ Perangkat ini sedang offline; pesan akan menunggu sampai ia menyala."
+        return (
+            f"🎯 Oke, pesan berikutnya dikerjakan {dev['name']} — otak, memori, dan mode aksesnya "
+            f"sama dengan komputer ini. /pakai untuk kembali.{note}"
+        )
+
+    async def _forward(self, chat_id, name, text):
+        """Titipkan pesan pemilik ke perangkat lalu tunggu jawabannya
+        (status "mengetik" tetap tampil selama perangkat bekerja)."""
+        dev = devices.find(name)
+        if dev is None:
+            devices.set_target(None)
+            await self.tg.send(chat_id, f"Perangkat {name} sudah tidak terdaftar; kembali ke komputer ini.")
+            return
+        if not dev["online"]:
+            await self.tg.send(chat_id, f"⚪ {dev['name']} sedang offline. Pesanmu kutitipkan sampai ia menyala.")
+        task_id, future = devices.enqueue(dev["name"], text)
+        typing = asyncio.create_task(self._keep_typing(chat_id))
+        try:
+            reply = await asyncio.wait_for(asyncio.wrap_future(future), timeout=_DEVICE_REPLY_TIMEOUT)
+        except asyncio.TimeoutError:
+            devices.stop_waiting(task_id)
+            reply = "⏱️ Belum ada jawaban setelah lama menunggu; kalau nanti selesai, jawabannya tetap kukirim."
+        finally:
+            typing.cancel()
+        await self.tg.send(chat_id, f"🖥️ {dev['name']}:\n{reply}")
+
+    # --- banyak perangkat (sisi perangkat) ------------------------------------
+    async def _handle_remote(self, task):
+        """Kerjakan pesan pemilik yang dititipkan Hub, lalu kirim jawabannya balik."""
+        chat_id = config.OWNER_ID or 0
+        text = (task.get("text") or "").strip()
+        command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        try:
+            if command == "/reset":
+                self.histories.pop(chat_id, None)
+                reply = "Oke, konteks obrolan di perangkat ini direset. Memori tetap."
+            elif command == "/otak":
+                reply = await asyncio.to_thread(self._brain_status)
+            elif command in _BRAIN_COMMANDS:
+                try:
+                    brain.set_backend(_BRAIN_COMMANDS[command])
+                    self.histories.pop(chat_id, None)
+                    reply = f"Otak perangkat ini sekarang: {brain.describe()}."
+                except ValueError as exc:
+                    reply = f"Belum bisa ganti otak di perangkat ini: {exc}"
+            else:
+                seen = self._seen(chat_id)
+                for url in _URL.findall(text):
+                    seen.add(url.rstrip(".,;:!?)]}'\""))
+                async with self._lock(chat_id):
+                    history = self.histories.setdefault(chat_id, [])
+                    history.append({"role": "user", "content": _stamped(text)})
+                    reply = await self._think(chat_id, history, self._ctx_for(chat_id))
+        except Exception as exc:  # noqa: BLE001 - pemilik harus selalu dapat jawaban
+            log.exception("tugas dari Hub gagal")
+            reply = f"⚠️ Error di perangkat: {type(exc).__name__}: {exc}"
+        await asyncio.to_thread(devices.send_result, task.get("id", ""), reply)
+
+    async def _sync_from_hub(self):
+        """Samakan memori, otak, dan mode akses dengan Hub. Kembalikan versinya."""
+        data = await asyncio.to_thread(devices.fetch_sync)
+        if not data:
+            return None
+        if hasattr(self.memory, "replace_from_hub") and data.get("memory") is not None:
+            self.memory.replace_from_hub(data["memory"])
+        access.set_full(bool(data.get("full_access")))
+        wanted = data.get("brain")
+        if wanted and wanted != brain.current_backend():
+            try:
+                brain.set_backend(wanted)
+                self.histories.clear()  # format riwayat tiap otak berbeda
+                log.info("Otak disamakan dengan Hub: %s", brain.describe())
+            except ValueError as exc:
+                log.warning("Otak Hub (%s) belum bisa dipakai di perangkat ini: %s", wanted, exc)
+                await asyncio.to_thread(
+                    devices.send_message,
+                    f"⚠️ Otak Hub ({wanted}) belum bisa dipakai di sini, tetap {brain.describe()}: {exc}",
+                )
+        return data.get("version")
 
     def owner_ctx(self):
         """ctx alat untuk aksi dari dashboard: konfirmasi muncul sebagai tombol
@@ -622,8 +780,50 @@ class App:
                 watch.cancel()
             await asyncio.gather(*(t for t in (poll, watch) if t), return_exceptions=True)
 
+    async def run_agent(self):
+        """Mode perangkat: tanpa Telegram (biar tidak berebut token dengan Hub).
+        Menunggu pesan pemilik dari Hub, menyamakan memori/otak/akses dengan
+        Hub, melayani dashboard, dan tetap diperbarui dari GitHub."""
+        self.loop = asyncio.get_running_loop()
+        self.started = datetime.now()
+        brain.restore()
+        dashboard.start(self)
+        log.info("%s (mode perangkat '%s') jalan. Hub: %s", config.NAME, config.DEVICE_NAME, config.HUB_URL)
+        synced = await self._sync_from_hub()
+        notice = updater.pop_notice()
+        if notice:
+            await asyncio.to_thread(devices.send_message, notice)
+        next_update = self.loop.time() + _FIRST_UPDATE_CHECK
+        while True:
+            reply = await asyncio.to_thread(devices.poll_hub)  # tunggu tugas + heartbeat
+            if reply is None:
+                await asyncio.sleep(min(config.HUB_HEARTBEAT, 15))  # Hub belum terjangkau
+            else:
+                if reply.get("task"):
+                    self._spawn(self._handle_remote(reply["task"]))
+                if reply.get("sync") and reply["sync"] != synced:
+                    synced = await self._sync_from_hub() or synced
+            if config.AUTO_UPDATE and self.loop.time() >= next_update:
+                next_update = self.loop.time() + config.UPDATE_INTERVAL
+                try:
+                    update = await asyncio.to_thread(updater.check, self._failed_updates)
+                except Exception:  # noqa: BLE001 - internet/GitHub; coba lagi nanti
+                    update = None
+                if update:
+                    log.info("Pembaruan ditemukan: %s", update.describe())
+                    await self._wait_idle(_UPDATE_MAX_WAIT)
+                    try:
+                        await asyncio.to_thread(updater.apply, update)
+                        updater.save_notice(f"✅ Perangkat {config.DEVICE_NAME} diperbarui ke {update.describe()}.")
+                        return EXIT_UPDATED
+                    except Exception:  # noqa: BLE001
+                        log.exception("pembaruan %s gagal dipasang", update.short)
+                        self._failed_updates.add(update.sha)
+
     async def run(self):
         """Layani Telegram. Kembalikan EXIT_UPDATED setelah pembaruan terpasang."""
+        if config.AGENT_MODE:
+            return await self.run_agent()
         self.loop = asyncio.get_running_loop()
         self.started = datetime.now()
         brain.restore()
