@@ -121,6 +121,20 @@ class DecideTest(unittest.TestCase):
         self.confirm.assert_called_once()
         self.assertEqual(notes, [])
 
+    def test_drive_mcp_tools_allowed_without_asking(self):
+        # Alat Drive lewat MCP dibolehkan hook; persetujuan diurus di dalam alat.
+        self.confirm.return_value = False
+        for name in ("drive_cari", "drive_unggah", "drive_kelola"):
+            self.assertEqual(self.decide(f"mcp__itsme_drive__{name}", {"x": 1}), (True, None))
+        self.confirm.assert_not_called()
+
+    def test_drive_mcp_handler_calls_tool(self):
+        handler = cc._drive_handler("drive_cari", {"ctx": "milik-pemilik"})
+        with mock.patch.object(cc.tools, "handle_drive_tool", return_value="📄 laporan [id: 1]") as h:
+            out = asyncio.run(handler({"kata_kunci": "laporan"}))
+        h.assert_called_once_with("drive_cari", {"kata_kunci": "laporan"}, {"ctx": "milik-pemilik"})
+        self.assertEqual(out["content"][0]["text"], "📄 laporan [id: 1]")
+
     def test_hook_answers_in_claude_code_format(self):
         self.confirm.return_value = False
         hook = cc._hook(self.ctx, self.site)
@@ -183,6 +197,26 @@ class RunAgentTest(unittest.TestCase):
             reply = cc.run_agent([{"role": "user", "content": "halo"}], self.ctx)
         self.assertIn("itsme.claude_login", reply)
         collect.assert_not_called()
+
+    def test_drive_tools_wired_when_connected(self):
+        from itsme import drive
+
+        collect = mock.AsyncMock(return_value=_result())
+        with mock.patch.object(cc, "_collect", collect), mock.patch.object(drive, "ready", return_value=True):
+            cc.run_agent([{"role": "user", "content": "cari laporan di drive"}], self.ctx)
+        opts = collect.call_args[0][1]
+        self.assertIn("itsme_drive", opts.mcp_servers)
+        self.assertIn("GOOGLE DRIVE", opts.system_prompt["append"])
+
+    def test_no_drive_tools_when_not_connected(self):
+        from itsme import drive
+
+        collect = mock.AsyncMock(return_value=_result())
+        with mock.patch.object(cc, "_collect", collect), mock.patch.object(drive, "ready", return_value=False):
+            cc.run_agent([{"role": "user", "content": "halo"}], self.ctx)
+        opts = collect.call_args[0][1]
+        self.assertEqual(opts.mcp_servers, {})
+        self.assertNotIn("GOOGLE DRIVE", opts.system_prompt["append"])
 
     def test_check_login(self):
         with mock.patch.object(cc, "_collect", mock.AsyncMock(return_value=_result(result="OK"))):

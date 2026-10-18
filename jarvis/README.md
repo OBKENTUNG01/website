@@ -358,8 +358,8 @@ pengeluaran, supaya bisa dicabut kapan saja.
 ## Google Drive (opsional)
 
 It's Me bisa mengakses Google Drive-mu — **cari, unggah, unduh, dan kelola**
-berkas/folder — lewat chat (otak lokal/cloud/Claude API) maupun **panel Google
-Drive di dashboard** (berfungsi untuk otak apa pun, termasuk Claude di komputer).
+berkas/folder — lewat **chat (semua otak, termasuk "Claude di komputer")**
+maupun **panel Google Drive di dashboard**.
 
 > **Panduan lengkap langkah demi langkah (bahasa Indonesia, untuk pemula):**
 > lihat [`PANDUAN_GOOGLE_DRIVE.md`](PANDUAN_GOOGLE_DRIVE.md). Ringkasannya di bawah.

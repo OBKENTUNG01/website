@@ -77,6 +77,62 @@ def load_sdk():
     return claude_agent_sdk
 
 
+# --- alat Google Drive untuk Claude Code (lewat MCP in-process) --------------------
+# Otak ini memakai alat bawaan Claude Code, bukan CLIENT_TOOLS. Supaya Google
+# Drive bisa dipakai lewat chat di sini juga, alat Drive milik bot dibungkus
+# sebagai server MCP in-process. Tiap alat memanggil tools.handle_drive_tool
+# (yang mengurus persetujuan ke Telegram & menjaga berkas rahasia).
+_DRIVE_MCP = "itsme_drive"
+_DRIVE_SCHEMAS = {
+    "drive_cari": (
+        {"type": "object", "properties": {"kata_kunci": {"type": "string"}}, "required": ["kata_kunci"]},
+        "Cari berkas/folder di Google Drive pemilik berdasarkan nama; kembalikan id, nama, jenis, ukuran.",
+    ),
+    "drive_isi_folder": (
+        {"type": "object", "properties": {"folder_id": {"type": "string"}}},
+        "Lihat isi sebuah folder Google Drive (folder_id kosong = My Drive).",
+    ),
+    "drive_unggah": (
+        {"type": "object", "properties": {"path_lokal": {"type": "string"}, "folder_id": {"type": "string"}, "nama": {"type": "string"}}, "required": ["path_lokal"]},
+        "Unggah sebuah berkas dari komputer ke Google Drive. Minta konfirmasi pemilik.",
+    ),
+    "drive_unduh": (
+        {"type": "object", "properties": {"file_id": {"type": "string"}, "path_lokal": {"type": "string"}}, "required": ["file_id"]},
+        "Unduh sebuah berkas Google Drive (pakai file_id dari drive_cari) ke komputer. Minta konfirmasi pemilik.",
+    ),
+    "drive_kelola": (
+        {"type": "object", "properties": {"aksi": {"type": "string"}, "file_id": {"type": "string"}, "folder_id": {"type": "string"}, "nama": {"type": "string"}}, "required": ["aksi"]},
+        "Kelola Drive: aksi 'buat_folder'/'ganti_nama'/'pindah'/'hapus'. Minta konfirmasi pemilik.",
+    ),
+}
+_DRIVE_PROMPT = (
+    "\n\nGOOGLE DRIVE: pemilik SUDAH menghubungkan Google Drive-nya. Untuk apa pun "
+    "soal Google Drive (cari, lihat, unggah, unduh, buat folder, ganti nama, pindah, "
+    "hapus) WAJIB pakai alat mcp__itsme_drive__* — jangan pakai PowerShell/Bash dan "
+    "jangan menganggap kata 'drive' berarti disk komputer. Mulai dari drive_cari atau "
+    "drive_isi_folder untuk mendapat id, lalu pakai id itu untuk unduh/kelola."
+)
+
+
+def _drive_handler(tool_name, ctx):
+    async def handler(args):
+        # Di thread terpisah supaya konfirmasi (yang menunggu tombol Telegram)
+        # tidak memblokir event loop Claude Code.
+        out = await asyncio.to_thread(tools.handle_drive_tool, tool_name, args, ctx)
+        return {"content": [{"type": "text", "text": out}]}
+
+    return handler
+
+
+def _drive_server(ctx):
+    sdk = load_sdk()
+    defs = [
+        sdk.tool(name, desc, schema)(_drive_handler(name, ctx))
+        for name, (schema, desc) in _DRIVE_SCHEMAS.items()
+    ]
+    return sdk.create_sdk_mcp_server(name=_DRIVE_MCP, version="1.0.0", tools=defs)
+
+
 # --- aturan alat ------------------------------------------------------------------
 def _ask(ctx, text, always_ask=False):
     """Mode akses penuh: langsung jalan (pemilik dikabari); selain itu tombol."""
@@ -98,6 +154,10 @@ def _new_text(name, inp):
 def decide(name, inp, ctx, cwd):
     """(boleh?, alasan kalau tidak). Bisa menunggu tombol pemilik di Telegram."""
     if name in _FREE:
+        return True, None
+    if name.startswith(f"mcp__{_DRIVE_MCP}__"):
+        # Alat Drive menjaga persetujuannya sendiri di dalam (lewat approve()),
+        # jadi hook cukup mengizinkan supaya tidak bertanya dua kali.
         return True, None
     if name in _SHELL:
         command = str(inp.get("command", "")).strip()
@@ -206,17 +266,22 @@ def run_agent(messages, ctx):
 
     cwd = ctx.get("website_dir") or os.path.expanduser("~")
     session = next((m["session_id"] for m in reversed(messages) if m.get("session_id")), None)
+    append = claude_code_prompt(ctx["memory"].text())
+    # Kalau Google Drive sudah terhubung, beri otak ini alat Drive (lewat MCP).
+    mcp_servers = {}
+    from . import drive
+
+    if drive.ready():
+        mcp_servers = {_DRIVE_MCP: _drive_server(ctx)}
+        append += _DRIVE_PROMPT
     options = sdk.ClaudeAgentOptions(
-        system_prompt={
-            "type": "preset",
-            "preset": "claude_code",
-            "append": claude_code_prompt(ctx["memory"].text()),
-        },
+        system_prompt={"type": "preset", "preset": "claude_code", "append": append},
         resume=session,
         cwd=cwd,
         model=config.CLAUDE_CODE_MODEL,
         max_turns=config.CLAUDE_CODE_MAX_TURNS,
         env=_env(),
+        mcp_servers=mcp_servers,
         hooks={"PreToolUse": [sdk.HookMatcher(hooks=[_hook(ctx, cwd)], timeout=_HOOK_TIMEOUT)]},
     )
     try:
