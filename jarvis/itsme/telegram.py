@@ -90,6 +90,20 @@ class Telegram:
                 last = None
         return last
 
+    async def send_photo(self, chat_id, data, filename="layar.png", caption=None):
+        """Kirim gambar (bytes) sebagai foto. True kalau berhasil."""
+        form = {"chat_id": str(chat_id)}
+        if caption:
+            form["caption"] = caption[:1024]
+        try:
+            r = await self._client.post(
+                f"{self._base}/sendPhoto", data=form,
+                files={"photo": (filename, data, "image/png")},
+            )
+            return bool(r.json().get("ok"))
+        except (httpx.HTTPError, ValueError):
+            return False
+
     async def download_file(self, file_id, dest_dir, name=None):
         """Unduh berkas kiriman pemilik ke dest_dir; kembalikan jalurnya, atau
         None kalau gagal (mis. lebih dari 20 MB, batas bot Telegram)."""

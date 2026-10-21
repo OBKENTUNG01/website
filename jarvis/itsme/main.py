@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
-from . import access, brain, config, dashboard, devices, keys, node, updater
+from . import access, brain, config, dashboard, devices, keys, lock, node, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -56,6 +56,9 @@ HELP = (
     "/perangkat — daftar komputer lain yang terhubung\n"
     "/pakai <nama> — pesan berikutnya dikerjakan komputer itu (/pakai saja = kembali ke sini)\n"
     "/pasang — satu baris perintah untuk memasang It's Me di komputer lain\n"
+    "/komputer — buka layar & berkas komputer yang terhubung (seperti remote desktop)\n"
+    "/layar <nama> — kirim foto layar komputer itu ke chat\n"
+    "/lock — kunci bot; kata sandi diminta lagi sebelum bisa dipakai\n"
     "/id — tampilkan user id Telegram-mu"
 )
 # Perintah yang tetap dikerjakan Hub walau ada perangkat tujuan (/pakai).
@@ -63,6 +66,7 @@ HELP = (
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/id",
+    "/lock", "/komputer", "/layar",
 }
 # Paling lama Hub menunggu jawaban dari perangkat (detik).
 _DEVICE_REPLY_TIMEOUT = 3600
@@ -417,12 +421,33 @@ class App:
             # Bukan pemilik — abaikan diam-diam (keamanan).
             return
 
+        # Lapisan kedua: kata sandi. Selama terkunci, apa pun selain kata sandi yang
+        # benar dijawab dengan pengecoh. Pesannya dihapus supaya tebakan/kata sandi
+        # tidak tertinggal di chat.
+        if lock.active() and not lock.is_unlocked(chat_id):
+            await self.tg.delete_message(chat_id, message.get("message_id"))
+            if lock.try_unlock(chat_id, text):
+                await self.tg.send(chat_id, lock.WELCOME)
+            else:
+                await self.tg.send(chat_id, lock.DECOY)
+            return
+        if lock.active() and text.strip().split("@")[0].lower() == "/lock":
+            lock.lock(chat_id)
+            await self.tg.send(chat_id, lock.LOCKED_NOTE)
+            return
+
         first = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
         if first == "/perangkat":
             await self.tg.send(chat_id, self._devices_status())
             return
         if first == "/pasang":
             await self._invite(chat_id)
+            return
+        if first == "/komputer":
+            await self.tg.send(chat_id, await asyncio.to_thread(self._computers_text))
+            return
+        if first == "/layar":
+            await self._send_screen(chat_id, text.split(maxsplit=1)[1].strip() if " " in text.strip() else "")
             return
         if first == "/pakai":
             await self.tg.send(chat_id, self._use_device(text.split(maxsplit=1)[1] if " " in text.strip() else ""))
@@ -564,6 +589,50 @@ class App:
         lines.append(f"Tujuan pesan sekarang: {target or 'komputer ini (Hub)'}")
         lines.append("/pakai <nama> — kerjakan di komputer itu · /pakai — kembali ke sini")
         return "\n".join(lines)
+
+    # --- akses komputer lain (layar & berkas) ------------------------------
+    def _computers_text(self):
+        if not node.installed():
+            return ("It's Me Node belum terpasang, jadi belum ada komputer lain yang terhubung. "
+                    "Pasang dulu di komputer ini, lalu kirim /pasang untuk menambah komputer lain.")
+        nodes = node.computers()
+        if not nodes:
+            return "Node belum menjawab (mungkin baru menyala). Coba /komputer lagi sebentar lagi."
+        lines = ["Komputer yang terhubung:"]
+        for n in nodes:
+            tag = " 👑 pemimpin" if n.get("leader") else ""
+            bot = "" if n.get("bot") else " (tanpa It's Me)"
+            lines.append(f"• {n.get('name', '?')}{tag}{bot}")
+        lines += [
+            "",
+            "/layar <nama> — kirim foto layar komputer itu ke sini (mis. /layar Laptop).",
+            f"Layar langsung + kendali + telusur berkas: buka {node.VIEWER_URL} di komputer "
+            "pemimpin (dari HP lewat Tailscale/Cloudflare — lihat PANDUAN_AKSES_JARAK_JAUH).",
+        ]
+        return "\n".join(lines)
+
+    async def _send_screen(self, chat_id, name):
+        if not node.installed():
+            await self.tg.send(chat_id, "It's Me Node belum terpasang, jadi belum ada komputer untuk dilihat.")
+            return
+        if name:
+            target = await asyncio.to_thread(node.resolve, name)
+            if not target:
+                await self.tg.send(chat_id, f"Komputer “{name}” tidak ketemu. /komputer untuk daftar namanya.")
+                return
+            node_id, label = target["id"], target.get("name", name)
+        else:
+            node_id, label = None, "komputer ini"
+        await self.tg.send_chat_action(chat_id, "upload_photo")
+        png = await asyncio.to_thread(node.screenshot, node_id)
+        if not png:
+            await self.tg.send(
+                chat_id,
+                f"Layar {label} tidak bisa diambil (komputer mati, bukan Windows, atau tidak ada sesi layar).",
+            )
+            return
+        if not await self.tg.send_photo(chat_id, png, "layar.png", f"🖥️ {label}"):
+            await self.tg.send(chat_id, f"Foto layar {label} gagal dikirim.")
 
     async def _invite(self, chat_id):
         """/pasang: satu baris PowerShell berisi kode undangan sekali pakai. Komputer

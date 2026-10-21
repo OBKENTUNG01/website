@@ -13,9 +13,13 @@ Tanpa node (atau ITSME_FOLLOW_NODE=0), It's Me jalan seperti biasa.
 import json
 import os
 import time
+import urllib.parse
 import urllib.request
 
 from . import config
+
+# Halaman layar & berkas semua komputer (disajikan node, hanya dari komputer ini).
+VIEWER_URL = config.NODE_URL + "/"
 
 ACTIVE, STANDBY = "aktif", "siaga"
 # Node terpasang tapi tidak menjawab selama ini (detik): anggap tidak ada, supaya
@@ -57,6 +61,39 @@ def leader_name(st):
     for n in st.get("nodes") or []:
         if n.get("id") == st.get("leader"):
             return n.get("name")
+    return None
+
+
+# --- akses komputer lain lewat node di komputer ini (layar & berkas) ---
+def computers():
+    """Daftar komputer yang terhubung (dari node di komputer ini)."""
+    return (status() or {}).get("nodes", [])
+
+
+def resolve(name):
+    """Komputer dengan nama itu (persis, lalu awalan unik), atau None."""
+    name = (name or "").strip().lower()
+    if not name:
+        return None
+    nodes = computers()
+    exact = [n for n in nodes if (n.get("name") or "").lower() == name]
+    if exact:
+        return exact[0]
+    pre = [n for n in nodes if (n.get("name") or "").lower().startswith(name)]
+    return pre[0] if len(pre) == 1 else None
+
+
+def screenshot(node_id=None, w=1280, timeout=30):
+    """PNG layar sebuah komputer (lewat node di sini). None kalau gagal."""
+    url = f"{config.NODE_URL}/screen?w={int(w)}"
+    if node_id:
+        url += "&node=" + urllib.parse.quote(node_id)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            if r.headers.get("Content-Type", "").startswith("image/"):
+                return r.read()
+    except OSError:
+        pass
     return None
 
 

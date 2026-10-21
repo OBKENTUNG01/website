@@ -254,6 +254,9 @@ skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
 | `/perangkat` | Daftar komputer lain yang terhubung ([lihat di bawah](#banyak-komputer-satu-bot)) |
 | `/pakai <nama>` | Pesan berikutnya dikerjakan komputer itu; `/pakai` saja = kembali ke komputer utama |
 | `/pasang` | Satu baris PowerShell untuk memasang It's Me + node di komputer lain tanpa mengetik token (lihat "Tanpa komputer inti" di bawah) |
+| `/komputer` | Daftar komputer terhubung + cara buka layar & berkasnya (butuh It's Me Node) |
+| `/layar <nama>` | Kirim foto layar komputer itu ke chat (mis. `/layar Laptop`) |
+| `/lock` | Kunci bot; kata sandi diminta lagi sebelum bisa dipakai (kalau diatur) |
 | `/id` | Tampilkan user id Telegram-mu |
 
 ### Banyak komputer, satu bot
@@ -314,6 +317,40 @@ Yang tetap diurus per komputer: login otak (mis. `/claudepc` perlu
 `itsme.claude_login` di komputer itu) dan Ollama kalau memakai otak lokal.
 Riwayat obrolan mulai baru setelah bot pindah; memori tetap. Tanpa node,
 It's Me jalan seperti biasa. Matikan perilaku ini dengan `ITSME_FOLLOW_NODE=0`.
+
+### Lihat & kendalikan layar, telusuri berkas komputer lain
+
+Kalau It's Me Node terpasang, kamu bisa **melihat & mengendalikan layar** dan
+**menelusuri berkas** semua komputer yang terhubung — seperti remote desktop,
+tanpa aplikasi tambahan, dan tetap jalan walau komputernya di jaringan/lokasi lain
+(lewat Tailscale).
+
+- **Dari komputer (local):** buka `http://localhost:7171/`. Pilih komputer di atas,
+  lalu tab **Layar** (lihat + centang "Kendalikan" untuk mouse & keyboard) atau
+  **Berkas** (telusuri, lihat isi, unduh). Dari HP, buka halaman itu lewat
+  Tailscale/Cloudflare — lihat [`PANDUAN_AKSES_JARAK_JAUH.md`](PANDUAN_AKSES_JARAK_JAUH.md).
+- **Dari HP (bot):** `/komputer` menampilkan komputer yang terhubung; `/layar <nama>`
+  mengirim foto layar komputer itu ke chat.
+
+Berkas rahasia (`.env`, kunci, token, login browser/aplikasi, `.ssh`, `.claude`)
+ditandai dan **tidak bisa dibuka/diunduh**. Karena akses ini mengendalikan komputer,
+jaringan Tailscale-mu (dan kode gabung node) adalah kuncinya — jangan dibagikan.
+
+### Kata sandi (lapisan kedua, dengan pengecoh)
+
+Selain hanya pemilik (`OWNER_TELEGRAM_ID`) yang boleh memerintah, kamu bisa menambah
+**kata sandi**: sebelum memakai bot, kata sandi harus dimasukkan. Isi `ITSME_PASSPHRASE`
+di `.env`. Yang penting: **jawaban salah SELALU dibalas "kata sandi minimal 20 karakter"**
+— padahal kata sandi aslimu boleh lebih pendek. Jadi orang yang mengakses sembarangan
+menebak-nebak panjang yang salah dan tidak pernah tahu bentuk aslinya.
+
+- Sekali kata sandi benar dimasukkan, chat terbuka dan tetap terbuka (tidak ditanya tiap
+  bot menyala ulang). Kirim `/lock` untuk mengunci lagi, atau isi `ITSME_LOCK_TTL` (menit)
+  untuk mengunci otomatis setelah diam.
+- Kata sandi hanya di `.env` — tidak pernah di kode, riwayat, atau log. Pesan kata sandi
+  (dan tebakan yang salah) langsung dihapus dari chat.
+- Kata sandi ikut disalin ke komputer baru yang dipasang lewat `/pasang`.
+- Kosong = mati (perilaku lama).
 
 ### Dashboard web
 
@@ -424,6 +461,8 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_FOLLOW_NODE` | `1` | Kalau It's Me Node terpasang, bot hanya aktif di komputer pemimpin (`0` = abaikan node) |
 | `ITSME_NODE_URL` | `http://127.0.0.1:7171` | Alamat API node di komputer ini |
 | `TAILSCALE_API_KEY` | — | Opsional. Dengan ini `/pasang` ikut membawa izin Tailscale sekali pakai, jadi komputer baru tidak perlu login Tailscale |
+| `ITSME_PASSPHRASE` | — | Kata sandi lapisan kedua sebelum bot bisa dipakai; salah selalu dibalas "minimal 20 karakter" (pengecoh). Kosong = mati |
+| `ITSME_LOCK_TTL` | `0` | Menit tanpa dipakai sebelum terkunci otomatis lagi (`0` = tetap terbuka sampai `/lock`) |
 
 ## Google Drive (opsional)
 

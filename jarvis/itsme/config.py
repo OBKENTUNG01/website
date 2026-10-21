@@ -34,6 +34,17 @@ except ValueError:
 # sendiri.
 TELEGRAM_API_URL = (_get("TELEGRAM_API_URL", "https://api.telegram.org") or "").rstrip("/")
 
+# Lapisan kedua: kata sandi yang harus dimasukkan sebelum memakai bot (selain
+# pemilik id). Kosong = mati. Jawaban salah selalu "minimal 20 karakter" sebagai
+# pengecoh, walau kata sandi aslinya boleh lebih pendek. Simpan HANYA di .env.
+PASSPHRASE = _get("ITSME_PASSPHRASE", "") or ""
+# Kunci otomatis lagi setelah sekian menit tanpa dibuka (0 = tetap terbuka
+# sampai /lock atau bot diganti).
+try:
+    LOCK_TTL_MINUTES = int(_get("ITSME_LOCK_TTL", "0") or "0")
+except ValueError:
+    LOCK_TTL_MINUTES = 0
+
 # --- Pilihan otak -----------------------------------------------------------
 # "ollama" (bawaan): model lokal di komputermu, gratis, tanpa API key.
 # "openrouter": model cloud lewat OpenRouter (butuh OPENROUTER_API_KEY).

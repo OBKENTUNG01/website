@@ -33,6 +33,12 @@ class FakeTelegram:
     async def send_chat_action(self, chat_id, action="typing"):
         self.actions += 1
 
+    async def send_photo(self, chat_id, data, filename="layar.png", caption=None):
+        if not hasattr(self, "photos"):
+            self.photos = []
+        self.photos.append((chat_id, bytes(data), filename, caption))
+        return True
+
     async def answer_callback(self, callback_id, text=None):
         self.answers.append(text)
 
