@@ -170,6 +170,11 @@ DASHBOARD_DOMAINS = (_get("ITSME_DASHBOARD_DOMAINS", "") or "").strip()
 # anti brute-force memakai IP asli pengunjung. Matikan kalau tanpa proxy tepercaya.
 DASHBOARD_TRUST_PROXY = _bool("ITSME_DASHBOARD_TRUST_PROXY", True)
 
+# --- Aplikasi It's Me HP (Android) -------------------------------------------
+# Token yang dimasukkan sekali di aplikasi HP untuk menyambung ke dashboard ini.
+# Kosong = dibuat otomatis (data/hp_token.txt) dan ditampilkan di tab HP.
+HP_SECRET = _get("ITSME_HP_SECRET", "") or ""
+
 # --- Banyak perangkat, satu bot (Hub + Perangkat) ----------------------------
 # Satu komputer jadi "Hub" (memakai token Telegram). Komputer lain jadi
 # "Perangkat": jalan TANPA Telegram (mode dashboard saja) lalu mendaftar ke Hub.

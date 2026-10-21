@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from . import access, brain, config, tools, updater
+from . import access, brain, config, hp, tools, updater
 
 log = logging.getLogger("itsme")
 
@@ -78,6 +78,8 @@ _REDACT = re.compile(r"(sk-[a-z]+-[A-Za-z0-9_-]{6,}|\d{6,}:[A-Za-z0-9_-]{20,})")
 # Header yang hanya bisa dipasang oleh JavaScript dashboard sendiri (bukan oleh
 # form dari situs lain): penjaga sederhana terhadap CSRF.
 _GUARD_HEADER = "x-itsme-dashboard"
+# Jalur dari aplikasi HP (long-poll): auth pakai token HP, tanpa header/sesi dashboard.
+_HP_INGRESS = {"/api/hp/poll", "/api/hp/result", "/api/hp/frame"}
 # Jalur yang dipakai perangkat lain untuk berbicara dengan Hub (lihat devices.py).
 _DEVICE_PATHS = {
     f"/api/devices/{p}" for p in ("register", "poll", "result", "message", "confirm", "memory", "sync")
@@ -654,15 +656,59 @@ def _make_handler(app, token):
                 code, ctype, body, disp = _node_get(
                     "/fs/download", {"node": (q.get("node") or [""])[0], "path": (q.get("path") or [""])[0]})
                 return self._send(code, body, ctype, headers={"Content-Disposition": disp} if disp else None)
+            # -- HP (aplikasi It's Me HP) --
+            if path == "/api/hp":
+                hp.forget_stale()
+                return self._json({"phones": hp.listing(), "token": hp.token()})
+            if path == "/api/hp/screen":
+                q = self._query()
+                data = hp.command((q.get("name") or [""])[0], "screen", {"w": (q.get("w") or ["1080"])[0]})
+                if isinstance(data, (bytes, bytearray)) and data:
+                    return self._send(HTTPStatus.OK, bytes(data), "image/jpeg")
+                return self._json({"error": "HP tidak menjawab (offline, atau izin layar belum diberikan)"}, 504)
+            if path in ("/api/hp/fs/list", "/api/hp/fs/read"):
+                q = self._query()
+                ctype = "fs_list" if path.endswith("list") else "fs_read"
+                data = hp.command((q.get("name") or [""])[0], ctype, {"path": (q.get("path") or [""])[0]})
+                if isinstance(data, dict):
+                    return self._json(data, 200 if not data.get("error") else 400)
+                return self._json({"error": "HP tidak menjawab"}, 504)
+            return self._json({"error": "not found"}, 404)
+
+        # -- aplikasi HP (long-poll, auth pakai token HP, bukan sesi dashboard) --
+        def _hp_ingress(self, path):
+            if not self._host_ok():
+                return self._json({"error": "domain tidak diizinkan"}, 403)
+            if path == "/api/hp/frame":  # bingkai layar = bytes mentah (JPEG)
+                q = self._query()
+                if not hp.check_token((q.get("token") or [""])[0]):
+                    return self._json({"error": "token HP salah"}, 401)
+                n = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(n) if n > 0 else b""
+                hp.result((q.get("id") or [""])[0], body)
+                hp.seen((q.get("name") or [""])[0])
+                return self._json({"ok": True})
+            data = self._body()
+            if not hp.check_token(data.get("token", "")):
+                return self._json({"error": "token HP salah"}, 401)
+            if path == "/api/hp/poll":
+                cmd = hp.poll(data.get("name", "HP"), data.get("caps") or [])
+                return self._json(cmd or {})
+            if path == "/api/hp/result":
+                hp.result(data.get("id", ""), data.get("value"))
+                hp.seen(data.get("name", ""))
+                return self._json({"ok": True})
             return self._json({"error": "not found"}, 404)
 
         # -- POST --
         def do_POST(self):
+            path = urlparse(self.path).path
+            if path in _HP_INGRESS:
+                return self._hp_ingress(path)
             if self.headers.get(_GUARD_HEADER) != "1":
                 return self._json({"error": "permintaan ditolak (tanpa header dashboard)"}, 403)
             if not self._host_ok():
                 return self._json({"error": "domain tidak diizinkan"}, 403)
-            path = urlparse(self.path).path
             data = self._body()
             if path in _DEVICE_PATHS:  # dari perangkat ke Hub (secret, bukan login)
                 obj, code = device_api(app, path, self.client_address[0], data)
@@ -968,6 +1014,7 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
   <button data-tab="settings">⚙️ Pengaturan</button>
   <button data-tab="files">📁 Berkas</button>
   <button data-tab="komputer">🖥️ Komputer</button>
+  <button data-tab="hp">📱 HP</button>
   <button data-tab="drive">☁️ Drive</button>
   <button data-tab="devices">🖥️ Perangkat</button>
   <button data-tab="memori">🧠 Memori</button>
@@ -1071,6 +1118,40 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
   </div>
 
   </section>
+  <section data-panel="hp" class="panel">
+  <div class="card">
+    <h2 class="spread">HP (aplikasi It's Me HP) <button onclick="hpLoad()" style="padding:5px 11px;font-size:.8rem">Muat ulang</button></h2>
+    <div id="hpPcs" class="row" style="gap:6px;flex-wrap:wrap"></div>
+    <div id="hpSetup" class="sub" style="margin-top:8px"></div>
+    <div id="hpBody" hidden>
+      <div class="row" style="gap:6px;margin-top:10px">
+        <button id="hpTabScreen" class="primary" onclick="hpShow('screen')">📺 Layar</button>
+        <button id="hpTabFiles" onclick="hpShow('files')">📁 Berkas</button>
+      </div>
+      <div id="hpScreen">
+        <div class="row" style="gap:10px;flex-wrap:wrap;margin:8px 0">
+          <label>Jeda <select id="hpRate"><option value="500">cepat</option><option value="1000" selected>sedang</option><option value="2000">hemat</option></select></label>
+          <button onclick="hpSnap()">Ambil sekali</button>
+          <span class="sub" id="hpInfo"></span>
+        </div>
+        <div style="max-width:420px;background:#000;border:1px solid var(--border);border-radius:14px;overflow:hidden">
+          <img id="hpImg" alt="layar HP" style="display:block;max-width:100%;height:auto">
+        </div>
+        <div class="sub" style="margin-top:8px">Gambar layar HP (perlu izin “rekam layar” di HP). Kontrol penuh menyusul di pembaruan berikutnya.</div>
+      </div>
+      <div id="hpFiles" hidden>
+        <div class="row" style="gap:6px;margin:8px 0">
+          <button onclick="hpUp()">↑ Naik</button>
+          <input id="hpPath" style="flex:1" placeholder="/sdcard/…" autocomplete="off">
+          <button onclick="hpGo()">Buka</button>
+        </div>
+        <div id="hpList" class="fslist"></div>
+        <pre id="hpPrev" hidden></pre>
+      </div>
+    </div>
+  </div>
+
+  </section>
   <section data-panel="drive" class="panel">
   <div class="card">
     <h2>Google Drive</h2>
@@ -1152,6 +1233,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === b.dataset.tab));
   if(b.dataset.tab === 'devices') loadDevices();
   if(b.dataset.tab === 'komputer') kompInit(); else kompStop();
+  if(b.dataset.tab === 'hp') hpInit(); else hpStop();
 });
 function curTheme(){ const a = document.documentElement.getAttribute('data-theme'); return a || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'); }
 function applyTheme(t){ if(t) document.documentElement.setAttribute('data-theme', t); document.getElementById('themeBtn').textContent = curTheme()==='dark' ? '☀️' : '🌙'; }
@@ -1504,6 +1586,66 @@ async function kompPrev(e){ try{ const d=await api('/api/node/fs/read?node='+enc
 function kompUp(){ kompBrowse(document.getElementById('kompList').dataset.parent||''); }
 function kompGo(){ kompBrowse(document.getElementById('kompPath').value); }
 document.getElementById('kompPath').addEventListener('keydown',e=>{ if(e.key==='Enter') kompGo(); });
+
+// --- HP: aplikasi It's Me HP (layar & berkas HP lewat long-poll) ---
+let hpSel=null, hpView='screen', hpActive=false, hpTimer=null, hpLoading=false, hpToken='';
+function hpInit(){ hpActive=true; hpLoad(); }
+function hpStop(){ hpActive=false; clearTimeout(hpTimer); }
+async function hpLoad(){
+  try{ const s = await api('/api/hp'); hpToken = s.token||''; const phones = s.phones||[];
+    const online = phones.filter(p=>p.online);
+    if(!hpSel || !phones.find(p=>p.name===hpSel && p.online)) hpSel = (online[0]||{}).name || null;
+    const box=document.getElementById('hpPcs'); box.innerHTML='';
+    phones.forEach(p=>{ const btn=document.createElement('button');
+      btn.className = p.name===hpSel ? 'primary' : ''; btn.disabled = !p.online;
+      btn.textContent = (p.online?'🟢 ':'⚪ ')+p.name;
+      btn.onclick=()=>{ hpSel=p.name; hpLoad(); if(hpView==='screen') hpSnap(); else hpBrowse('/sdcard'); };
+      box.appendChild(btn); });
+    document.getElementById('hpBody').hidden = !hpSel;
+    const setup=document.getElementById('hpSetup');
+    if(!phones.length){
+      setup.innerHTML = 'Belum ada HP tersambung. Pasang aplikasi <b>It\'s Me HP</b> (APK dari repo itsme-hp), buka, '+
+        'lalu isi alamat dashboard ini dan token berikut:<br><code style="user-select:all">'+ (hpToken||'(token)') +'</code>';
+    } else { setup.innerHTML = 'Token HP (untuk menambah HP lain): <code style="user-select:all">'+(hpToken||'')+'</code>'; }
+    if(hpActive && hpView==='screen' && hpSel) hpSnap();
+  }catch(e){ document.getElementById('hpSetup').textContent = 'Gagal memuat: '+e.message; }
+}
+function hpShow(v){ hpView=v;
+  document.getElementById('hpScreen').hidden = v!=='screen';
+  document.getElementById('hpFiles').hidden = v!=='files';
+  document.getElementById('hpTabScreen').className = v==='screen'?'primary':'';
+  document.getElementById('hpTabFiles').className = v==='files'?'primary':'';
+  if(v==='screen') hpSnap(); else { clearTimeout(hpTimer); if(!document.getElementById('hpList').children.length) hpBrowse('/sdcard'); }
+}
+function hpNext(){ if(!hpActive||hpView!=='screen') return; clearTimeout(hpTimer); hpTimer=setTimeout(hpSnap, +document.getElementById('hpRate').value); }
+function hpSnap(){
+  if(!hpActive||hpView!=='screen'||!hpSel||hpLoading) return;
+  hpLoading=true; const t0=performance.now();
+  const probe=new Image();
+  probe.onload=()=>{ document.getElementById('hpImg').src=probe.src; hpLoading=false;
+    document.getElementById('hpInfo').textContent=probe.naturalWidth+'×'+probe.naturalHeight+' · '+Math.round(performance.now()-t0)+' ms'; hpNext(); };
+  probe.onerror=()=>{ hpLoading=false; document.getElementById('hpInfo').textContent='HP tidak menjawab (offline / izin layar belum diberi)'; hpNext(); };
+  probe.src='/api/hp/screen?name='+encodeURIComponent(hpSel)+'&t='+Date.now()+tok();
+}
+async function hpBrowse(path){
+  try{ const d=await api('/api/hp/fs/list?name='+encodeURIComponent(hpSel||'')+'&path='+encodeURIComponent(path||''));
+    if(d.error) throw new Error(d.error);
+    document.getElementById('hpPath').value=d.path||''; document.getElementById('hpPrev').hidden=true;
+    const L=document.getElementById('hpList'); L.dataset.parent=(d.parent==null?'':d.parent); L.innerHTML='';
+    (d.entries||[]).forEach(e=>{ const row=document.createElement('div'); row.className='fsrow';
+      row.innerHTML='<span>'+(e.dir?'📁':'📄')+'</span><span class="nm"></span><span class="sub" style="margin-left:auto">'+(e.dir?'':kompSize(e.size))+'</span>';
+      row.querySelector('.nm').textContent=e.name; row.style.cursor='pointer';
+      row.onclick=()=>{ if(e.dir) hpBrowse(e.path); else hpPrev(e); };
+      L.appendChild(row); });
+    if(!L.children.length) L.innerHTML='<div class="sub">(kosong)</div>';
+  }catch(e){ document.getElementById('hpList').innerHTML='<div class="sub" style="color:#ff6b6b">'+e.message+'</div>'; }
+}
+async function hpPrev(e){ try{ const d=await api('/api/hp/fs/read?name='+encodeURIComponent(hpSel||'')+'&path='+encodeURIComponent(e.path));
+    const p=document.getElementById('hpPrev'); p.hidden=false; p.textContent=d.error?('('+d.error+')'):((d.text||'')+(d.truncated?'\n…(dipotong)':'')); }
+  catch(err){ const p=document.getElementById('hpPrev'); p.hidden=false; p.textContent='('+err.message+')'; } }
+function hpUp(){ hpBrowse(document.getElementById('hpList').dataset.parent||'/sdcard'); }
+function hpGo(){ hpBrowse(document.getElementById('hpPath').value); }
+document.getElementById('hpPath').addEventListener('keydown',e=>{ if(e.key==='Enter') hpGo(); });
 
 loadStatus(); loadMemory(); loadLogs(); loadInfo(); fsGo(''); drvStatus(); loadDevices();
 setInterval(loadStatus, 5000);
