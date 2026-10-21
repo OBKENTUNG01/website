@@ -24,6 +24,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +37,36 @@ import httpx
 from . import access, brain, config, tools, updater
 
 log = logging.getLogger("itsme")
+
+
+# --- jembatan ke It's Me Node (layar/berkas komputer lain, lewat node di sini) ---
+def _node_get(path, query):
+    """GET ke node di komputer ini. (kode, content-type, bytes, content-disposition)."""
+    url = config.NODE_URL + path
+    if query:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v not in (None, "")})
+    try:
+        with urllib.request.urlopen(url, timeout=25) as r:
+            return (r.status, r.headers.get("Content-Type", "application/json"),
+                    r.read(), r.headers.get("Content-Disposition", ""))
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type", "application/json"), e.read(), ""
+    except OSError as e:
+        msg = json.dumps({"error": "It's Me Node tidak terjawab di komputer ini (%s)" % type(e).__name__})
+        return 502, "application/json; charset=utf-8", msg.encode(), ""
+
+
+def _node_post(path, body):
+    data = json.dumps(body or {}).encode()
+    req = urllib.request.Request(config.NODE_URL + path, data=data,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except OSError as e:
+        return 502, json.dumps({"error": "It's Me Node tidak terjawab (%s)" % type(e).__name__}).encode()
 
 # Pekerjaan chat yang sedang berjalan: id -> concurrent.futures.Future.
 # Chat bisa makan waktu (otak lokal/konfirmasi), jadi dimulai lalu di-poll.
@@ -429,13 +462,15 @@ def _make_handler(app, token):
             )
             return bool(given) and secrets.compare_digest(given, token)
 
-        def _send(self, code, body, ctype="application/json; charset=utf-8", cookie=None):
+        def _send(self, code, body, ctype="application/json; charset=utf-8", cookie=None, headers=None):
             data = body if isinstance(body, bytes) else body.encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             if cookie:
                 self.send_header("Set-Cookie", cookie)
             self.end_headers()
@@ -493,6 +528,25 @@ def _make_handler(app, token):
             if path == "/api/devices":
                 from . import devices
                 return self._json({"devices": devices.listing(), "is_hub": not config.AGENT_MODE, "target": devices.get_target()})
+            # -- komputer lain lewat It's Me Node (layar & berkas) --
+            if path == "/api/node/status":
+                code, ctype, body, _ = _node_get("/status", {})
+                return self._send(code, body, ctype)
+            if path == "/api/node/screen":
+                q = self._query()
+                code, ctype, body, _ = _node_get(
+                    "/screen", {"node": (q.get("node") or [""])[0], "w": (q.get("w") or ["1280"])[0]})
+                return self._send(code, body, ctype)
+            if path in ("/api/node/fs/list", "/api/node/fs/read"):
+                q = self._query()
+                code, ctype, body, _ = _node_get(
+                    path[len("/api/node"):], {"node": (q.get("node") or [""])[0], "path": (q.get("path") or [""])[0]})
+                return self._send(code, body, ctype)
+            if path == "/api/node/fs/download":
+                q = self._query()
+                code, ctype, body, disp = _node_get(
+                    "/fs/download", {"node": (q.get("node") or [""])[0], "path": (q.get("path") or [""])[0]})
+                return self._send(code, body, ctype, headers={"Content-Disposition": disp} if disp else None)
             return self._json({"error": "not found"}, 404)
 
         # -- POST --
@@ -537,6 +591,9 @@ def _make_handler(app, token):
                 return self._json({"message": drive_action(app, "drive_unduh", {"file_id": data.get("file_id", ""), "path_lokal": data.get("path_lokal", "")})})
             elif path == "/api/drive/manage":
                 return self._json({"message": drive_action(app, "drive_kelola", {k: data.get(k, "") for k in ("aksi", "file_id", "folder_id", "nama")})})
+            elif path == "/api/node/input":
+                code, body = _node_post("/input", data)
+                return self._send(code, body)
             elif path == "/api/devices/forget":
                 from . import devices
                 return self._json({"ok": devices.forget(data.get("name", ""))})
@@ -759,6 +816,7 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
   <button data-tab="chat" class="active">💬 Ngobrol</button>
   <button data-tab="settings">⚙️ Pengaturan</button>
   <button data-tab="files">📁 Berkas</button>
+  <button data-tab="komputer">🖥️ Komputer</button>
   <button data-tab="drive">☁️ Drive</button>
   <button data-tab="devices">🖥️ Perangkat</button>
   <button data-tab="memori">🧠 Memori</button>
@@ -824,6 +882,41 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
     </div>
     <pre id="cmdOut" hidden></pre>
     <div class="sub">Perintah yang mengubah sesuatu minta persetujuan di Telegram saat akses aman; berkas rahasia dijaga.</div>
+  </div>
+
+  </section>
+  <section data-panel="komputer" class="panel">
+  <div class="card">
+    <h2 class="spread">Komputer <button onclick="kompLoad()" style="padding:5px 11px;font-size:.8rem">Muat ulang</button></h2>
+    <div id="kompPcs" class="row" style="gap:6px;flex-wrap:wrap"></div>
+    <div class="row" style="gap:6px;margin-top:10px">
+      <button id="kompTabScreen" class="primary" onclick="kompShow('screen')">🖥️ Layar</button>
+      <button id="kompTabFiles" onclick="kompShow('files')">📁 Berkas</button>
+    </div>
+    <div id="kompScreen">
+      <div class="row" style="gap:10px;flex-wrap:wrap;margin:8px 0">
+        <label><input type="checkbox" id="kompCtrl"> Kendalikan (mouse &amp; keyboard)</label>
+        <label>Lebar <select id="kompW"><option>800</option><option selected>1280</option><option>1600</option><option>1920</option></select></label>
+        <label>Jeda <select id="kompRate"><option value="250">cepat</option><option value="500" selected>sedang</option><option value="1000">hemat</option></select></label>
+        <button onclick="kompSnap()">Ambil sekali</button>
+        <span class="sub" id="kompInfo"></span>
+      </div>
+      <div id="kompWrap" tabindex="0" style="position:relative;background:#000;border:1px solid var(--line,#2a2f3a);border-radius:10px;overflow:hidden;outline:none">
+        <img id="kompImg" alt="layar" style="display:block;max-width:100%;height:auto">
+      </div>
+      <div class="sub" id="kompSelfHint" hidden style="margin-top:8px"></div>
+      <div class="sub" style="margin-top:8px">Gambar diperbarui berkala, jadi ada sedikit jeda. Hanya layar utama.
+        Centang “Kendalikan”, klik kotak layar, lalu pakai mouse &amp; keyboard.</div>
+    </div>
+    <div id="kompFiles" hidden>
+      <div class="row" style="gap:6px;margin:8px 0">
+        <button onclick="kompUp()">↑ Naik</button>
+        <input id="kompPath" style="flex:1" placeholder="C:\ atau /home/…" autocomplete="off">
+        <button onclick="kompGo()">Buka</button>
+      </div>
+      <div id="kompList" class="fslist"></div>
+      <pre id="kompPrev" hidden></pre>
+    </div>
   </div>
 
   </section>
@@ -907,6 +1000,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === b.dataset.tab));
   if(b.dataset.tab === 'devices') loadDevices();
+  if(b.dataset.tab === 'komputer') kompInit(); else kompStop();
 });
 function curTheme(){ const a = document.documentElement.getAttribute('data-theme'); return a || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'); }
 function applyTheme(t){ if(t) document.documentElement.setAttribute('data-theme', t); document.getElementById('themeBtn').textContent = curTheme()==='dark' ? '☀️' : '🌙'; }
@@ -1166,6 +1260,99 @@ function loadDevices(){
     }
   }).catch(e=>toast(e.message));
 }
+
+// --- Komputer: layar + kendali + berkas komputer lain (lewat It's Me Node) ---
+let kompNodes=[], kompSel=null, kompMe=null, kompView='screen', kompActive=false, kompTimer=null, kompLoading=false, kompLastMove=0;
+function tok(){ return TOKEN ? '&token='+encodeURIComponent(TOKEN) : ''; }
+function kompHeaders(){ return Object.assign({'X-Itsme-Dashboard':'1','Content-Type':'application/json'}, TOKEN?{'X-Itsme-Token':TOKEN}:{}); }
+function kompInit(){ kompActive=true; if(!kompNodes.length) kompLoad(); else if(kompView==='screen') kompSnap(); }
+function kompStop(){ kompActive=false; clearTimeout(kompTimer); }
+async function kompLoad(){
+  try{ const s = await api('/api/node/status'); kompNodes = s.nodes||[]; kompMe = s.me;
+    if(!kompSel || !kompNodes.find(n=>n.id===kompSel)) kompSel = (kompNodes.find(n=>n.id===s.me)||kompNodes[0]||{}).id || null;
+    const box=document.getElementById('kompPcs'); box.innerHTML='';
+    kompNodes.forEach(n=>{ const btn=document.createElement('button');
+      btn.className = n.id===kompSel ? 'primary' : '';
+      btn.textContent = (n.leader?'👑 ':'')+n.name + (n.id===kompMe?' (ini)':'');
+      btn.onclick=()=>{ kompSel=n.id; kompLoad(); if(kompView==='screen') kompSnap(); else kompBrowse(''); };
+      box.appendChild(btn); });
+    const self = kompSel===kompMe;
+    const h=document.getElementById('kompSelfHint'); h.hidden=!self;
+    if(self) h.textContent='Ini komputer yang sedang kamu pakai. Mengendalikan komputer yang sama cenderung bentrok dengan mouse/keyboard aslimu — kendali paling berguna untuk komputer LAIN. Lihat & berkas tetap jalan.';
+    if(kompActive && kompView==='screen') kompSnap();
+  }catch(e){ document.getElementById('kompPcs').innerHTML='<span class="sub">It\'s Me Node belum menjawab di komputer ini ('+e.message+'). Perlu It\'s Me Node terpasang & versi 0.4.</span>'; }
+}
+function kompShow(v){ kompView=v;
+  document.getElementById('kompScreen').hidden = v!=='screen';
+  document.getElementById('kompFiles').hidden = v!=='files';
+  document.getElementById('kompTabScreen').className = v==='screen'?'primary':'';
+  document.getElementById('kompTabFiles').className = v==='files'?'primary':'';
+  if(v==='screen') kompSnap(); else { clearTimeout(kompTimer); if(!document.getElementById('kompList').children.length) kompBrowse(''); }
+}
+function kompNext(){ if(!kompActive||kompView!=='screen') return; clearTimeout(kompTimer); kompTimer=setTimeout(kompSnap, +document.getElementById('kompRate').value); }
+function kompSnap(){
+  if(!kompActive||kompView!=='screen'||!kompSel||kompLoading) return;
+  kompLoading=true; const t0=performance.now();
+  const u='/api/node/screen?node='+encodeURIComponent(kompSel)+'&w='+document.getElementById('kompW').value+'&t='+Date.now()+tok();
+  const probe=new Image();
+  probe.onload=()=>{ document.getElementById('kompImg').src=probe.src; kompLoading=false;
+    document.getElementById('kompInfo').textContent=probe.naturalWidth+'×'+probe.naturalHeight+' · '+Math.round(performance.now()-t0)+' ms';
+    kompNext(); };
+  probe.onerror=()=>{ kompLoading=false; document.getElementById('kompInfo').textContent='layar tidak bisa diambil (komputer mati / bukan Windows / tidak ada sesi layar)'; };
+  probe.src=u;
+}
+function kompSend(events){ if(!kompSel) return;
+  fetch('/api/node/input',{method:'POST',headers:kompHeaders(),body:JSON.stringify({node:kompSel,events})}).catch(()=>{}); }
+function kompCtrlOn(){ return document.getElementById('kompCtrl').checked; }
+function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClientRect();
+  return {x:Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width)), y:Math.min(1,Math.max(0,(ev.clientY-r.top)/r.height))}; }
+(function(){
+  const img=document.getElementById('kompImg'), wrap=document.getElementById('kompWrap');
+  img.addEventListener('mousemove',ev=>{ if(!kompCtrlOn())return; const n=Date.now(); if(n-kompLastMove<60)return; kompLastMove=n; kompSend([{t:'move',...kompRel(ev)}]); });
+  img.addEventListener('mousedown',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); wrap.focus(); const b=['left','middle','right'][ev.button]||'left'; kompSend([{t:'down',button:b,...kompRel(ev)}]); });
+  img.addEventListener('mouseup',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); const b=['left','middle','right'][ev.button]||'left'; kompSend([{t:'up',button:b,...kompRel(ev)}]); });
+  img.addEventListener('dblclick',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); kompSend([{t:'dblclick',...kompRel(ev)}]); });
+  img.addEventListener('contextmenu',ev=>{ if(kompCtrlOn()) ev.preventDefault(); });
+  wrap.addEventListener('wheel',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); kompSend([{t:'scroll',dy:ev.deltaY<0?120:-120}]); },{passive:false});
+  // Keyboard ditangkap di tingkat dokumen supaya jalan walau fokus tidak di gambar,
+  // tapi hanya saat tab Komputer + Kendalikan aktif dan fokus bukan di kotak isian.
+  document.addEventListener('keydown',ev=>{
+    if(!(kompActive && kompView==='screen' && kompCtrlOn())) return;
+    const tg=ev.target, tag=tg&&tg.tagName;
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+    ev.preventDefault();
+    const k=ev.key;
+    if(k.length===1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey){ kompSend([{t:'text',text:k}]); return; }
+    const map={Enter:'enter',Backspace:'backspace',Tab:'tab',Escape:'escape',Delete:'delete',' ':'space',
+      ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',Home:'home',End:'end',PageUp:'pageup',PageDown:'pagedown'};
+    let key=map[k]|| (k.length===1?k:k.toLowerCase());
+    kompSend([{t:'key',key,ctrl:ev.ctrlKey,alt:ev.altKey,shift:ev.shiftKey,win:ev.metaKey}]);
+  });
+  document.getElementById('kompCtrl').addEventListener('change',()=>{ if(kompCtrlOn()) wrap.focus(); });
+})();
+async function kompBrowse(path){
+  try{ const d=await api('/api/node/fs/list?node='+encodeURIComponent(kompSel||'')+'&path='+encodeURIComponent(path||''));
+    document.getElementById('kompPath').value=d.path||''; document.getElementById('kompPrev').hidden=true;
+    const L=document.getElementById('kompList'); L.dataset.parent=(d.parent==null?'':d.parent); L.innerHTML='';
+    (d.entries||[]).forEach(e=>{ const row=document.createElement('div'); row.className='fsrow';
+      row.innerHTML='<span>'+(e.dir?'📁':'📄')+'</span><span class="nm"></span>'+(e.secret?' <span class="sub">🔒 rahasia</span>':'')+'<span class="sub" style="margin-left:auto">'+(e.dir?'':kompSize(e.size))+'</span>';
+      row.querySelector('.nm').textContent=e.name;
+      row.style.cursor='pointer';
+      row.onclick=()=>{ if(e.dir) kompBrowse(e.path); else if(!e.secret) kompPrev(e); };
+      if(!e.dir && !e.secret){ const a=document.createElement('a'); a.textContent='⬇'; a.title='Unduh'; a.style.marginLeft='8px';
+        a.href='/api/node/fs/download?node='+encodeURIComponent(kompSel||'')+'&path='+encodeURIComponent(e.path)+tok(); a.target='_blank';
+        a.onclick=ev=>ev.stopPropagation(); row.appendChild(a); }
+      L.appendChild(row); });
+    if(!L.children.length) L.innerHTML='<div class="sub">(kosong)</div>';
+  }catch(e){ document.getElementById('kompList').innerHTML='<div class="sub" style="color:#ff6b6b">'+e.message+'</div>'; }
+}
+function kompSize(n){ if(!n) return ''; const u=['B','KB','MB','GB']; let i=0; while(n>=1024&&i<3){n/=1024;i++;} return n.toFixed(i?1:0)+u[i]; }
+async function kompPrev(e){ try{ const d=await api('/api/node/fs/read?node='+encodeURIComponent(kompSel||'')+'&path='+encodeURIComponent(e.path));
+    const p=document.getElementById('kompPrev'); p.hidden=false; p.textContent=(d.text||'')+(d.truncated?'\n…(dipotong)':''); }
+  catch(err){ const p=document.getElementById('kompPrev'); p.hidden=false; p.textContent='('+err.message+')'; } }
+function kompUp(){ kompBrowse(document.getElementById('kompList').dataset.parent||''); }
+function kompGo(){ kompBrowse(document.getElementById('kompPath').value); }
+document.getElementById('kompPath').addEventListener('keydown',e=>{ if(e.key==='Enter') kompGo(); });
 
 loadStatus(); loadMemory(); loadLogs(); loadInfo(); fsGo(''); drvStatus(); loadDevices();
 setInterval(loadStatus, 5000);

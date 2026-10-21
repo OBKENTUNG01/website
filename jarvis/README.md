@@ -325,12 +325,19 @@ Kalau It's Me Node terpasang, kamu bisa **melihat & mengendalikan layar** dan
 tanpa aplikasi tambahan, dan tetap jalan walau komputernya di jaringan/lokasi lain
 (lewat Tailscale).
 
-- **Dari komputer (local):** buka `http://localhost:7171/`. Pilih komputer di atas,
-  lalu tab **Layar** (lihat + centang "Kendalikan" untuk mouse & keyboard) atau
-  **Berkas** (telusuri, lihat isi, unduh). Dari HP, buka halaman itu lewat
-  Tailscale/Cloudflare — lihat [`PANDUAN_AKSES_JARAK_JAUH.md`](PANDUAN_AKSES_JARAK_JAUH.md).
+- **Dari dashboard (satu tempat):** buka dashboard It's Me (`http://localhost:8750`),
+  lalu tab **🖥️ Komputer**. Pilih komputer di atas, lalu **Layar** (lihat + centang
+  "Kendalikan" untuk mouse & keyboard) atau **Berkas** (telusuri, lihat isi, unduh).
+  Dari HP, buka dashboard lewat Tailscale/Cloudflare — lihat
+  [`PANDUAN_AKSES_JARAK_JAUH.md`](PANDUAN_AKSES_JARAK_JAUH.md).
 - **Dari HP (bot):** `/komputer` menampilkan komputer yang terhubung; `/layar <nama>`
   mengirim foto layar komputer itu ke chat.
+
+> Komputer yang kamu lihat dan komputer tempat kamu duduk boleh berbeda jaringan —
+> aksesnya lewat Tailscale. Mengendalikan komputer yang **sama** dengan yang sedang
+> kamu pakai akan terasa bentrok (mouse aslimu dan yang dikirim saling berebut);
+> kendali paling berguna untuk komputer **lain**. Halaman node `http://localhost:7171/`
+> tetap ada sebagai cadangan untuk komputer yang tidak menjalankan dashboard.
 
 Berkas rahasia (`.env`, kunci, token, login browser/aplikasi, `.ssh`, `.claude`)
 ditandai dan **tidak bisa dibuka/diunduh**. Karena akses ini mengendalikan komputer,

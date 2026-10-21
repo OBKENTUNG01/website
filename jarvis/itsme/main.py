@@ -606,8 +606,9 @@ class App:
         lines += [
             "",
             "/layar <nama> — kirim foto layar komputer itu ke sini (mis. /layar Laptop).",
-            f"Layar langsung + kendali + telusur berkas: buka {node.VIEWER_URL} di komputer "
-            "pemimpin (dari HP lewat Tailscale/Cloudflare — lihat PANDUAN_AKSES_JARAK_JAUH).",
+            f"Layar langsung + kendali + telusur berkas: buka dashboard It's Me "
+            f"(http://localhost:{config.DASHBOARD_PORT}) di komputer ini, lalu tab 🖥️ Komputer "
+            "(dari HP lewat Tailscale/Cloudflare — lihat PANDUAN_AKSES_JARAK_JAUH).",
         ]
         return "\n".join(lines)
 
