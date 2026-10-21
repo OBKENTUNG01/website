@@ -430,9 +430,91 @@ def _check_login(user, password):
     )
 
 
+# --- login dengan berkas kunci (berkas tetap yang wajib diunggah) ---
+def _key_file():
+    return os.path.join(config.DATA_DIR, "dashboard.key")
+
+
+def load_or_make_key():
+    """Kunci dashboard yang TETAP (tidak berubah). Pengguna menyimpan salinan
+    berkasnya dan mengunggahnya untuk masuk."""
+    try:
+        with open(_key_file(), encoding="utf-8") as f:
+            key = f.read().strip()
+        if key:
+            return key
+    except OSError:
+        pass
+    key = secrets.token_urlsafe(48)
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    with open(_key_file(), "w", encoding="utf-8") as f:
+        f.write(key + "\n")
+    try:
+        os.chmod(_key_file(), 0o600)
+    except OSError:
+        pass
+    return key
+
+
+def _check_key(given, key):
+    # Terima isi berkas apa adanya; cocokkan baris pertama non-kosong juga.
+    given = (given or "").strip()
+    if not given or not key:
+        return False
+    if secrets.compare_digest(given, key):
+        return True
+    first = next((ln.strip() for ln in given.splitlines() if ln.strip()), "")
+    return bool(first) and secrets.compare_digest(first, key)
+
+
+# Anti tebak-coba: kegagalan login per-IP -> jeda yang makin lama.
+_LOGIN_FAILS = {}  # ip -> [jumlah_gagal, diblokir_sampai]
+_LOCK_AFTER = 5     # mulai memblokir setelah sekian gagal
+_LOCK_MAX = 3600    # blokir paling lama 1 jam
+
+
+def _login_blocked(ip):
+    rec = _LOGIN_FAILS.get(ip)
+    return bool(rec and rec[1] > time.time())
+
+
+def _login_fail(ip):
+    rec = _LOGIN_FAILS.get(ip) or [0, 0]
+    rec[0] += 1
+    if rec[0] >= _LOCK_AFTER:
+        rec[1] = time.time() + min(_LOCK_MAX, 30 * (2 ** (rec[0] - _LOCK_AFTER)))
+    _LOGIN_FAILS[ip] = rec
+    # Jangan tumbuh tanpa batas.
+    if len(_LOGIN_FAILS) > 5000:
+        for k in [k for k, v in list(_LOGIN_FAILS.items()) if v[1] < time.time()][:2000]:
+            _LOGIN_FAILS.pop(k, None)
+
+
+def _login_ok(ip):
+    _LOGIN_FAILS.pop(ip, None)
+
+
 def _make_handler(app, token):
-    require_token = bool(token)
-    login_required = bool(config.DASHBOARD_PASSWORD)
+    public = config.DASHBOARD_PUBLIC
+    key_login = config.DASHBOARD_KEY_LOGIN or public
+    key = load_or_make_key() if key_login else ""
+    require_token = bool(token) and not key_login
+    # Mode publik / berkas kunci: WAJIB login (tidak ada jalan pintas localhost/token).
+    login_required = key_login or bool(config.DASHBOARD_PASSWORD)
+    allow_domains = {d.strip().lower() for d in config.DASHBOARD_DOMAINS.split(",") if d.strip()}
+    # Header keamanan di tiap respons. Inline dipakai halaman lama, jadi script/style
+    # 'unsafe-inline' tetap diizinkan, tapi sumber luar & framing ditutup.
+    _CSP = ("default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; "
+            "base-uri 'none'; form-action 'self'")
+    sec_headers = {
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=(), payment=()",
+        "Content-Security-Policy": _CSP,
+    }
+    if public:
+        sec_headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -449,6 +531,22 @@ def _make_handler(app, token):
                 if part.strip().startswith(name + "="):
                     return part.split("=", 1)[1].strip()
             return ""
+
+        def _client_ip(self):
+            if config.DASHBOARD_TRUST_PROXY:
+                cf = self.headers.get("CF-Connecting-IP")
+                if cf:
+                    return cf.strip()
+                xff = self.headers.get("X-Forwarded-For")
+                if xff:
+                    return xff.split(",")[0].strip()
+            return self.client_address[0]
+
+        def _host_ok(self):
+            if not allow_domains:
+                return True
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip().lower()
+            return host in allow_domains
 
         def _authed(self):
             if login_required:
@@ -469,6 +567,8 @@ def _make_handler(app, token):
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in sec_headers.items():
+                self.send_header(k, v)
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
             if cookie:
@@ -489,9 +589,11 @@ def _make_handler(app, token):
         # -- GET --
         def do_GET(self):
             path = urlparse(self.path).path
+            if not self._host_ok():
+                return self._send(HTTPStatus.FORBIDDEN, "<h2>Domain tidak diizinkan</h2>", "text/html; charset=utf-8")
             if not self._authed():
                 if login_required and path in ("/", "/index.html", "/login"):
-                    return self._send(HTTPStatus.OK, _LOGIN_PAGE, "text/html; charset=utf-8")
+                    return self._send(HTTPStatus.OK, _login_page(key_login, bool(config.DASHBOARD_PASSWORD)), "text/html; charset=utf-8")
                 if not login_required and path in ("/", "/index.html"):
                     return self._send(HTTPStatus.UNAUTHORIZED, _NEED_TOKEN_HTML, "text/html; charset=utf-8")
                 return self._json({"error": "unauthorized"}, 401)
@@ -500,6 +602,11 @@ def _make_handler(app, token):
                 if require_token and not login_required:
                     cookie = f"itsme_token={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000"
                 return self._send(HTTPStatus.OK, _PAGE, "text/html; charset=utf-8", cookie=cookie)
+            if path == "/api/keyfile":
+                if not key_login:
+                    return self._json({"error": "login berkas kunci tidak aktif"}, 404)
+                return self._send(HTTPStatus.OK, key + "\n", "text/plain; charset=utf-8",
+                                  headers={"Content-Disposition": "attachment; filename=\"dashboard.key\""})
             if path == "/api/status":
                 return self._json(status(app))
             if path == "/api/memory":
@@ -553,16 +660,25 @@ def _make_handler(app, token):
         def do_POST(self):
             if self.headers.get(_GUARD_HEADER) != "1":
                 return self._json({"error": "permintaan ditolak (tanpa header dashboard)"}, 403)
+            if not self._host_ok():
+                return self._json({"error": "domain tidak diizinkan"}, 403)
             path = urlparse(self.path).path
             data = self._body()
             if path in _DEVICE_PATHS:  # dari perangkat ke Hub (secret, bukan login)
                 obj, code = device_api(app, path, self.client_address[0], data)
                 return self._json(obj, code)
             if path == "/login":
-                if _check_login(data.get("user", ""), data.get("password", "")):
+                ip = self._client_ip()
+                if _login_blocked(ip):
+                    return self._json({"ok": False, "error": "Terlalu banyak percobaan. Coba lagi nanti."}, 429)
+                ok = (key_login and _check_key(data.get("key", ""), key)) or _check_login(data.get("user", ""), data.get("password", ""))
+                if ok:
+                    _login_ok(ip)
                     cookie = f"itsme_session={_new_session()}; Path=/; HttpOnly; SameSite=Strict; Max-Age={_SESSION_TTL}"
                     return self._json({"ok": True}, cookie=cookie)
-                return self._json({"ok": False, "error": "User atau password salah."}, 401)
+                _login_fail(ip)
+                err = "Berkas kunci salah." if key_login else "User atau password salah."
+                return self._json({"ok": False, "error": err}, 401)
             if path == "/logout":
                 _SESSIONS.pop(self._cookie("itsme_session"), None)
                 return self._json({"ok": True}, cookie="itsme_session=; Path=/; Max-Age=0")
@@ -644,8 +760,9 @@ def start(app):
         return None
     host = config.DASHBOARD_HOST
     on_lan = host not in _LOOPBACK
-    # Kalau login diaktifkan, token tidak dipakai.
-    token = _load_or_make_token() if (on_lan and not config.DASHBOARD_PASSWORD) else ""
+    key_login = config.DASHBOARD_KEY_LOGIN or config.DASHBOARD_PUBLIC
+    # Login (password/berkas kunci) aktif -> token tidak dipakai.
+    token = _load_or_make_token() if (on_lan and not config.DASHBOARD_PASSWORD and not key_login) else ""
     try:
         server = ThreadingHTTPServer((host, config.DASHBOARD_PORT), _make_handler(app, token))
     except OSError as exc:
@@ -654,7 +771,11 @@ def start(app):
     threading.Thread(target=server.serve_forever, name="itsme-dashboard", daemon=True).start()
     shown = "localhost" if not on_lan else host
     log.info("Dashboard: http://%s:%s", shown, config.DASHBOARD_PORT)
-    if config.DASHBOARD_PASSWORD:
+    if key_login:
+        load_or_make_key()
+        log.info("Dashboard%s minta BERKAS KUNCI untuk masuk: %s",
+                 " (mode publik)" if config.DASHBOARD_PUBLIC else "", _key_file())
+    elif config.DASHBOARD_PASSWORD:
         log.info("Dashboard pakai login (user: %s).", config.DASHBOARD_USER)
     elif on_lan:
         log.info("Dashboard token (buka ...?token=... sekali): %s", token)
@@ -688,26 +809,56 @@ input:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent)}
 button{width:100%;margin-top:20px;border:0;border-radius:11px;padding:12px;cursor:pointer;font:inherit;font-weight:700;
   color:var(--accent-text);background:linear-gradient(90deg,var(--accent),var(--accent2))}
 .err{color:#e11d48;font-size:.85rem;margin-top:12px;min-height:1em}
+.file{border-style:dashed;cursor:pointer;padding:14px}
 </style></head><body>
-<form class="box" onsubmit="return masuk(event)">
-  <h1>🫡 <b>It's Me</b></h1>
-  <p>Masuk untuk membuka dashboard.</p>
-  <label>User</label><input id="user" value="admin" autocomplete="username">
-  <label>Password</label><input id="pw" type="password" autocomplete="current-password" autofocus>
-  <button type="submit">Masuk</button>
-  <div class="err" id="err"></div>
-</form>
-<script>
+__BODY__
+</body></html>"""
+
+_LOGIN_KEY_BLOCK = (
+    '<label>Berkas kunci (dashboard.key)</label>'
+    '<input id="keyfile" class="file" type="file" accept=".key,text/plain">'
+    '<p style="margin:8px 0 0;font-size:.8rem">Pilih berkas <b>dashboard.key</b> milikmu. '
+    'Berkas ini tetap dan jadi satu-satunya cara masuk.</p>'
+)
+_LOGIN_PW_BLOCK = (
+    '<label>User</label><input id="user" value="admin" autocomplete="username">'
+    '<label>Password</label><input id="pw" type="password" autocomplete="current-password">'
+)
+_LOGIN_JS = r"""<script>
 async function masuk(e){
   e.preventDefault();
-  const r = await fetch('/login', {method:'POST', headers:{'Content-Type':'application/json','X-Itsme-Dashboard':'1'},
-    body:JSON.stringify({user:document.getElementById('user').value, password:document.getElementById('pw').value})});
+  const body = {};
+  const fe = document.getElementById('keyfile');
+  if(fe && fe.files && fe.files[0]){ try{ body.key = await fe.files[0].text(); }catch(_){ } }
+  const u = document.getElementById('user'), p = document.getElementById('pw');
+  if(u && p && p.value){ body.user = u.value; body.password = p.value; }
+  if(!body.key && !body.password){ document.getElementById('err').textContent = 'Pilih berkas kunci (atau isi password).'; return false; }
+  const r = await fetch('/login', {method:'POST', headers:{'Content-Type':'application/json','X-Itsme-Dashboard':'1'}, body:JSON.stringify(body)});
   const d = await r.json().catch(()=>({}));
   if(r.ok && d.ok) location.href = '/';
   else document.getElementById('err').textContent = (d.error || 'Gagal masuk.');
   return false;
 }
-</script></body></html>"""
+</script>"""
+
+
+def _login_page(key_login, password_login):
+    fields = ""
+    if key_login:
+        fields += _LOGIN_KEY_BLOCK
+    if password_login:
+        fields += _LOGIN_PW_BLOCK
+    if not fields:  # seharusnya tak terjadi; jaga-jaga
+        fields = _LOGIN_PW_BLOCK
+    body = (
+        '<form class="box" onsubmit="return masuk(event)">'
+        '<h1>🫡 <b>It\'s Me</b></h1>'
+        '<p>Masuk untuk membuka dashboard.</p>'
+        + fields +
+        '<button type="submit">Masuk</button>'
+        '<div class="err" id="err"></div></form>' + _LOGIN_JS
+    )
+    return _LOGIN_PAGE.replace("__BODY__", body)
 
 _PAGE = r"""<!doctype html>
 <html lang="id">

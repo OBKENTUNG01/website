@@ -11,16 +11,32 @@ HP atau dari domain `ai.yantah-rutari.com`, **selalu dengan login**.
 
 ## Langkah 0 — nyalakan login dashboard (wajib untuk akses jarak jauh)
 
-Di komputer, buka `%USERPROFILE%\ItsMe\.env`, tambahkan (ganti passwordnya):
+Di komputer, buka `%USERPROFILE%\ItsMe\.env`, lalu pilih salah satu:
+
+**Pilihan ketat (disarankan untuk domain/internet) — login BERKAS KUNCI:**
 
 ```
-ITSME_DASHBOARD_HOST=0.0.0.0
-ITSME_DASHBOARD_USER=admin
+ITSME_DASHBOARD_PUBLIC=1
+```
+
+Saat It's Me menyala ulang, mode publik aktif: keamanan diperketat (header
+keamanan, anti tebak-coba, tanpa jalan pintas localhost) dan masuk **wajib
+mengunggah berkas kunci** `data/dashboard.key`. Berkas ini dibuat otomatis dan
+**tidak berubah**. **Salin `%USERPROFILE%\ItsMe\data\dashboard.key` ke HP-mu**
+sekali (lewat chat It's Me, USB, atau email ke diri sendiri). Di halaman login,
+pilih berkas itu — selesai. Simpan berkasnya baik-baik; siapa pun yang punya
+berkas itu bisa masuk (kalau bocor, hapus `dashboard.key` lalu It's Me membuat
+yang baru).
+
+**Pilihan sederhana — login user + password:**
+
+```
 ITSME_DASHBOARD_PASSWORD=ganti-dengan-password-kuat
 ```
 
-Simpan, lalu nyalakan ulang It's Me (atau tunggu pembaruan otomatis menyala
-ulang). Sekarang dashboard minta **login user + password**.
+Simpan, lalu nyalakan ulang It's Me (atau tunggu pembaruan otomatis). Untuk akses
+di WiFi yang sama tanpa domain, tambahkan juga `ITSME_DASHBOARD_HOST=0.0.0.0`
+(tidak perlu kalau lewat Tailscale/Cloudflare Tunnel yang masuk via localhost).
 
 ---
 
@@ -71,12 +87,38 @@ dikelola di Cloudflare (nameserver-nya mengarah ke Cloudflare).
    **Policy** yang hanya mengizinkan **email-mu** (login Google/email OTP).
 
 Setelah ini, membuka `https://ai.yantah-rutari.com` akan:
-1. minta login Cloudflare (email-mu), lalu
-2. minta login dashboard It's Me (user + password dari `.env`).
+1. minta login Cloudflare (email-mu) — kalau Access dipasang, lalu
+2. minta **berkas kunci** It's Me (atau user + password) dari Langkah 0.
+
+**Ganti domain sesukamu.** Domain hanya jembatan — It's Me tidak terikat ke nama
+domain tertentu. Untuk pindah ke domain lain: ganti `hostname` di `config.yml`,
+jalankan `cloudflared tunnel route dns itsme domain-baru.com`, lalu nyalakan ulang
+tunnel. Tidak perlu mengubah `.env` (biarkan `ITSME_DASHBOARD_DOMAINS` kosong = terima
+domain mana pun; keamanan tetap dari berkas kunci). Kalau mau mengunci ke domain
+tertentu saja, isi `ITSME_DASHBOARD_DOMAINS=domainku.com,domainlain.com`.
 
 > Catatan penting: dashboard **bukan** aplikasi yang "di-push" ke hosting biasa
 > seperti website statis. Ia tetap berjalan di komputermu; Cloudflare Tunnel
 > hanya meneruskan domain ke komputer itu. Komputer harus menyala & online.
+
+### Keamanan saat lewat domain (mode publik)
+
+Dengan `ITSME_DASHBOARD_PUBLIC=1`, It's Me menambah lapisan ini sendiri:
+
+- **Login berkas kunci wajib** — tidak ada akses tanpa `dashboard.key`, dan **tidak
+  ada jalan pintas localhost** (penting: tunnel masuk lewat localhost, jadi tanpa ini
+  siapa pun lewat domain bisa masuk).
+- **Anti tebak-coba** — salah berkas kunci beberapa kali → IP itu diblokir sementara
+  (makin sering salah, makin lama), memakai IP asli dari Cloudflare.
+- **Header keamanan** — `Content-Security-Policy`, `X-Frame-Options: DENY` (anti
+  clickjacking/iframe), `Referrer-Policy`, `Permissions-Policy`, dan `HSTS`.
+- **Cookie sesi** HttpOnly + SameSite=Strict; aksi yang mengubah butuh header khusus.
+
+Lapisan tambahan yang sangat disarankan di Cloudflare: pasang **Access** (login email,
+Langkah 7), nyalakan **WAF**/rate-limit dan **Bot Fight Mode** di dashboard Cloudflare,
+dan jangan buka port apa pun di router (cloudflared keluar sendiri, tidak perlu
+port-forward). Dengan begitu serangan ke domain dihadang di tepi Cloudflare dulu,
+dan kalaupun lolos, masih terbentur berkas kunci.
 
 ---
 

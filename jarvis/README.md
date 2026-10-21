@@ -392,13 +392,18 @@ Tampilannya modern: top bar, **tab** (Ngobrol, Pengaturan, Berkas, Drive,
 Memori, Log), mode terang/gelap (tombol di kanan atas), dan responsif untuk HP.
 
 Bawaannya dashboard **hanya bisa dibuka dari komputer itu sendiri**
-(`127.0.0.1`). Untuk membukanya dari **HP atau internet** (mis. domain
-`ai.yantah-rutari.com`) **dengan login**, lihat panduan lengkap:
-[`PANDUAN_AKSES_JARAK_JAUH.md`](PANDUAN_AKSES_JARAK_JAUH.md) — ringkasnya: isi
-`ITSME_DASHBOARD_PASSWORD` di `.env` untuk menyalakan **login user+password**,
-lalu pakai **Tailscale** (privat, gratis) atau **Cloudflare Tunnel + Access**.
-Untuk HP di WiFi yang sama tanpa login, bisa juga `ITSME_DASHBOARD_HOST=0.0.0.0`
-+ token (`data/dashboard_token.txt`, tampil di log). Matikan dengan `ITSME_DASHBOARD=0`.
+(`127.0.0.1`). Untuk membukanya dari **HP atau internet** lewat **domainmu sendiri**
+(mis. `domainku.com`, yang jadi *jembatan* saja — bot tetap di komputermu), lihat
+panduan lengkap: [`PANDUAN_AKSES_JARAK_JAUH.md`](PANDUAN_AKSES_JARAK_JAUH.md).
+
+Ringkasnya, cara paling aman: set `ITSME_DASHBOARD_PUBLIC=1` lalu pasang
+**Cloudflare Tunnel** ke `localhost:8750`. Mode publik mewajibkan **login berkas
+kunci** (`data/dashboard.key` — berkas tetap yang kamu salin ke HP dan unggah saat
+masuk), memperketat keamanan (anti tebak-coba, header keamanan, tanpa jalan pintas
+localhost), dan membiarkanmu **ganti domain sesuka hati** (kosongkan
+`ITSME_DASHBOARD_DOMAINS`, atau isi untuk mengunci ke domain tertentu). Alternatif
+lama: `ITSME_DASHBOARD_PASSWORD` (login user+password) atau **Tailscale** (privat,
+gratis). Matikan dashboard dengan `ITSME_DASHBOARD=0`.
 
 ### Akses penuh (`/akses_penuh`)
 
@@ -470,6 +475,10 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `TAILSCALE_API_KEY` | — | Opsional. Dengan ini `/pasang` ikut membawa izin Tailscale sekali pakai, jadi komputer baru tidak perlu login Tailscale |
 | `ITSME_PASSPHRASE` | — | Kata sandi lapisan kedua sebelum bot bisa dipakai; salah selalu dibalas "minimal 20 karakter" (pengecoh). Kosong = mati |
 | `ITSME_LOCK_TTL` | `0` | Menit tanpa dipakai sebelum terkunci otomatis lagi (`0` = tetap terbuka sampai `/lock`) |
+| `ITSME_DASHBOARD_PUBLIC` | `0` | Mode publik (lewat domain/tunnel): wajib login berkas kunci, perketat keamanan, tanpa jalan pintas localhost |
+| `ITSME_DASHBOARD_KEY_LOGIN` | `0` | Wajib login dengan berkas `data/dashboard.key` (otomatis `1` saat mode publik) |
+| `ITSME_DASHBOARD_DOMAINS` | — | Batasi domain yang boleh (Host), dipisah koma. Kosong = bebas ganti domain |
+| `ITSME_DASHBOARD_TRUST_PROXY` | `1` | Pakai IP asli dari Cloudflare/tunnel untuk anti brute-force |
 
 ## Google Drive (opsional)
 

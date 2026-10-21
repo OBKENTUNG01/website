@@ -147,6 +147,29 @@ DASHBOARD_PORT = int(_get("ITSME_DASHBOARD_PORT", "8750"))
 DASHBOARD_USER = (_get("ITSME_DASHBOARD_USER", "admin") or "admin").strip()
 DASHBOARD_PASSWORD = _get("ITSME_DASHBOARD_PASSWORD", "")
 
+
+def _bool(name, default):
+    v = _get(name, None)
+    if v is None:
+        return default
+    return v.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+# --- Dashboard lewat domain/internet (mis. Cloudflare Tunnel) ----------------
+# Nyalakan mode publik kalau dashboard dibuka lewat domain/tunnel: keamanan
+# diperketat (wajib login, anti tebak-password, header keamanan, tanpa jalan
+# pintas localhost). Domain hanya "jembatan" — bot tetap jalan di komputermu.
+DASHBOARD_PUBLIC = _bool("ITSME_DASHBOARD_PUBLIC", False)
+# Login pakai BERKAS KUNCI (bukan ketik password): wajib mengunggah berkas
+# data/dashboard.key yang tetap (tidak berubah). Otomatis aktif di mode publik.
+DASHBOARD_KEY_LOGIN = _bool("ITSME_DASHBOARD_KEY_LOGIN", False)
+# Domain yang boleh dipakai (Host header), dipisah koma. Kosong = bebas ganti
+# domain sesukamu (keamanan tetap dari berkas kunci, bukan dari nama domain).
+DASHBOARD_DOMAINS = (_get("ITSME_DASHBOARD_DOMAINS", "") or "").strip()
+# Percayai header X-Forwarded-For / CF-Connecting-IP dari tunnel di depan, supaya
+# anti brute-force memakai IP asli pengunjung. Matikan kalau tanpa proxy tepercaya.
+DASHBOARD_TRUST_PROXY = _bool("ITSME_DASHBOARD_TRUST_PROXY", True)
+
 # --- Banyak perangkat, satu bot (Hub + Perangkat) ----------------------------
 # Satu komputer jadi "Hub" (memakai token Telegram). Komputer lain jadi
 # "Perangkat": jalan TANPA Telegram (mode dashboard saja) lalu mendaftar ke Hub.
