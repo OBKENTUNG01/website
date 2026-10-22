@@ -1223,7 +1223,7 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
         <a id="hpbDl" href="#" target="_blank" rel="noopener" hidden>⬇️ Unduh APK terbaru</a>
         <span class="sub" id="hpbMsg"></span>
       </div>
-      <div class="sub" style="margin-top:8px">Build di GitHub ±3-6 menit. Kalau diminta token: kirim <code>/kunci &lt;token GitHub&gt;</code> ke bot (butuh izin Actions). Setelah selesai, tautan unduh muncul; pasang di HP seperti biasa.</div>
+      <div class="sub" style="margin-top:8px">Build di GitHub ±3-6 menit. Kalau diminta token: kirim <code>/kunci &lt;token GitHub&gt;</code> ke bot (butuh izin Actions). Setelah selesai, tautan unduh muncul; pasang di HP seperti biasa. Untuk APK bertanda tangan rilis (lebih tepercaya &amp; update mulus), jalankan workflow <b>make-keystore</b> sekali di repo itsme-hp lalu tambahkan secret-nya (lihat README).</div>
     </div>
   </div>
   <div class="card">
