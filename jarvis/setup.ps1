@@ -408,6 +408,23 @@ function Install-ItsMeOllama {
     return $ollama
 }
 
+function Disable-ItsMeOllamaTray {
+    # Fase B "bersih tanpa ikon": cegah aplikasi tray Ollama menyala sendiri saat
+    # login (itulah ikon di pojok taskbar). It's Me menyalakan `ollama serve`
+    # sendiri secara tersembunyi (lihat run-itsme.ps1), jadi otak lokal tetap jalan.
+    # Best-effort: kegagalannya tidak menghentikan It's Me.
+    if (-not $ItsMeOnWindows) { return }
+    try {
+        $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+        if (Get-ItemProperty -Path $run -Name 'Ollama' -ErrorAction SilentlyContinue) {
+            Remove-ItemProperty -Path $run -Name 'Ollama' -ErrorAction SilentlyContinue
+            Write-ItsMeInfo 'Ikon tray Ollama dimatikan dari penyalaan otomatis (It''s Me menyalakan Ollama sendiri, tersembunyi).'
+        }
+    } catch {}
+    $startup = [Environment]::GetFolderPath('Startup')
+    if ($startup) { Remove-Item (Join-Path $startup 'Ollama.lnk') -Force -ErrorAction SilentlyContinue }
+}
+
 function Get-ItsMeModelName([string]$Vpy, [string]$Dir) {
     Push-Location $Dir
     try {
@@ -477,7 +494,11 @@ function Stop-ItsMeRunning([string]$Dir) {
     if (-not $ItsMeOnWindows) { return }
     $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
     $venv = Join-Path $Dir '.venv'
-    $launchers = @($all | Where-Object { $_.CommandLine -and $_.CommandLine -like '*start-itsme.cmd*' })
+    $launchers = @($all | Where-Object {
+        $_.CommandLine -and (
+            $_.CommandLine -like '*run-itsme.ps1*' -or $_.CommandLine -like '*ItsMe.vbs*' -or
+            $_.CommandLine -like '*start-itsme.cmd*')   # start-itsme.cmd = pemasangan lama
+    })
     $bots = @($all | Where-Object {
         $_.CommandLine -and $_.CommandLine -like '*itsme.main*' -and
         (($_.ExecutablePath -and $_.ExecutablePath -like "$venv\*") -or $_.CommandLine -like "*$Dir*")
@@ -493,32 +514,69 @@ function Stop-ItsMeRunning([string]$Dir) {
 }
 
 function Install-ItsMeLauncher([string]$Dir) {
-    $startCmd = Join-Path $Dir 'start-itsme.cmd'
-    $lines = @(
-        '@echo off',
-        "title It's Me",
-        'cd /d "%~dp0"',
-        'set PYTHONUTF8=1',
-        'set PYTHONUNBUFFERED=1',
-        ':loop',
-        '".venv\Scripts\python.exe" -m itsme.main',
-        'if %ERRORLEVEL% EQU 3 exit /b 0',
-        'if %ERRORLEVEL% EQU 5 goto loop',
-        'echo.',
-        "echo It's Me berhenti. Menyala lagi dalam 10 detik... (tutup jendela ini untuk mematikan)",
-        'timeout /t 10 /nobreak >nul',
-        'goto loop'
+    # Peluncur SENYAP (Fase B): tidak ada jendela/taskbar sama sekali. Sebuah VBS
+    # menjalankan PowerShell tersembunyi (run-itsme.ps1) yang menyalakan It's Me,
+    # memastikan Ollama jalan tanpa ikon, dan menyalakan It's Me lagi kalau berhenti.
+    # Log ke data\run.log. (Dulu: jendela cmd terkecilkan di taskbar.)
+    $runPs1 = Join-Path $Dir 'run-itsme.ps1'
+    $runLines = @(
+        '# Dijalankan TERSEMBUNYI oleh ItsMe.vbs saat login (tanpa jendela).',
+        '# Menyalakan It''s Me dan menyalakannya lagi kalau berhenti.',
+        '$Dir = $PSScriptRoot',
+        'Set-Location $Dir',
+        '$env:PYTHONUTF8 = "1"; $env:PYTHONUNBUFFERED = "1"',
+        '$data = Join-Path $Dir "data"',
+        'New-Item -ItemType Directory -Force $data | Out-Null',
+        '$log = Join-Path $data "run.log"',
+        '# Pastikan Ollama (otak lokal) jalan tanpa ikon tray, kalau terpasang.',
+        '$ollama = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"',
+        'if (-not (Test-Path $ollama)) { $c = Get-Command ollama -ErrorAction SilentlyContinue; if ($c) { $ollama = $c.Source } }',
+        'if (Test-Path $ollama) {',
+        '    $up = $false',
+        '    try { Invoke-RestMethod "http://localhost:11434/api/version" -TimeoutSec 2 | Out-Null; $up = $true } catch {}',
+        '    if (-not $up) { Start-Process -FilePath $ollama -ArgumentList "serve" -WindowStyle Hidden }',
+        '}',
+        'while ($true) {',
+        '    if ((Test-Path $log) -and (Get-Item $log).Length -gt 10MB) { Move-Item $log "$log.old" -Force }',
+        '    & ".venv\Scripts\python.exe" -u -m itsme.main *>> $log',
+        '    $code = $LASTEXITCODE',
+        '    if ($code -eq 3) { break }      # berhenti disengaja (mis. /lock + stop)',
+        '    if ($code -eq 5) { continue }   # pembaruan terpasang, nyalakan lagi segera',
+        '    Start-Sleep 10',
+        '}'
     )
-    [IO.File]::WriteAllText($startCmd, (($lines -join "`r`n") + "`r`n"), [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText($runPs1, (($runLines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding($false)))
+
+    # VBS: menjalankan run-itsme.ps1 tersembunyi (0 = tanpa jendela, False = tak menunggu).
+    $vbsBody = 'CreateObject("WScript.Shell").Run "powershell -NoProfile -WindowStyle Hidden ' +
+               '-ExecutionPolicy Bypass -File ""' + $runPs1 + '""", 0, False'
+    $vbsLocal = Join-Path $Dir 'ItsMe.vbs'
+    [IO.File]::WriteAllText($vbsLocal, $vbsBody + "`r`n", [Text.Encoding]::ASCII)
+
+    # Skrip berhenti untuk pemilik (It's Me tak lagi punya jendela yang bisa ditutup).
+    # Matikan peluncur (loop) DAN bot; kalau hanya bot yang dimatikan, loop
+    # menyalakannya lagi 10 detik kemudian.
+    $stopCmd = Join-Path $Dir 'stop-itsme.cmd'
+    $stopFilter = '$_.CommandLine -and ($_.CommandLine -like ''*run-itsme.ps1*'' -or $_.CommandLine -like ''*ItsMe.vbs*'' -or $_.CommandLine -like ''*itsme.main*'')'
+    $stopLines = @(
+        '@echo off',
+        'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { ' + $stopFilter + ' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"',
+        "echo It's Me dihentikan. Jalankan ItsMe.vbs (atau masuk Windows lagi) untuk menyalakannya."
+    )
+    [IO.File]::WriteAllText($stopCmd, (($stopLines -join "`r`n") + "`r`n"), [Text.Encoding]::ASCII)
+
     $link = $null
     if ($env:ITSME_AUTOSTART -ne '0') {
         $startup = [Environment]::GetFolderPath('Startup')
         if ($startup) {
-            $link = Join-Path $startup 'ItsMe.cmd'
-            [IO.File]::WriteAllText($link, ('@start "" /min "' + $startCmd + '"' + "`r`n"), [Text.Encoding]::Default)
+            # Buang peluncur lama yang menampilkan jendela taskbar.
+            Remove-Item (Join-Path $startup 'ItsMe.cmd') -Force -ErrorAction SilentlyContinue
+            $link = Join-Path $startup 'ItsMe.vbs'
+            [IO.File]::WriteAllText($link, $vbsBody + "`r`n", [Text.Encoding]::ASCII)
         }
     }
-    return [pscustomobject]@{ StartCmd = $startCmd; Autostart = $link }
+    Remove-Item (Join-Path $Dir 'start-itsme.cmd') -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ Vbs = $vbsLocal; Stop = $stopCmd; Autostart = $link }
 }
 
 function Install-ItsMe {
@@ -592,19 +650,21 @@ function Install-ItsMe {
             Write-ItsMeInfo 'Komputer tidak akan tidur saat dicolok listrik.'
         }
         $launcher = Install-ItsMeLauncher $dir
+        Disable-ItsMeOllamaTray
         if ($ItsMeOnWindows) {
             Stop-ItsMeRunning $dir
-            Start-Process -FilePath $launcher.StartCmd -WindowStyle Minimized
+            Start-Process -FilePath 'wscript.exe' -ArgumentList ('"' + $launcher.Vbs + '"') -WindowStyle Hidden
         }
 
         Write-Host ''
-        Write-Host "It's Me sudah menyala!" -ForegroundColor Green
+        Write-Host "It's Me sudah menyala - TERSEMBUNYI di latar belakang (tanpa jendela)." -ForegroundColor Green
         Write-ItsMeInfo "Buka Telegram di HP, chat @$username, lalu coba kirim: halo"
-        Write-ItsMeInfo 'Ganti otak      : kirim /cloud atau /lokal ke bot (/otak untuk melihat)'
-        Write-ItsMeInfo "Jendela 'It's Me' yang terkecilkan di taskbar = It's Me sedang jalan (tutup = mati)."
-        if ($launcher.Autostart) { Write-ItsMeInfo "Menyala otomatis setiap kamu masuk Windows ($($launcher.Autostart))." }
-        Write-ItsMeInfo "Nyalakan manual : $($launcher.StartCmd)"
+        Write-ItsMeInfo 'Ganti otak      : kirim /cloud, /deepseek, atau /lokal ke bot (/otak untuk melihat)'
+        if ($launcher.Autostart) { Write-ItsMeInfo 'Menyala otomatis & tersembunyi setiap kamu masuk Windows.' }
+        Write-ItsMeInfo "Nyalakan manual : klik dua kali $($launcher.Vbs) (tetap tanpa jendela)"
+        Write-ItsMeInfo "Hentikan        : jalankan $($launcher.Stop) (atau dari bot: /lock)"
         Write-ItsMeInfo 'Perbarui        : otomatis - It''s Me memeriksa GitHub dan menyala ulang sendiri'
+        Write-ItsMeInfo 'Catatan: It''s Me tetap proses biasa yang bisa kamu lihat & hentikan di Task Manager (python.exe) - tidak disembunyikan dari pemilik/antivirus.'
 
         if ($cloud -and $ollama) {
             Write-ItsMeStep 'Tambahan: model cadangan untuk otak lokal'

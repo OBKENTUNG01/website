@@ -222,7 +222,11 @@ bot-mu, kirim `/start`.
 mode *sleep* komputer (komputer boleh mematikan layar, asal tidak tidur).
 Di Windows, It's Me yang dinyalakan manual seperti ini berhenti setelah
 memasang pembaruan otomatis — jalankan `python -m itsme.main` lagi, atau pakai
-skrip setup yang memasang penyala `start-itsme.cmd` (menyalakan ulang sendiri).
+skrip setup (`setup.ps1`) yang memasang penyala **senyap**: `ItsMe.vbs`
+menjalankan `run-itsme.ps1` tersembunyi (tanpa jendela/taskbar) dan menyalakan
+ulang sendiri. Hentikan kapan saja dengan `stop-itsme.cmd`. It's Me tetap proses
+`python.exe` biasa yang bisa kamu lihat & hentikan di Task Manager — tidak
+disembunyikan dari pemilik atau antivirus.
 
 ## Menghubungkan ke website Hostinger
 
