@@ -49,17 +49,29 @@ Set-Env $envFile "ITSME_TUNNEL_BIN" $cf
 Set-Env $envFile "ITSME_DASHBOARD_PUBLIC" "1"
 Say "Disetel di .env: ITSME_QUICK_TUNNEL=1, cloudflared, dan mode publik (login berkas kunci)."
 
-# 3. Nyalakan ulang It's Me supaya langsung aktif (kalau peluncur senyap ada)
+# 3. Nyalakan ulang It's Me supaya membaca .env baru.
+#    Hanya menghentikan bot kalau ADA peluncur untuk menyalakannya lagi (ItsMe.vbs
+#    atau start-itsme.cmd), supaya bot tidak malah mati total. Kalau tidak ada,
+#    bot akan membaca setelan baru pada penyalaan / pembaruan otomatis berikutnya
+#    (It's Me memeriksa GitHub tiap ~2 menit).
 $vbs = Join-Path $ItsMeDir "ItsMe.vbs"
-$stop = Join-Path $ItsMeDir "stop-itsme.cmd"
-if ((Test-Path $vbs) -and (Test-Path $stop)) {
+$oldCmd = Join-Path $ItsMeDir "start-itsme.cmd"
+$launcher = if (Test-Path $vbs) { $vbs } elseif (Test-Path $oldCmd) { $oldCmd } else { $null }
+if ($launcher) {
     Say "Menyalakan ulang It's Me ..."
-    try { & cmd /c "`"$stop`"" | Out-Null } catch { }
+    $venvPy = Join-Path $ItsMeDir ".venv\Scripts\python.exe"
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -in @('python.exe', 'pythonw.exe') -and (
+            ($_.CommandLine -and $_.CommandLine -like '*itsme.main*') -or
+            ($_.ExecutablePath -and $_.ExecutablePath -ieq $venvPy))
+    } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
     Start-Sleep 2
-    Start-Process wscript.exe "`"$vbs`""
-    Say "It's Me menyala lagi. Dalam beberapa detik, alamat dashboard dikirim ke Telegram-mu."
+    if ($launcher -like "*.vbs") { Start-Process wscript.exe "`"$launcher`"" }
+    else { Start-Process $launcher -WindowStyle Minimized }
+    Say "It's Me menyala lagi; alamat dashboard dikirim ke Telegram dalam ~20 detik (atau ketik /alamat)."
 } else {
-    Say "Tutup lalu jalankan It's Me lagi (atau tunggu pembaruan otomatis). Setelah itu alamat dikirim ke Telegram."
+    Say "Setelan tersimpan. It's Me akan menyalakan tunnel pada pembaruan/penyalaan berikutnya"
+    Say "(memeriksa GitHub tiap ~2 menit), atau nyalakan ulang It's Me sendiri lalu ketik /alamat."
 }
 Write-Host ""
 Say "Cek alamat kapan saja: ketik /alamat ke bot. Masuk dashboard pakai berkas data\dashboard.key (salin ke HP)."
