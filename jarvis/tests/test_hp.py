@@ -25,9 +25,9 @@ class FakePhone(threading.Thread):
     """Meniru aplikasi HP: long-poll perintah, balas layar & berkas."""
     daemon = True
 
-    def __init__(self, base, token, name="HP-Uji"):
+    def __init__(self, base, token, name="HP-Uji", kind="hp"):
         super().__init__()
-        self.base, self.token, self.name = base, token, name
+        self.base, self.token, self.name, self.kind = base, token, name, kind
         self.stop = threading.Event()
         self.jpeg = b"\xff\xd8\xff\xe0JFIF-palsu\xff\xd9"
         self.last_input = None
@@ -37,7 +37,7 @@ class FakePhone(threading.Thread):
             while not self.stop.is_set():
                 try:
                     r = c.post(self.base + "/api/hp/poll",
-                               json={"name": self.name, "token": self.token, "caps": ["screen", "fs"]})
+                               json={"name": self.name, "token": self.token, "caps": ["screen", "fs"], "kind": self.kind})
                     cmd = r.json()
                 except httpx.HTTPError:
                     self.stop.wait(0.3)  # server mati / jaringan: jangan busy-loop
@@ -137,6 +137,23 @@ class HpBridgeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json().get("ok"))
         self.assertEqual(phone.last_input, events)
+
+    def test_computer_via_bridge_listed_and_screened(self):
+        pc = FakePhone(self.base, self.token, name="PC-Jembatan", kind="computer")
+        pc.jpeg = b"\x89PNG\r\n\x1a\nKOMPUTER"   # komputer kirim PNG
+        pc.start(); self.addCleanup(lambda: (pc.stop.set(), pc.join(timeout=3)))
+        self.assertTrue(self._wait_online("PC-Jembatan"))
+        # Muncul di daftar komputer (digabung dengan node Tailscale), ditandai via jembatan.
+        st = httpx.get(self.base + "/api/node/status", timeout=5).json()
+        row = next((n for n in st.get("nodes", []) if n["name"] == "PC-Jembatan"), None)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["id"], "bridge:PC-Jembatan")
+        self.assertEqual(row.get("via"), "bridge")
+        # Layar diteruskan lewat jembatan, dikirim sebagai PNG.
+        r = httpx.get(self.base + "/api/node/screen?node=bridge:PC-Jembatan", timeout=10)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("image/png", r.headers["content-type"])
+        self.assertEqual(r.content, pc.jpeg)
 
     def test_offline_phone_gives_504(self):
         r = httpx.get(self.base + "/api/hp/screen?name=TidakAda", timeout=5)

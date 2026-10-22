@@ -79,15 +79,15 @@ def check_token(given):
 
 
 # --- sisi HP (aplikasi Android) ------------------------------------------------
-def poll(name, caps, wait=None):
-    """HP menunggu perintah berikutnya (sekaligus heartbeat). Kembalikan perintah
-    atau None kalau waktu habis."""
+def poll(name, caps, wait=None, kind="hp"):
+    """Perangkat (HP/komputer) menunggu perintah berikutnya (sekaligus heartbeat).
+    Kembalikan perintah atau None kalau waktu habis."""
     if wait is None:
         wait = POLL_WAIT
     key = (name or "HP").strip().lower()
     with _lock:
         _phones[key] = {"name": (name or "HP").strip()[:60], "caps": list(caps or []),
-                        "last_seen": time.time()}
+                        "kind": kind or "hp", "last_seen": time.time()}
     deadline = time.monotonic() + max(0.0, wait)
     with _lock:
         while True:
@@ -121,7 +121,7 @@ def listing():
     now = time.time()
     with _lock:
         return sorted(
-            [{"name": p["name"], "caps": p["caps"],
+            [{"name": p["name"], "caps": p["caps"], "kind": p.get("kind", "hp"),
               "online": (now - p["last_seen"]) < ONLINE_WINDOW,
               "last_seen": p["last_seen"]}
              for p in _phones.values()],

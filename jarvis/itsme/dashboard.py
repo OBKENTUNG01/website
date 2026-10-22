@@ -56,6 +56,11 @@ def _node_get(path, query):
         return 502, "application/json; charset=utf-8", msg.encode(), ""
 
 
+def _bridge_name(node_id):
+    """Nama komputer kalau node_id adalah komputer via jembatan ('bridge:NAMA'), else None."""
+    return node_id[len("bridge:"):] if node_id and node_id.startswith("bridge:") else None
+
+
 def _node_post(path, body):
     data = json.dumps(body or {}).encode()
     req = urllib.request.Request(config.NODE_URL + path, data=data,
@@ -637,17 +642,42 @@ def _make_handler(app, token):
             if path == "/api/devices":
                 from . import devices
                 return self._json({"devices": devices.listing(), "is_hub": not config.AGENT_MODE, "target": devices.get_target()})
-            # -- komputer lain lewat It's Me Node (layar & berkas) --
+            # -- komputer lain lewat It's Me Node (Tailscale) ATAU jembatan (tanpa Tailscale) --
             if path == "/api/node/status":
                 code, ctype, body, _ = _node_get("/status", {})
-                return self._send(code, body, ctype)
+                try:
+                    st = json.loads(body)
+                except ValueError:
+                    st = {"nodes": [], "phase": "?", "epoch": 0}
+                names = {n.get("name") for n in st.get("nodes", [])}
+                for d in hp.listing():
+                    if d.get("kind") == "computer" and d["online"] and d["name"] not in names:
+                        st.setdefault("nodes", []).append({
+                            "id": "bridge:" + d["name"], "name": d["name"], "addr": "jembatan",
+                            "working": False, "model": "", "score": 0, "stats": {}, "bot": False,
+                            "leader": False, "via": "bridge"})
+                return self._json(st)
             if path == "/api/node/screen":
                 q = self._query()
+                bn = _bridge_name((q.get("node") or [""])[0])
+                if bn is not None:
+                    data = hp.command(bn, "screen", {"w": (q.get("w") or ["1280"])[0]})
+                    if isinstance(data, (bytes, bytearray)) and data:
+                        ct = "image/png" if bytes(data[:8]) == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+                        return self._send(HTTPStatus.OK, bytes(data), ct)
+                    return self._json({"error": "komputer (jembatan) tidak menjawab"}, 504)
                 code, ctype, body, _ = _node_get(
                     "/screen", {"node": (q.get("node") or [""])[0], "w": (q.get("w") or ["1280"])[0]})
                 return self._send(code, body, ctype)
             if path in ("/api/node/fs/list", "/api/node/fs/read"):
                 q = self._query()
+                bn = _bridge_name((q.get("node") or [""])[0])
+                if bn is not None:
+                    ctype_cmd = "fs_list" if path.endswith("list") else "fs_read"
+                    data = hp.command(bn, ctype_cmd, {"path": (q.get("path") or [""])[0]})
+                    if isinstance(data, dict):
+                        return self._json(data, 200 if not data.get("error") else 400)
+                    return self._json({"error": "komputer (jembatan) tidak menjawab"}, 504)
                 code, ctype, body, _ = _node_get(
                     path[len("/api/node"):], {"node": (q.get("node") or [""])[0], "path": (q.get("path") or [""])[0]})
                 return self._send(code, body, ctype)
@@ -664,7 +694,8 @@ def _make_handler(app, token):
                 q = self._query()
                 data = hp.command((q.get("name") or [""])[0], "screen", {"w": (q.get("w") or ["1080"])[0]})
                 if isinstance(data, (bytes, bytearray)) and data:
-                    return self._send(HTTPStatus.OK, bytes(data), "image/jpeg")
+                    ctype = "image/png" if bytes(data[:8]) == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+                    return self._send(HTTPStatus.OK, bytes(data), ctype)
                 return self._json({"error": "HP tidak menjawab (offline, atau izin layar belum diberikan)"}, 504)
             if path in ("/api/hp/fs/list", "/api/hp/fs/read"):
                 q = self._query()
@@ -692,7 +723,7 @@ def _make_handler(app, token):
             if not hp.check_token(data.get("token", "")):
                 return self._json({"error": "token HP salah"}, 401)
             if path == "/api/hp/poll":
-                cmd = hp.poll(data.get("name", "HP"), data.get("caps") or [])
+                cmd = hp.poll(data.get("name", "HP"), data.get("caps") or [], kind=data.get("kind", "hp"))
                 return self._json(cmd or {})
             if path == "/api/hp/result":
                 hp.result(data.get("id", ""), data.get("value"))
@@ -754,6 +785,11 @@ def _make_handler(app, token):
             elif path == "/api/drive/manage":
                 return self._json({"message": drive_action(app, "drive_kelola", {k: data.get(k, "") for k in ("aksi", "file_id", "folder_id", "nama")})})
             elif path == "/api/node/input":
+                bn = _bridge_name(data.get("node", ""))
+                if bn is not None:
+                    res = hp.command(bn, "input", {"events": data.get("events") or []}, wait=8)
+                    return self._json(res if isinstance(res, dict) else {"error": "tidak menjawab"},
+                                      200 if isinstance(res, dict) else 504)
                 code, body = _node_post("/input", data)
                 return self._send(code, body)
             elif path == "/api/hp/input":
