@@ -42,6 +42,7 @@ HELP = (
     "Perintah:\n"
     "/help — bantuan ini\n"
     "/otak — lihat otak yang sedang dipakai\n"
+    "/alamat — alamat dashboard untuk dibuka dari HP/internet (lewat tunnel)\n"
     "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
     "/deepseek — pakai otak DeepSeek (murah & pintar); /deepseek <key> untuk simpan key-nya\n"
     "/claudepc — pakai Claude di komputer (akun Claude-mu, tanpa API key)\n"
@@ -561,6 +562,9 @@ class App:
             # Sisa kuota ditanyakan ke OpenRouter; jangan tahan bot selama menunggu.
             await self.tg.send(chat_id, await asyncio.to_thread(self._brain_status))
             return
+        if text.startswith("/alamat"):
+            await self.tg.send(chat_id, self._tunnel_address())
+            return
         if text.startswith("/memori"):
             isi = self.memory.text() or "(memori masih kosong)"
             if len(isi) > 3800:
@@ -1041,6 +1045,7 @@ class App:
                 await self.tg.close()
         brain.restore()
         dashboard.start(self)
+        self._start_quick_tunnel()
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
         try:
             notice = updater.pop_notice()
@@ -1057,7 +1062,41 @@ class App:
                 if await self._install(update):
                     return EXIT_UPDATED
         finally:
+            if getattr(self, "quick_tunnel", None):
+                self.quick_tunnel.stop()
             await self.tg.close()
+
+    def _start_quick_tunnel(self):
+        """Nyalakan Cloudflare Quick Tunnel (alamat publik instan) kalau diminta,
+        lalu kirim alamatnya ke pemilik lewat Telegram tiap kali berubah."""
+        self.quick_tunnel = None
+        if not config.QUICK_TUNNEL or self.tg is None:
+            return
+        from . import tunnel
+
+        def announce(url):
+            msg = (f"🌐 Dashboard It's Me bisa dibuka dari HP / mana saja:\n{url}\n\n"
+                   "Login pakai berkas data/dashboard.key. Alamat ini sementara (berubah "
+                   "tiap It's Me nyala ulang) — ketik /alamat untuk yang terbaru.")
+            try:
+                asyncio.run_coroutine_threadsafe(self.tg.send(config.OWNER_ID, msg), self.loop)
+            except Exception:  # noqa: BLE001 - tunnel tetap jalan walau kirim gagal
+                log.exception("gagal mengirim alamat tunnel")
+
+        self.quick_tunnel = tunnel.QuickTunnel(config.DASHBOARD_PORT, announce)
+        self.quick_tunnel.start()
+        log.info("Quick tunnel diminta; menunggu alamat dari cloudflared.")
+
+    def _tunnel_address(self):
+        if config.PUBLIC_URL:
+            return f"Alamat dashboard: {config.PUBLIC_URL}"
+        qt = getattr(self, "quick_tunnel", None)
+        if not config.QUICK_TUNNEL:
+            return ("Alamat publik belum dinyalakan. Jalankan quick-tunnel.ps1 untuk link instan, "
+                    "atau tunnel-setup.ps1 untuk pakai domain sendiri.")
+        if qt and qt.url:
+            return f"🌐 Alamat dashboard sekarang:\n{qt.url}\n\n(sementara; berubah tiap nyala ulang)"
+        return "Tunnel sedang disiapkan... coba /alamat lagi beberapa detik lagi."
 
 
 def _disable_quick_edit():

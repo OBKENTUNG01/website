@@ -202,6 +202,14 @@ DASHBOARD_DOMAINS = (_get("ITSME_DASHBOARD_DOMAINS", "") or "").strip()
 # domain pertama ITSME_DASHBOARD_DOMAINS (https). Hub harus bisa dibuka dari luar
 # (Cloudflare Tunnel/domain) agar komputer di jaringan lain bisa bergabung.
 PUBLIC_URL = (_get("ITSME_PUBLIC_URL", "") or "").strip().rstrip("/")
+
+# --- Cloudflare Quick Tunnel (alamat publik INSTAN, tanpa domain) ------------
+# 1 = It's Me menjalankan "cloudflared tunnel --url" sendiri lalu mengirim alamat
+# trycloudflare.com ke Telegram (dan /alamat). Alamat SEMENTARA: berubah tiap
+# It's Me menyala ulang. Untuk alamat TETAP pakai domain sendiri: tunnel-setup.ps1.
+QUICK_TUNNEL = _bool("ITSME_QUICK_TUNNEL", False)
+# Path cloudflared.exe (kosong = dicari di PATH lalu %LOCALAPPDATA%\ItsMe).
+TUNNEL_BIN = _get("ITSME_TUNNEL_BIN", "") or ""
 # Percayai header X-Forwarded-For / CF-Connecting-IP dari tunnel di depan, supaya
 # anti brute-force memakai IP asli pengunjung. Matikan kalau tanpa proxy tepercaya.
 DASHBOARD_TRUST_PROXY = _bool("ITSME_DASHBOARD_TRUST_PROXY", True)
