@@ -48,10 +48,11 @@ except ValueError:
 # --- Pilihan otak -----------------------------------------------------------
 # "ollama" (bawaan): model lokal di komputermu, gratis, tanpa API key.
 # "openrouter": model cloud lewat OpenRouter (butuh OPENROUTER_API_KEY).
+# "deepseek": model DeepSeek, murah & pintar (butuh DEEPSEEK_API_KEY).
 # "claude": Claude lewat Anthropic API (butuh ANTHROPIC_API_KEY).
 # "claude_code": Claude di komputer dengan akun Claude-mu (butuh CLAUDE_CODE_OAUTH_TOKEN).
 # Bisa diganti saat bot berjalan lewat perintah Telegram /lokal, /cloud,
-# /claude, dan /claudepc.
+# /deepseek, /claude, dan /claudepc.
 BACKEND = (_get("ITSME_BACKEND", "ollama") or "ollama").strip().lower()
 
 # --- Otak cloud lewat OpenRouter (opsional) ----------------------------------
@@ -80,6 +81,16 @@ OPENROUTER_TIMEOUT = float(_get("ITSME_OPENROUTER_TIMEOUT", "300"))
 # Kalau otak cloud gagal (saldo habis, batas harian, internet), jawab pakai
 # otak lokal. Isi 0 untuk mematikan.
 FALLBACK_LOCAL = (_get("ITSME_FALLBACK_LOCAL", "1") or "1").strip().lower() not in ("0", "false", "no")
+
+# --- Otak DeepSeek (opsional, kompatibel OpenAI) -----------------------------
+DEEPSEEK_API_KEY = _get("DEEPSEEK_API_KEY")
+# Alamat API yang kompatibel OpenAI. Bawaan: DeepSeek resmi. Ganti ke alamat
+# gateway lain kalau key-mu bukan dari api.deepseek.com (mis. key diawali nsk-).
+DEEPSEEK_URL = (_get("DEEPSEEK_URL", "https://api.deepseek.com/v1") or "").rstrip("/")
+# Model DeepSeek. deepseek-chat (bawaan) mendukung alat; deepseek-reasoner tidak.
+DEEPSEEK_MODEL = _get("ITSME_DEEPSEEK_MODEL", "deepseek-chat")
+# Otak DeepSeek juga jatuh ke otak lokal lewat FALLBACK_LOCAL di atas.
+DEEPSEEK_TIMEOUT = float(_get("ITSME_DEEPSEEK_TIMEOUT", "300"))
 
 # --- Otak lokal (Ollama) ----------------------------------------------------
 OLLAMA_URL = (_get("OLLAMA_URL", "http://localhost:11434") or "").rstrip("/")
@@ -255,13 +266,15 @@ def check():
         problems.append("TELEGRAM_BOT_TOKEN belum diisi.")
     if not OWNER_ID:
         problems.append("OWNER_TELEGRAM_ID belum diisi (wajib, demi keamanan).")
-    if BACKEND not in ("ollama", "openrouter", "claude", "claude_code"):
+    if BACKEND not in ("ollama", "openrouter", "deepseek", "claude", "claude_code"):
         problems.append(
-            "ITSME_BACKEND harus 'ollama', 'openrouter', 'claude', atau 'claude_code', "
-            f"bukan '{BACKEND}'."
+            "ITSME_BACKEND harus 'ollama', 'openrouter', 'deepseek', 'claude', atau "
+            f"'claude_code', bukan '{BACKEND}'."
         )
     if BACKEND == "openrouter" and not OPENROUTER_API_KEY:
         problems.append("OPENROUTER_API_KEY belum diisi (wajib untuk ITSME_BACKEND=openrouter).")
+    if BACKEND == "deepseek" and not DEEPSEEK_API_KEY:
+        problems.append("DEEPSEEK_API_KEY belum diisi (wajib untuk ITSME_BACKEND=deepseek).")
     if BACKEND == "claude" and not ANTHROPIC_API_KEY:
         problems.append("ANTHROPIC_API_KEY belum diisi (wajib untuk ITSME_BACKEND=claude).")
     if BACKEND == "claude_code" and not CLAUDE_CODE_OAUTH_TOKEN:

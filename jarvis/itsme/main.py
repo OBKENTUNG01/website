@@ -43,6 +43,7 @@ HELP = (
     "/help — bantuan ini\n"
     "/otak — lihat otak yang sedang dipakai\n"
     "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
+    "/deepseek — pakai otak DeepSeek (murah & pintar); /deepseek <key> untuk simpan key-nya\n"
     "/claudepc — pakai Claude di komputer (akun Claude-mu, tanpa API key)\n"
     "/claude — pakai otak Claude (Anthropic API, paling pintar)\n"
     "/lokal — pakai otak lokal (gratis, privat)\n"
@@ -74,10 +75,12 @@ _DEVICE_REPLY_TIMEOUT = 3600
 KUNCI_HELP = (
     "Kirim API key dengan: /kunci <key>\n\n"
     "Key Claude diawali sk-ant-, token akun Claude (dari claude setup-token) "
-    "diawali sk-ant-oat, key OpenRouter diawali sk-or-, API key Tailscale "
-    "(untuk /pasang tanpa login) diawali tskey-api-. Pesanmu langsung "
-    "kuhapus, key diperiksa dulu ke penyedianya, lalu disimpan ke .env dan "
-    "langsung aktif. Key tidak pernah dibaca otak AI."
+    "diawali sk-ant-oat, key OpenRouter diawali sk-or-, key DeepSeek (gateway) "
+    "diawali nsk-, API key Tailscale (untuk /pasang tanpa login) diawali "
+    "tskey-api-. Pesanmu langsung kuhapus, key diperiksa dulu ke penyedianya, "
+    "lalu disimpan ke .env dan langsung aktif. Key tidak pernah dibaca otak AI.\n\n"
+    "Key DeepSeek resmi diawali sk- (tak bisa dibedakan otomatis) — untuk yang "
+    "itu kirim: /deepseek <key>."
 )
 ACCESS_WARNING = (
     "Aktifkan akses penuh?\n\n"
@@ -93,6 +96,7 @@ ACCESS_WARNING = (
 _BRAIN_COMMANDS = {
     "/lokal": "ollama",
     "/cloud": "openrouter",
+    "/deepseek": "deepseek",
     "/claude": "claude",
     "/claudepc": "claude_code",
 }
@@ -196,6 +200,10 @@ class App:
             lines.append(f"/cloud — {brain.describe('openrouter')}")
         else:
             lines.append("/cloud — belum aktif (kirim /kunci <key OpenRouter>)")
+        if config.DEEPSEEK_API_KEY:
+            lines.append(f"/deepseek — {brain.describe('deepseek')}")
+        else:
+            lines.append("/deepseek — belum aktif (kirim /deepseek <key>)")
         if config.ANTHROPIC_API_KEY:
             lines.append(f"/claude — {brain.describe('claude')}")
         else:
@@ -356,25 +364,36 @@ class App:
         await self._say(chat_id, f"✅ Tugas latar selesai: {instruksi}\n\n{reply}")
 
     # --- API key lewat chat (/kunci) ----------------------------------------
-    async def _save_key(self, chat_id, message):
+    async def _save_key(self, chat_id, message, force_kind=None, then_use=False):
         """Simpan API key dari chat tanpa membiarkannya terbaca: pesannya
         langsung dihapus, key diperiksa, disimpan ke .env, dan hanya
-        ditampilkan sebagian. Tidak pernah masuk riwayat atau log."""
+        ditampilkan sebagian. Tidak pernah masuk riwayat atau log.
+
+        force_kind memaksa jenis key (mis. "deepseek" untuk key resmi sk- yang
+        tak bisa dibedakan otomatis). then_use langsung memakai otaknya."""
         parts = (message.get("text") or "").split()[1:]
         if not parts:
-            await self.tg.send(chat_id, KUNCI_HELP)
+            await self.tg.send(
+                chat_id,
+                "Kirim: /deepseek <key>  (key diawali nsk- atau sk-)." if force_kind else KUNCI_HELP,
+            )
             return
         deleted = await self.tg.delete_message(chat_id, message.get("message_id"))
         note = "" if deleted else "\n\n⚠️ Pesanmu yang berisi key belum bisa kuhapus — hapus sendiri, ya."
-        key = next((p for p in parts if keys.detect(p)), None)
+        if force_kind:
+            key = next((p for p in parts if keys.looks_like_key(p)), None)
+        else:
+            key = next((p for p in parts if keys.detect(p)), None)
         if key is None:
             await self.tg.send(
                 chat_id,
-                "Key tidak dikenali. Key Claude diawali sk-ant-, key OpenRouter "
-                "diawali sk-or-, key Tailscale diawali tskey-api-. Contoh: /kunci sk-ant-…" + note,
+                ("Itu tidak seperti API key (hanya huruf, angka, - dan _)." if force_kind else
+                 "Key tidak dikenali. Key Claude diawali sk-ant-, key OpenRouter diawali "
+                 "sk-or-, key DeepSeek diawali nsk-, key Tailscale diawali tskey-api-. "
+                 "Contoh: /kunci sk-ant-…") + note,
             )
             return
-        kind = keys.detect(key)
+        kind = force_kind or keys.detect(key)
         name = keys.label(kind)
         try:
             await asyncio.to_thread(keys.verify, kind, key)
@@ -395,7 +414,14 @@ class App:
         except OSError as exc:
             await self.tg.send(chat_id, f"⚠️ Key {name} gagal disimpan ke .env: {exc.strerror or exc}" + note)
             return
-        if kind == "tailscale":
+        if then_use:
+            try:
+                await asyncio.to_thread(brain.set_backend, kind)
+                self.histories.pop(chat_id, None)  # format riwayat tiap otak berbeda
+                usage = f"Otak {name} sekarang aktif. Konteks obrolan direset, memori tetap."
+            except ValueError as exc:
+                usage = f"Tersimpan, tapi belum bisa dipakai sekarang: {exc}"
+        elif kind == "tailscale":
             usage = "Mulai sekarang komputer yang dipasang lewat /pasang tidak perlu login Tailscale."
         elif brain.current_backend() == kind:
             usage = f"Otak {name} sekarang memakai key ini."
@@ -451,6 +477,12 @@ class App:
             return
         if first == "/pakai":
             await self.tg.send(chat_id, self._use_device(text.split(maxsplit=1)[1] if " " in text.strip() else ""))
+            return
+        if first == "/deepseek" and len(text.split()) > 1:
+            # /deepseek <key> = simpan key DeepSeek lalu langsung pakai. Ditangani
+            # di Hub sebelum diteruskan ke perangkat atau otak AI, supaya key tidak
+            # ikut terkirim ke mana-mana. (/deepseek tanpa key = ganti otak biasa.)
+            await self._save_key(chat_id, message, force_kind="deepseek", then_use=True)
             return
         device = devices.get_target()
         if device and first not in _HUB_ONLY:

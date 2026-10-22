@@ -25,10 +25,19 @@ KINDS = {
     "claude_code": ("sk-ant-oat", "CLAUDE_CODE_OAUTH_TOKEN", "akun Claude (Claude di komputer)"),
     "claude": ("sk-ant-", "ANTHROPIC_API_KEY", "Claude (Anthropic)"),
     "openrouter": ("sk-or-", "OPENROUTER_API_KEY", "OpenRouter"),
+    # Key DeepSeek dari gateway diawali nsk- / nsk_. Key resmi api.deepseek.com
+    # diawali sk- (tak bisa dibedakan otomatis), jadi untuk yang itu pakai
+    # perintah /deepseek <key>.
+    "deepseek": ("nsk", "DEEPSEEK_API_KEY", "DeepSeek"),
     "tailscale": ("tskey-api-", "TAILSCALE_API_KEY", "Tailscale"),
 }
 # Key hanya berisi huruf, angka, - dan _; selain itu bisa merusak .env.
 _KEY_CHARS = re.compile(r"[A-Za-z0-9_-]{20,300}")
+
+
+def looks_like_key(value):
+    """Teks ini berbentuk API key (tanpa karakter yang bisa merusak .env)?"""
+    return bool(_KEY_CHARS.fullmatch(value or ""))
 
 
 class KeyRejected(Exception):
@@ -87,6 +96,20 @@ def verify(kind, key):
         )
         if r.status_code in (401, 403):
             raise KeyRejected("Tailscale menolak key ini (salah, kedaluwarsa, atau tanpa izin).")
+        r.raise_for_status()
+        return
+    if kind == "deepseek":
+        # Endpoint daftar model (kompatibel OpenAI) — tidak memanggil model, gratis.
+        r = httpx.get(
+            f"{config.DEEPSEEK_URL}/models",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=20,
+        )
+        if r.status_code in (401, 403):
+            raise KeyRejected(
+                "DeepSeek menolak key ini (salah, dicabut, atau alamat API-nya beda). "
+                "Kalau key-mu dari gateway lain, isi DEEPSEEK_URL di .env lalu kirim lagi."
+            )
         r.raise_for_status()
         return
     r = httpx.get(

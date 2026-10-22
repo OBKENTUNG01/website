@@ -15,6 +15,7 @@ from itsme import config, keys
 CLAUDE = "sk-ant-api03-" + "x" * 40 + "a1b2"
 OPENROUTER = "sk-or-v1-" + "y" * 40 + "c3d4"
 ACCOUNT = "sk-ant-oat01-" + "t" * 40 + "e5f6"
+DEEPSEEK = "nsk_" + "d" * 32 + "a1b2"
 
 
 class DetectTest(unittest.TestCase):
@@ -22,9 +23,17 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(keys.detect(CLAUDE), "claude")
         self.assertEqual(keys.detect(OPENROUTER), "openrouter")
         self.assertEqual(keys.detect(ACCOUNT), "claude_code")
+        self.assertEqual(keys.detect(DEEPSEEK), "deepseek")
         self.assertEqual(keys.mask(ACCOUNT), "sk-ant-oat…e5f6")
+        self.assertEqual(keys.mask(DEEPSEEK), "nsk…a1b2")
         self.assertIsNone(keys.detect("sk-lain-" + "z" * 40))
         self.assertIsNone(keys.detect("sk-ant-pendek"))
+
+    def test_looks_like_key(self):
+        self.assertTrue(keys.looks_like_key(DEEPSEEK))
+        self.assertTrue(keys.looks_like_key("sk-" + "z" * 40))  # key resmi DeepSeek
+        self.assertFalse(keys.looks_like_key("sk-ant-pendek"))  # terlalu pendek
+        self.assertFalse(keys.looks_like_key(DEEPSEEK + " #"))  # ada spasi/#
 
     def test_characters_that_could_break_env_refused(self):
         self.assertIsNone(keys.detect(CLAUDE + "\nITSME_BACKEND=claude"))
@@ -79,6 +88,14 @@ class SaveTest(unittest.TestCase):
         keys.save("claude", CLAUDE)
         self.assertEqual(self._env(), f"TELEGRAM_BOT_TOKEN=t\nANTHROPIC_API_KEY={CLAUDE}\n")
 
+    def test_deepseek_key_saved(self):
+        with open(self.env, "w", encoding="utf-8") as f:
+            f.write("TELEGRAM_BOT_TOKEN=t\n")
+        with mock.patch.object(config, "DEEPSEEK_API_KEY", None):
+            keys.save("deepseek", DEEPSEEK)
+            self.assertEqual(config.DEEPSEEK_API_KEY, DEEPSEEK)
+        self.assertIn(f"DEEPSEEK_API_KEY={DEEPSEEK}", self._env())
+
 
 class VerifyTest(unittest.TestCase):
     def _anthropic_error(self, cls, status):
@@ -120,6 +137,19 @@ class VerifyTest(unittest.TestCase):
         with mock.patch.object(keys.httpx, "get", return_value=mock.Mock(status_code=200)) as get:
             keys.verify("openrouter", OPENROUTER)
         self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], f"Bearer {OPENROUTER}")
+
+    def test_deepseek_key_rejected(self):
+        with mock.patch.object(keys.httpx, "get", return_value=mock.Mock(status_code=401)):
+            with self.assertRaises(keys.KeyRejected):
+                keys.verify("deepseek", DEEPSEEK)
+
+    def test_deepseek_key_accepted_hits_models_endpoint(self):
+        resp = mock.Mock(status_code=200)
+        with mock.patch.object(config, "DEEPSEEK_URL", "https://api.deepseek.com/v1"):
+            with mock.patch.object(keys.httpx, "get", return_value=resp) as get:
+                keys.verify("deepseek", DEEPSEEK)
+        self.assertEqual(get.call_args.args[0], "https://api.deepseek.com/v1/models")
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], f"Bearer {DEEPSEEK}")
 
 
 class ClaudeClientTest(unittest.TestCase):

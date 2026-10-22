@@ -4,13 +4,14 @@
   openrouter → model cloud lewat OpenRouter (jauh lebih pintar). Kalau
                OpenRouter tidak bisa dipakai, otak lokal otomatis mengambil
                alih (bisa dimatikan dengan ITSME_FALLBACK_LOCAL=0).
+  deepseek   → model DeepSeek, murah & pintar. Jatuh ke otak lokal juga.
   claude     → Claude lewat Anthropic API.
   claude_code → Claude di komputer (Claude Code) dengan akun Claude-mu.
 
 Otak awal diambil dari ITSME_BACKEND, lalu bisa diganti saat bot berjalan
-lewat perintah Telegram /lokal, /cloud, /claude, dan /claudepc. Modul tiap
-otak di-import saat dipakai, jadi pemakai satu otak tidak butuh perlengkapan
-otak lainnya.
+lewat perintah Telegram /lokal, /cloud, /deepseek, /claude, dan /claudepc.
+Modul tiap otak di-import saat dipakai, jadi pemakai satu otak tidak butuh
+perlengkapan otak lainnya.
 """
 
 import json
@@ -19,7 +20,7 @@ import os
 from . import config, keys
 from .agentutil import text_only
 
-BACKENDS = ("ollama", "openrouter", "claude", "claude_code")
+BACKENDS = ("ollama", "openrouter", "deepseek", "claude", "claude_code")
 
 _state = {"backend": config.BACKEND}
 
@@ -54,6 +55,11 @@ def set_backend(name, remember=True):
         raise ValueError(
             "Belum ada API key OpenRouter. Kirim /kunci <key OpenRouter> "
             "(pesannya langsung kuhapus), atau jalankan perintah setup lagi."
+        )
+    if name == "deepseek" and not config.DEEPSEEK_API_KEY:
+        raise ValueError(
+            "Belum ada API key DeepSeek. Kirim /deepseek <key> (pesannya langsung "
+            "kuhapus). Key dari gateway diawali nsk-; key resmi diawali sk-."
         )
     if name == "claude" and not config.ANTHROPIC_API_KEY:
         raise ValueError(
@@ -90,6 +96,8 @@ def describe(name=None):
         fallbacks = fallback_models()
         extra = f", cadangan {', '.join(fallbacks)}" if fallbacks else ""
         return f"cloud {config.OPENROUTER_MODEL} (OpenRouter{extra})"
+    if name == "deepseek":
+        return f"DeepSeek {config.DEEPSEEK_MODEL}"
     if name == "claude":
         return f"Claude {config.MODEL} (effort {config.EFFORT})"
     if name == "claude_code":
@@ -110,9 +118,13 @@ def run_agent(messages, ctx):
 
         return run(messages, ctx)
 
-    if backend == "openrouter":
+    if backend in ("openrouter", "deepseek"):
         from .brain_openrouter import CloudUnavailable
-        from .brain_openrouter import run_agent as cloud
+
+        if backend == "deepseek":
+            from .brain_deepseek import run_agent as cloud
+        else:
+            from .brain_openrouter import run_agent as cloud
 
         try:
             return cloud(messages, ctx)
