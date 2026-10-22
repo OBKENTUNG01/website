@@ -92,10 +92,11 @@ $config = @(
 ) -join "`n"
 [IO.File]::WriteAllText((Join-Path $CfDir "config.yml"), $config + "`n", (New-Object Text.UTF8Encoding($false)))
 
-# 5. DNS: arahkan domain ke tunnel (abaikan kalau catatannya sudah ada)
+# 5. DNS: arahkan domain ke tunnel (--overwrite-dns menimpa catatan A/CNAME lama
+#    untuk nama 'ai' yang mungkin sudah ada dari Hostinger)
 Say "Mengarahkan DNS $Domain ke tunnel ..."
-try { & $cf tunnel route dns $TunName $Domain | Out-Host }
-catch { Warn "Route DNS: $($_.Exception.Message) (mungkin sudah ada - lanjut)." }
+try { & $cf tunnel route dns --overwrite-dns $TunName $Domain | Out-Host }
+catch { Warn "Route DNS: $($_.Exception.Message) (cek domain sudah aktif di Cloudflare)." }
 
 # 6. tunnel_cmd di It's Me Node: jalan HANYA di pemimpin, jadi ikut failover
 $nodeCfg = Join-Path $env:LOCALAPPDATA "ItsMeNode\data\config.json"
