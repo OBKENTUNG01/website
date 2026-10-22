@@ -756,6 +756,11 @@ def _make_handler(app, token):
             elif path == "/api/node/input":
                 code, body = _node_post("/input", data)
                 return self._send(code, body)
+            elif path == "/api/hp/input":
+                res = hp.command(data.get("name", ""), "input", {"events": data.get("events") or []}, wait=8)
+                if isinstance(res, dict):
+                    return self._json(res)
+                return self._json({"error": "HP tidak menjawab"}, 504)
             elif path == "/api/devices/forget":
                 from . import devices
                 return self._json({"ok": devices.forget(data.get("name", ""))})
@@ -1130,14 +1135,27 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
       </div>
       <div id="hpScreen">
         <div class="row" style="gap:10px;flex-wrap:wrap;margin:8px 0">
+          <label><input type="checkbox" id="hpCtrl"> Kendalikan (sentuh &amp; ketik)</label>
           <label>Jeda <select id="hpRate"><option value="500">cepat</option><option value="1000" selected>sedang</option><option value="2000">hemat</option></select></label>
           <button onclick="hpSnap()">Ambil sekali</button>
           <span class="sub" id="hpInfo"></span>
         </div>
-        <div style="max-width:420px;background:#000;border:1px solid var(--border);border-radius:14px;overflow:hidden">
-          <img id="hpImg" alt="layar HP" style="display:block;max-width:100%;height:auto">
+        <div id="hpWrap" tabindex="0" style="max-width:420px;background:#000;border:1px solid var(--border);border-radius:14px;overflow:hidden;outline:none">
+          <img id="hpImg" alt="layar HP" style="display:block;max-width:100%;height:auto;touch-action:none">
         </div>
-        <div class="sub" style="margin-top:8px">Gambar layar HP (perlu izin “rekam layar” di HP). Kontrol penuh menyusul di pembaruan berikutnya.</div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button onclick="hpKey('back')">◀ Back</button>
+          <button onclick="hpKey('home')">● Home</button>
+          <button onclick="hpKey('recents')">▣ Recents</button>
+          <button onclick="hpKey('notifications')">🔔</button>
+          <button onclick="hpKey('backspace')">⌫</button>
+          <button onclick="hpKey('enter')">⏎</button>
+        </div>
+        <div class="row" style="gap:6px;margin-top:6px">
+          <input id="hpText" style="flex:1" placeholder="ketik teks lalu Kirim…" autocomplete="off">
+          <button onclick="hpTypeSend()">Kirim</button>
+        </div>
+        <div class="sub" style="margin-top:8px">Perlu izin “rekam layar” (untuk melihat) dan “Accessibility” (untuk kontrol) di HP. Centang “Kendalikan”, lalu klik/seret di layar, atau pakai tombol &amp; ketik. Seret = geser/scroll.</div>
       </div>
       <div id="hpFiles" hidden>
         <div class="row" style="gap:6px;margin:8px 0">
@@ -1627,6 +1645,34 @@ function hpSnap(){
   probe.onerror=()=>{ hpLoading=false; document.getElementById('hpInfo').textContent='HP tidak menjawab (offline / izin layar belum diberi)'; hpNext(); };
   probe.src='/api/hp/screen?name='+encodeURIComponent(hpSel)+'&t='+Date.now()+tok();
 }
+function hpCtrlOn(){ const c=document.getElementById('hpCtrl'); return c && c.checked; }
+function hpSend(events){ if(!hpSel) return;
+  api('/api/hp/input',{method:'POST',body:JSON.stringify({name:hpSel,events})}).catch(()=>{}); }
+function hpKey(k){ if(hpSel) hpSend([{t:'key',key:k}]); }
+function hpTypeSend(){ const t=document.getElementById('hpText'); if(t.value){ hpSend([{t:'text',text:t.value}]); t.value=''; } }
+function hpRel(ev){ const r=document.getElementById('hpImg').getBoundingClientRect();
+  return {x:Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width)), y:Math.min(1,Math.max(0,(ev.clientY-r.top)/r.height))}; }
+(function(){
+  const img=document.getElementById('hpImg'), wrap=document.getElementById('hpWrap');
+  let down=null, downT=0;
+  img.addEventListener('mousedown',ev=>{ if(!hpCtrlOn())return; ev.preventDefault(); wrap.focus(); down=hpRel(ev); downT=Date.now(); });
+  img.addEventListener('mouseup',ev=>{ if(!hpCtrlOn()||!down)return; ev.preventDefault();
+    const up=hpRel(ev); const dx=up.x-down.x, dy=up.y-down.y; const dist=Math.hypot(dx,dy); const dt=Date.now()-downT;
+    if(dist<0.03){ if(dt>500) hpSend([{t:'long',...down}]); else hpSend([{t:'tap',...down}]); }
+    else hpSend([{t:'swipe',x:down.x,y:down.y,x2:up.x,y2:up.y,ms:Math.min(600,Math.max(80,dt))}]);
+    down=null; });
+  img.addEventListener('dblclick',ev=>{ if(!hpCtrlOn())return; ev.preventDefault(); hpSend([{t:'double',...hpRel(ev)}]); });
+  document.getElementById('hpCtrl').addEventListener('change',()=>{ if(hpCtrlOn()) wrap.focus(); });
+  document.addEventListener('keydown',ev=>{
+    if(!(hpActive && hpView==='screen' && hpCtrlOn())) return;
+    const tg=ev.target, tag=tg&&tg.tagName;
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+    const k=ev.key;
+    if(k==='Enter'){ ev.preventDefault(); hpKey('enter'); return; }
+    if(k==='Backspace'){ ev.preventDefault(); hpKey('backspace'); return; }
+    if(k.length===1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey){ ev.preventDefault(); hpSend([{t:'text',text:k}]); }
+  });
+})();
 async function hpBrowse(path){
   try{ const d=await api('/api/hp/fs/list?name='+encodeURIComponent(hpSel||'')+'&path='+encodeURIComponent(path||''));
     if(d.error) throw new Error(d.error);

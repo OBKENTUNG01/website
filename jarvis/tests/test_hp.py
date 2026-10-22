@@ -30,6 +30,7 @@ class FakePhone(threading.Thread):
         self.base, self.token, self.name = base, token, name
         self.stop = threading.Event()
         self.jpeg = b"\xff\xd8\xff\xe0JFIF-palsu\xff\xd9"
+        self.last_input = None
 
     def run(self):
         with httpx.Client(timeout=5) as c:
@@ -57,6 +58,10 @@ class FakePhone(threading.Thread):
                     c.post(self.base + "/api/hp/result", json={
                         "id": cid, "name": self.name, "token": self.token,
                         "value": {"text": "isi dari HP", "size": 11, "truncated": False}})
+                elif cmd.get("type") == "input":
+                    self.last_input = cmd.get("events")
+                    c.post(self.base + "/api/hp/result", json={
+                        "id": cid, "name": self.name, "token": self.token, "value": {"ok": True}})
 
 
 class HpBridgeTest(unittest.TestCase):
@@ -122,6 +127,16 @@ class HpBridgeTest(unittest.TestCase):
         self.assertEqual([e["name"] for e in d["entries"]], ["DCIM", "catatan.txt"])
         r = httpx.get(self.base + "/api/hp/fs/read?name=HP-Uji&path=/sdcard/catatan.txt", timeout=10).json()
         self.assertEqual(r["text"], "isi dari HP")
+
+    def test_input_bridged_to_phone(self):
+        phone = self._phone()
+        self.assertTrue(self._wait_online())
+        events = [{"t": "tap", "x": 0.5, "y": 0.5}, {"t": "key", "key": "home"}]
+        r = httpx.post(self.base + "/api/hp/input", json={"name": "HP-Uji", "events": events},
+                       headers={"X-Itsme-Dashboard": "1"}, timeout=10)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json().get("ok"))
+        self.assertEqual(phone.last_input, events)
 
     def test_offline_phone_gives_504(self):
         r = httpx.get(self.base + "/api/hp/screen?name=TidakAda", timeout=5)
