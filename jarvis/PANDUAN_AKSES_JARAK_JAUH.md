@@ -122,6 +122,43 @@ dan kalaupun lolos, masih terbentur berkas kunci.
 
 ---
 
+## Failover otomatis lintas-jaringan (banyak komputer, satu alamat)
+
+Supaya bot It's Me tetap hidup di **alamat yang sama** walau komputer pemimpin mati —
+termasuk komputer di **jaringan/lokasi berbeda** — gabungkan It's Me Node (pemilihan
+pemimpin + "bot ikut pemimpin") dengan tunnel yang **mengikuti pemimpin**:
+
+1. **Alamat (tunnel) mengikuti pemimpin.** Di tiap komputer calon-pemimpin, isi di
+   `%LOCALAPPDATA%\ItsMeNode\data\config.json`:
+   ```json
+   "tunnel_cmd": "cloudflared tunnel run itsme"
+   ```
+   It's Me Node menjalankan perintah itu **hanya selama komputer itu menjadi pemimpin**,
+   dan mematikannya begitu bukan pemimpin lagi. Jadi domain `ai.yantah-rutari.com` selalu
+   menunjuk ke pemimpin yang hidup. Saat pemimpin mati dan node memilih pemimpin baru,
+   pemimpin baru menyalakan tunnel otomatis — HP/komputer lain tersambung lagi ke alamat
+   yang sama tanpa diubah apa pun.
+   - Salin kredensial cloudflared (`%USERPROFILE%\.cloudflared\<ID>.json` + `config.yml`)
+     ke tiap calon-pemimpin. Satu tunnel bernama `itsme`, dijalankan bergantian oleh
+     pemimpin. Jangan `cloudflared service install` kalau pakai cara ini — biar Node yang
+     menyalakan/mematikan tunnel.
+
+2. **Token HP sama untuk semua.** Supaya HP & komputer-jembatan tetap bisa masuk ke
+   pemimpin mana pun setelah failover, samakan token: di `.env` komputer pertama isi
+   `ITSME_HP_SECRET=<rahasia-acak-yang-sama>` **sebelum** mengundang komputer lain lewat
+   `/pasang` (nilai ini otomatis ikut tersalin ke komputer baru). Tanpa ini tiap komputer
+   punya token sendiri dan HP perlu memasukkan token baru setiap kali pemimpin berpindah.
+
+3. **Minimal dua calon-pemimpin yang saling terjangkau** (mis. satu jaringan lokal, atau
+   node yang saling gosip) supaya mereka bisa memilih pemimpin baru saat salah satu mati.
+
+**Batas jujur:** komputer yang HANYA terjangkau lewat jembatan (tidak punya tunnel sendiri
+dan tidak sejaringan dengan calon-pemimpin lain) tetap berguna sebagai pekerja dan bisa
+dikendalikan, tapi **tidak bisa menjadi pemimpin** — sebab kalau ia yang memimpin, tak ada
+yang bisa menghubunginya. Pastikan pemimpin selalu komputer yang bisa menjalankan tunnel.
+
+---
+
 ## Mana yang dipilih?
 
 - Cuma kamu yang pakai, dari HP-mu → **Tailscale** (Cara A). Paling simpel & aman.
