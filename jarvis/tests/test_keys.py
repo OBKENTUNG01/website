@@ -16,6 +16,8 @@ CLAUDE = "sk-ant-api03-" + "x" * 40 + "a1b2"
 OPENROUTER = "sk-or-v1-" + "y" * 40 + "c3d4"
 ACCOUNT = "sk-ant-oat01-" + "t" * 40 + "e5f6"
 DEEPSEEK = "nsk_" + "d" * 32 + "a1b2"
+GITHUB = "ghp_" + "z" * 32 + "a1b2"
+GITHUB_FG = "github_pat_" + "A" * 40 + "c3d4"
 
 
 class DetectTest(unittest.TestCase):
@@ -24,8 +26,12 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(keys.detect(OPENROUTER), "openrouter")
         self.assertEqual(keys.detect(ACCOUNT), "claude_code")
         self.assertEqual(keys.detect(DEEPSEEK), "deepseek")
+        self.assertEqual(keys.detect(GITHUB), "github")
+        self.assertEqual(keys.detect(GITHUB_FG), "github")
         self.assertEqual(keys.mask(ACCOUNT), "sk-ant-oat…e5f6")
         self.assertEqual(keys.mask(DEEPSEEK), "nsk…a1b2")
+        self.assertEqual(keys.mask(GITHUB), "ghp_…a1b2")
+        self.assertEqual(keys.mask(GITHUB_FG), "github_pat_…c3d4")
         self.assertIsNone(keys.detect("sk-lain-" + "z" * 40))
         self.assertIsNone(keys.detect("sk-ant-pendek"))
 
@@ -150,6 +156,17 @@ class VerifyTest(unittest.TestCase):
                 keys.verify("deepseek", DEEPSEEK)
         self.assertEqual(get.call_args.args[0], "https://api.deepseek.com/v1/models")
         self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], f"Bearer {DEEPSEEK}")
+
+    def test_github_token_rejected(self):
+        with mock.patch.object(keys.httpx, "get", return_value=mock.Mock(status_code=401)):
+            with self.assertRaises(keys.KeyRejected):
+                keys.verify("github", GITHUB)
+
+    def test_github_token_accepted_hits_user_endpoint(self):
+        with mock.patch.object(keys.httpx, "get", return_value=mock.Mock(status_code=200)) as get:
+            keys.verify("github", GITHUB)
+        self.assertEqual(get.call_args.args[0], "https://api.github.com/user")
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], f"Bearer {GITHUB}")
 
 
 class ClaudeClientTest(unittest.TestCase):

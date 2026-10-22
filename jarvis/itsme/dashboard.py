@@ -694,6 +694,9 @@ def _make_handler(app, token):
             if path == "/api/hp":
                 hp.forget_stale()
                 return self._json({"phones": hp.listing(), "token": hp.token()})
+            if path == "/api/hp/build":  # Pembuat Aplikasi: status build APK
+                from . import hpbuild
+                return self._json(hpbuild.status())
             if path == "/api/hp/screen":
                 q = self._query()
                 data = hp.command((q.get("name") or [""])[0], "screen", {"w": (q.get("w") or ["1080"])[0]})
@@ -832,6 +835,13 @@ def _make_handler(app, token):
                 if isinstance(res, dict):
                     return self._json(res)
                 return self._json({"error": "HP tidak menjawab"}, 504)
+            elif path == "/api/hp/build":  # Pembuat Aplikasi: picu build APK
+                from . import hpbuild
+                try:
+                    hpbuild.trigger(data)
+                except hpbuild.BuildError as exc:
+                    return self._json({"ok": False, "error": str(exc)}, 400)
+                return self._json({"ok": True})
             elif path == "/api/devices/forget":
                 from . import devices
                 return self._json({"ok": devices.forget(data.get("name", ""))})
@@ -1195,6 +1205,27 @@ input:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%
 
   </section>
   <section data-panel="hp" class="panel">
+  <div class="card">
+    <h2 class="spread">Pembuat Aplikasi HP <button onclick="hpbLoad()" style="padding:5px 11px;font-size:.8rem">Muat ulang</button></h2>
+    <div class="sub">Ubah nama, warna ikon, dan ID aplikasi It's Me HP, lalu buat APK-nya langsung dari sini (dibangun otomatis di GitHub).</div>
+    <div id="hpbSetup" class="sub" style="margin-top:8px"></div>
+    <div id="hpbForm" hidden style="margin-top:10px">
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <label style="flex:1;min-width:150px">Nama aplikasi<br><input id="hpbName" placeholder="It's Me HP" autocomplete="off" style="width:100%"></label>
+        <label>Warna ikon<br><input id="hpbAccent" type="color" value="#4F8CFF"></label>
+      </div>
+      <div class="row" style="gap:10px;flex-wrap:wrap;margin-top:8px">
+        <label style="flex:1;min-width:150px">Application ID (opsional)<br><input id="hpbId" placeholder="com.itsme.hp" autocomplete="off" style="width:100%"></label>
+        <label style="width:110px">Versi (opsional)<br><input id="hpbVer" placeholder="0.2" autocomplete="off" style="width:100%"></label>
+      </div>
+      <div class="row" style="gap:10px;margin-top:12px;align-items:center;flex-wrap:wrap">
+        <button class="primary" id="hpbGo" onclick="hpbBuild()">⚙️ Buat APK</button>
+        <a id="hpbDl" href="#" target="_blank" rel="noopener" hidden>⬇️ Unduh APK terbaru</a>
+        <span class="sub" id="hpbMsg"></span>
+      </div>
+      <div class="sub" style="margin-top:8px">Build di GitHub ±3-6 menit. Kalau diminta token: kirim <code>/kunci &lt;token GitHub&gt;</code> ke bot (butuh izin Actions). Setelah selesai, tautan unduh muncul; pasang di HP seperti biasa.</div>
+    </div>
+  </div>
   <div class="card">
     <h2 class="spread">HP (aplikasi It's Me HP) <button onclick="hpLoad()" style="padding:5px 11px;font-size:.8rem">Muat ulang</button></h2>
     <div id="hpPcs" class="row" style="gap:6px;flex-wrap:wrap"></div>
@@ -1678,8 +1709,49 @@ document.getElementById('kompPath').addEventListener('keydown',e=>{ if(e.key==='
 
 // --- HP: aplikasi It's Me HP (layar & berkas HP lewat long-poll) ---
 let hpSel=null, hpView='screen', hpActive=false, hpTimer=null, hpLoading=false, hpToken='';
-function hpInit(){ hpActive=true; hpLoad(); }
-function hpStop(){ hpActive=false; clearTimeout(hpTimer); }
+function hpInit(){ hpActive=true; hpLoad(); hpbLoad(); }
+function hpStop(){ hpActive=false; clearTimeout(hpTimer); clearTimeout(hpbTimer); }
+
+// --- Pembuat Aplikasi HP (generate APK lewat GitHub Actions) ---
+let hpbTimer=null;
+async function hpbLoad(){
+  const setup=document.getElementById('hpbSetup'), form=document.getElementById('hpbForm');
+  try{
+    const s = await api('/api/hp/build');
+    if(!s.configured){
+      form.hidden = true;
+      setup.innerHTML = 'Untuk membuat APK, kirim token GitHub ke bot: <code style="user-select:all">/kunci &lt;token GitHub&gt;</code> '+
+        '(token dengan izin Actions pada repo <b>'+(s.repo||'aplikasi HP')+'</b>), lalu Muat ulang.';
+      return;
+    }
+    setup.textContent=''; form.hidden = false; hpbRender(s);
+  }catch(e){ setup.textContent='Gagal memuat: '+e.message; }
+}
+function hpbRender(s){
+  const dl=document.getElementById('hpbDl'), msg=document.getElementById('hpbMsg'), go=document.getElementById('hpbGo');
+  const run=s.run||{}; const building = run.status==='queued' || run.status==='in_progress';
+  let txt='';
+  if(s.error){ txt='⚠️ '+s.error; }
+  else if(building){ txt='⏳ Sedang membangun APK…'; }
+  else if(run.conclusion==='success'){ txt='✅ Build terakhir berhasil.'; }
+  else if(run.conclusion){ txt='Build terakhir: '+run.conclusion; }
+  if(run.url) txt += (txt?' ':'')+'<a href="'+run.url+'" target="_blank" rel="noopener">log</a>';
+  msg.innerHTML = txt; go.disabled = building;
+  if(s.apk){ dl.hidden=false; dl.href=s.apk; } else { dl.hidden=true; }
+  clearTimeout(hpbTimer);
+  if(building) hpbTimer=setTimeout(hpbLoad, 15000);
+}
+async function hpbBuild(){
+  const go=document.getElementById('hpbGo'), msg=document.getElementById('hpbMsg');
+  const body={ app_name:document.getElementById('hpbName').value.trim(),
+    accent:document.getElementById('hpbAccent').value,
+    app_id:document.getElementById('hpbId').value.trim(),
+    version_name:document.getElementById('hpbVer').value.trim() };
+  go.disabled=true; msg.textContent='Memulai build…';
+  try{ await api('/api/hp/build',{method:'POST',body:JSON.stringify(body)});
+    toast('Build APK dimulai di GitHub.'); setTimeout(hpbLoad, 3000);
+  }catch(e){ msg.textContent='❌ '+e.message; go.disabled=false; }
+}
 async function hpLoad(){
   try{ const s = await api('/api/hp'); hpToken = s.token||''; const phones = s.phones||[];
     const online = phones.filter(p=>p.online);

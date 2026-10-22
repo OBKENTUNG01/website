@@ -419,6 +419,8 @@ class App:
                 usage = f"Otak {name} sekarang aktif. Konteks obrolan direset, memori tetap."
             except ValueError as exc:
                 usage = f"Tersimpan, tapi belum bisa dipakai sekarang: {exc}"
+        elif kind == "github":
+            usage = "Sekarang kamu bisa generate APK aplikasi HP dari dashboard (tab HP)."
         elif brain.current_backend() == kind:
             usage = f"Otak {name} sekarang memakai key ini."
         else:

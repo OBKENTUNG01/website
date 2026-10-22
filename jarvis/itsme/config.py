@@ -191,6 +191,14 @@ DASHBOARD_TRUST_PROXY = _bool("ITSME_DASHBOARD_TRUST_PROXY", True)
 # Kosong = dibuat otomatis (data/hp_token.txt) dan ditampilkan di tab HP.
 HP_SECRET = _get("ITSME_HP_SECRET", "") or ""
 
+# --- Pembuat Aplikasi HP (App Builder, nomor 1) ------------------------------
+# Token GitHub (classic ghp_ atau fine-grained github_pat_) dengan izin Actions
+# (write) pada repo aplikasi HP, supaya dashboard bisa generate APK sendiri.
+# Kirim lewat /kunci di Telegram (diperiksa lalu disimpan ke .env), atau isi di sini.
+GITHUB_TOKEN = _get("ITSME_GITHUB_TOKEN", "") or ""
+# Repo aplikasi It's Me HP yang di-build (owner/nama).
+HP_REPO = _get("ITSME_HP_REPO", "OBKENTUNG01/itsme-hp")
+
 # --- Banyak perangkat, satu bot (Hub + Perangkat) ----------------------------
 # Satu komputer jadi "Hub" (memakai token Telegram). Komputer lain jadi
 # "Perangkat": jalan TANPA Telegram (mode dashboard saja) lalu mendaftar ke Hub.

@@ -29,6 +29,9 @@ KINDS = {
     # diawali sk- (tak bisa dibedakan otomatis), jadi untuk yang itu pakai
     # perintah /deepseek <key>.
     "deepseek": ("nsk", "DEEPSEEK_API_KEY", "DeepSeek"),
+    # Token GitHub untuk Pembuat Aplikasi HP (generate APK). Classic (ghp_) atau
+    # fine-grained (github_pat_, dikenali khusus di detect()).
+    "github": ("ghp_", "GITHUB_TOKEN", "GitHub (Pembuat Aplikasi HP)"),
 }
 # Key hanya berisi huruf, angka, - dan _; selain itu bisa merusak .env.
 _KEY_CHARS = re.compile(r"[A-Za-z0-9_-]{20,300}")
@@ -44,9 +47,11 @@ class KeyRejected(Exception):
 
 
 def detect(key):
-    """Jenis key ("claude" / "openrouter"), atau None kalau tidak dikenali."""
+    """Jenis key ("claude" / "openrouter" / ...), atau None kalau tidak dikenali."""
     if not _KEY_CHARS.fullmatch(key or ""):
         return None
+    if key.startswith("github_pat_"):  # token GitHub fine-grained
+        return "github"
     return next((kind for kind, (prefix, _, _) in KINDS.items() if key.startswith(prefix)), None)
 
 
@@ -57,7 +62,10 @@ def label(kind):
 def mask(key):
     """Tampilkan awalan dan 4 huruf terakhir saja, mis. sk-ant-…a1b2."""
     kind = detect(key)
-    prefix = KINDS[kind][0] if kind else ""
+    if (key or "").startswith("github_pat_"):
+        prefix = "github_pat_"
+    else:
+        prefix = KINDS[kind][0] if kind else ""
     return f"{prefix}…{key[-4:]}"
 
 
@@ -99,6 +107,16 @@ def verify(kind, key):
                 "DeepSeek menolak key ini (salah, dicabut, atau alamat API-nya beda). "
                 "Kalau key-mu dari gateway lain, isi DEEPSEEK_URL di .env lalu kirim lagi."
             )
+        r.raise_for_status()
+        return
+    if kind == "github":
+        r = httpx.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/vnd.github+json"},
+            timeout=20,
+        )
+        if r.status_code in (401, 403):
+            raise KeyRejected("GitHub menolak token ini (salah, dicabut, atau tanpa izin).")
         r.raise_for_status()
         return
     r = httpx.get(

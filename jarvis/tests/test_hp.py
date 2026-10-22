@@ -166,6 +166,25 @@ class HpBridgeTest(unittest.TestCase):
             r = httpx.get(self.base + "/api/hp/screen?name=Diam", timeout=5)
         self.assertEqual(r.status_code, 504)
 
+    def test_app_builder_status_and_trigger(self):
+        from itsme import hpbuild
+        with mock.patch.object(hpbuild, "status", return_value={"configured": True, "repo": "o/r", "apk": "u"}):
+            d = httpx.get(self.base + "/api/hp/build", timeout=5).json()
+        self.assertEqual(d["repo"], "o/r")
+        with mock.patch.object(hpbuild, "trigger", return_value=True) as trig:
+            r = httpx.post(self.base + "/api/hp/build", json={"app_name": "X", "accent": "#fff"},
+                           headers={"X-Itsme-Dashboard": "1"}, timeout=5)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json().get("ok"))
+        self.assertEqual(trig.call_args.args[0], {"app_name": "X", "accent": "#fff"})
+
+    def test_app_builder_trigger_error_is_400(self):
+        from itsme import hpbuild
+        with mock.patch.object(hpbuild, "trigger", side_effect=hpbuild.BuildError("belum ada token")):
+            r = httpx.post(self.base + "/api/hp/build", json={}, headers={"X-Itsme-Dashboard": "1"}, timeout=5)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("token", r.json().get("error", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
