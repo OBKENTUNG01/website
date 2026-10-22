@@ -59,7 +59,7 @@ def set_backend(name, remember=True):
     if name == "deepseek" and not config.DEEPSEEK_API_KEY:
         raise ValueError(
             "Belum ada API key DeepSeek. Kirim /deepseek <key> (pesannya langsung "
-            "kuhapus). Key dari gateway diawali nsk-; key resmi diawali sk-."
+            "kuhapus). Key dari NusaGate diawali nsk-; key DeepSeek resmi diawali sk-."
         )
     if name == "claude" and not config.ANTHROPIC_API_KEY:
         raise ValueError(
@@ -97,7 +97,8 @@ def describe(name=None):
         extra = f", cadangan {', '.join(fallbacks)}" if fallbacks else ""
         return f"cloud {config.OPENROUTER_MODEL} (OpenRouter{extra})"
     if name == "deepseek":
-        return f"DeepSeek {config.DEEPSEEK_MODEL}"
+        prov = "NusaGate" if "nusagate" in config.deepseek_url() else "DeepSeek resmi"
+        return f"DeepSeek {config.deepseek_model()} ({prov})"
     if name == "claude":
         return f"Claude {config.MODEL} (effort {config.EFFORT})"
     if name == "claude_code":

@@ -83,14 +83,34 @@ OPENROUTER_TIMEOUT = float(_get("ITSME_OPENROUTER_TIMEOUT", "300"))
 FALLBACK_LOCAL = (_get("ITSME_FALLBACK_LOCAL", "1") or "1").strip().lower() not in ("0", "false", "no")
 
 # --- Otak DeepSeek (opsional, kompatibel OpenAI) -----------------------------
+# Key diawali nsk- = dari NusaGate (gateway AI Indonesia, https://nusagate.com,
+# OpenAI-compatible); key diawali sk- = dari DeepSeek resmi. Alamat API & model
+# dipilih OTOMATIS dari awalan key, atau dipaksa lewat env di bawah.
 DEEPSEEK_API_KEY = _get("DEEPSEEK_API_KEY")
-# Alamat API yang kompatibel OpenAI. Bawaan: DeepSeek resmi. Ganti ke alamat
-# gateway lain kalau key-mu bukan dari api.deepseek.com (mis. key diawali nsk-).
-DEEPSEEK_URL = (_get("DEEPSEEK_URL", "https://api.deepseek.com/v1") or "").rstrip("/")
-# Model DeepSeek. deepseek-chat (bawaan) mendukung alat; deepseek-reasoner tidak.
-DEEPSEEK_MODEL = _get("ITSME_DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_URL = (_get("DEEPSEEK_URL", "") or "").rstrip("/")   # kosong = auto dari key
+DEEPSEEK_MODEL = _get("ITSME_DEEPSEEK_MODEL", "") or ""       # kosong = auto dari key
 # Otak DeepSeek juga jatuh ke otak lokal lewat FALLBACK_LOCAL di atas.
 DEEPSEEK_TIMEOUT = float(_get("ITSME_DEEPSEEK_TIMEOUT", "300"))
+_NUSAGATE_URL = "https://api.nusagate.com/v1"
+_DEEPSEEK_OFFICIAL_URL = "https://api.deepseek.com/v1"
+
+
+def deepseek_url(key=None):
+    """Alamat API DeepSeek efektif: DEEPSEEK_URL kalau diisi; selain itu NusaGate
+    untuk key nsk-, atau DeepSeek resmi untuk key sk-."""
+    if DEEPSEEK_URL:
+        return DEEPSEEK_URL
+    key = key if key is not None else (DEEPSEEK_API_KEY or "")
+    return _NUSAGATE_URL if str(key).startswith("nsk") else _DEEPSEEK_OFFICIAL_URL
+
+
+def deepseek_model(key=None):
+    """Model DeepSeek efektif: ITSME_DEEPSEEK_MODEL kalau diisi; selain itu
+    deepseek-v4.1-flash (NusaGate) atau deepseek-chat (DeepSeek resmi)."""
+    if DEEPSEEK_MODEL:
+        return DEEPSEEK_MODEL
+    key = key if key is not None else (DEEPSEEK_API_KEY or "")
+    return "deepseek-v4.1-flash" if str(key).startswith("nsk") else "deepseek-chat"
 
 # --- Otak lokal (Ollama) ----------------------------------------------------
 OLLAMA_URL = (_get("OLLAMA_URL", "http://localhost:11434") or "").rstrip("/")

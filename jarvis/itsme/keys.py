@@ -97,16 +97,14 @@ def verify(kind, key):
         return
     if kind == "deepseek":
         # Endpoint daftar model (kompatibel OpenAI) — tidak memanggil model, gratis.
+        # Alamat dipilih dari awalan key: nsk- -> NusaGate, sk- -> DeepSeek resmi.
         r = httpx.get(
-            f"{config.DEEPSEEK_URL}/models",
+            f"{config.deepseek_url(key)}/models",
             headers={"Authorization": f"Bearer {key}"},
             timeout=20,
         )
         if r.status_code in (401, 403):
-            raise KeyRejected(
-                "DeepSeek menolak key ini (salah, dicabut, atau alamat API-nya beda). "
-                "Kalau key-mu dari gateway lain, isi DEEPSEEK_URL di .env lalu kirim lagi."
-            )
+            raise KeyRejected("Penyedia DeepSeek menolak key ini (salah, dicabut, atau tanpa izin).")
         r.raise_for_status()
         return
     if kind == "github":

@@ -89,5 +89,30 @@ class DeepSeekAgentTest(unittest.TestCase):
                 brain_deepseek.run_agent([{"role": "user", "content": "x"}], _ctx())
 
 
+class DeepSeekUrlModelTest(unittest.TestCase):
+    """Alamat & model dipilih otomatis dari awalan key: nsk- -> NusaGate, sk- -> resmi."""
+
+    def test_nusagate_for_nsk_key(self):
+        with mock.patch.object(config, "DEEPSEEK_URL", ""), mock.patch.object(config, "DEEPSEEK_MODEL", ""):
+            self.assertEqual(config.deepseek_url("nsk_abc123"), "https://api.nusagate.com/v1")
+            self.assertEqual(config.deepseek_model("nsk_abc123"), "deepseek-v4.1-flash")
+
+    def test_official_for_sk_key(self):
+        with mock.patch.object(config, "DEEPSEEK_URL", ""), mock.patch.object(config, "DEEPSEEK_MODEL", ""):
+            self.assertEqual(config.deepseek_url("sk-abc123"), "https://api.deepseek.com/v1")
+            self.assertEqual(config.deepseek_model("sk-abc123"), "deepseek-chat")
+
+    def test_env_override_wins(self):
+        with mock.patch.object(config, "DEEPSEEK_URL", "https://x.test/v1"), \
+             mock.patch.object(config, "DEEPSEEK_MODEL", "mymodel"):
+            self.assertEqual(config.deepseek_url("nsk_abc"), "https://x.test/v1")
+            self.assertEqual(config.deepseek_model("nsk_abc"), "mymodel")
+
+    def test_falls_back_to_config_key(self):
+        with mock.patch.object(config, "DEEPSEEK_URL", ""), \
+             mock.patch.object(config, "DEEPSEEK_API_KEY", "nsk_zzz"):
+            self.assertEqual(config.deepseek_url(), "https://api.nusagate.com/v1")
+
+
 if __name__ == "__main__":
     unittest.main()

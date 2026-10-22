@@ -157,6 +157,13 @@ class VerifyTest(unittest.TestCase):
         self.assertEqual(get.call_args.args[0], "https://api.deepseek.com/v1/models")
         self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], f"Bearer {DEEPSEEK}")
 
+    def test_deepseek_nsk_key_verifies_against_nusagate(self):
+        # Tanpa DEEPSEEK_URL dipaksa, key nsk- diperiksa ke NusaGate otomatis.
+        with mock.patch.object(config, "DEEPSEEK_URL", ""):
+            with mock.patch.object(keys.httpx, "get", return_value=mock.Mock(status_code=200)) as get:
+                keys.verify("deepseek", DEEPSEEK)  # DEEPSEEK diawali nsk_
+        self.assertEqual(get.call_args.args[0], "https://api.nusagate.com/v1/models")
+
     def test_github_token_rejected(self):
         with mock.patch.object(keys.httpx, "get", return_value=mock.Mock(status_code=401)):
             with self.assertRaises(keys.KeyRejected):

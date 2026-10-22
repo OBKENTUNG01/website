@@ -38,7 +38,7 @@ def _headers():
 
 def _request(messages, memory_text):
     body = {
-        "model": config.DEEPSEEK_MODEL,
+        "model": config.deepseek_model(),
         "messages": [
             {
                 "role": "system",
@@ -69,11 +69,12 @@ def _explain(status, message):
             False,
         )
     if status == 402:
-        return "Saldo DeepSeek habis. Isi ulang di platform.deepseek.com.", False
+        where = "nusagate.com" if "nusagate" in config.deepseek_url() else "platform.deepseek.com"
+        return f"Saldo penyedia DeepSeek-mu habis. Isi ulang di {where}.", False
     if status == 429:
         return "DeepSeek sedang membatasi permintaan (terlalu sering atau sibuk). Coba lagi sebentar lagi.", True
     if status in (400, 404, 422):
-        return f"Model '{config.DEEPSEEK_MODEL}' atau permintaannya tidak bisa dipakai{detail}.", False
+        return f"Model '{config.deepseek_model()}' atau permintaannya tidak bisa dipakai{detail}.", False
     if status == 408 or (status and status >= 500):
         return "Server DeepSeek sedang bermasalah atau sibuk. Coba lagi sebentar lagi.", True
     return f"DeepSeek mengembalikan error {status}{detail}.", False
@@ -85,7 +86,7 @@ def _call_once(body):
         raise CloudUnavailable("Belum ada API key DeepSeek.")
     try:
         resp = _http.post(
-            f"{config.DEEPSEEK_URL}/chat/completions", json=body, headers=_headers()
+            f"{config.deepseek_url()}/chat/completions", json=body, headers=_headers()
         )
     except httpx.TimeoutException as exc:
         raise CloudUnavailable("DeepSeek terlalu lama menjawab.") from exc
