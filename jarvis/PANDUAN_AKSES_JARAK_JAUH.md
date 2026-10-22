@@ -40,6 +40,28 @@ di WiFi yang sama tanpa domain, tambahkan juga `ITSME_DASHBOARD_HOST=0.0.0.0`
 
 ---
 
+## Cara paling gampang: Cloudflare Tunnel OTOMATIS (satu perintah)
+
+Kalau DNS domainmu (mis. `yantah-rutari.com`) sudah dikelola di **Cloudflare**, It's Me
+bisa menyiapkan tunnel sendiri: unduh `cloudflared`, login sekali (lewat browser), buat
+tunnel, arahkan DNS, tulis konfigurasi, dan menyetel It's Me supaya tunnel **mengikuti
+komputer pemimpin** (ikut failover). Di PowerShell komputer utama, jalankan:
+
+```powershell
+$env:ITSME_TUNNEL_HOST='ai.yantah-rutari.com'; irm https://raw.githubusercontent.com/OBKENTUNG01/website/main/jarvis/tunnel-setup.ps1 | iex
+```
+
+Browser terbuka sekali untuk **login Cloudflare** (pilih zona domainmu, lalu Authorize).
+Setelah itu skrip menyetel `ITSME_PUBLIC_URL` + `ITSME_DASHBOARD_PUBLIC=1` (login berkas
+kunci) otomatis. Begitu It's Me menyala ulang, buka `https://ai.yantah-rutari.com` dan masuk
+dengan berkas `data/dashboard.key` (lihat Langkah 0). Cara B di bawah hanya perlu kalau mau
+mengatur manual atau DNS-mu belum di Cloudflare.
+
+> Ingat: dashboard tetap berjalan **di komputermu**; tunnel hanya meneruskan domain ke sana.
+> Hostinger (atau hosting file biasa) tidak bisa menjalankan dashboard ini.
+
+---
+
 ## Cara A — Tailscale (paling aman & gratis, disarankan)
 
 Tailscale membuat "jaringan pribadi" antara komputermu dan HP-mu. Dashboard
