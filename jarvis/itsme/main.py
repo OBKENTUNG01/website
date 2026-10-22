@@ -76,8 +76,7 @@ KUNCI_HELP = (
     "Kirim API key dengan: /kunci <key>\n\n"
     "Key Claude diawali sk-ant-, token akun Claude (dari claude setup-token) "
     "diawali sk-ant-oat, key OpenRouter diawali sk-or-, key DeepSeek (gateway) "
-    "diawali nsk-, API key Tailscale (untuk /pasang tanpa login) diawali "
-    "tskey-api-. Pesanmu langsung kuhapus, key diperiksa dulu ke penyedianya, "
+    "diawali nsk-. Pesanmu langsung kuhapus, key diperiksa dulu ke penyedianya, "
     "lalu disimpan ke .env dan langsung aktif. Key tidak pernah dibaca otak AI.\n\n"
     "Key DeepSeek resmi diawali sk- (tak bisa dibedakan otomatis) — untuk yang "
     "itu kirim: /deepseek <key>."
@@ -389,8 +388,7 @@ class App:
                 chat_id,
                 ("Itu tidak seperti API key (hanya huruf, angka, - dan _)." if force_kind else
                  "Key tidak dikenali. Key Claude diawali sk-ant-, key OpenRouter diawali "
-                 "sk-or-, key DeepSeek diawali nsk-, key Tailscale diawali tskey-api-. "
-                 "Contoh: /kunci sk-ant-…") + note,
+                 "sk-or-, key DeepSeek diawali nsk-. Contoh: /kunci sk-ant-…") + note,
             )
             return
         kind = force_kind or keys.detect(key)
@@ -421,8 +419,6 @@ class App:
                 usage = f"Otak {name} sekarang aktif. Konteks obrolan direset, memori tetap."
             except ValueError as exc:
                 usage = f"Tersimpan, tapi belum bisa dipakai sekarang: {exc}"
-        elif kind == "tailscale":
-            usage = "Mulai sekarang komputer yang dipasang lewat /pasang tidak perlu login Tailscale."
         elif brain.current_backend() == kind:
             usage = f"Otak {name} sekarang memakai key ini."
         else:
@@ -669,13 +665,25 @@ class App:
 
     async def _invite(self, chat_id):
         """/pasang: satu baris PowerShell berisi kode undangan sekali pakai. Komputer
-        baru mengambil sendiri kode gabung node dan isi .env bot dari node di sini."""
+        baru menukar kodenya di dashboard Hub (lewat domain/tunnel sendiri), mengambil
+        kode gabung + isi .env bot, lalu menyambung KELUAR ke sini. Tanpa Tailscale."""
         if not node.installed():
             await self.tg.send(
                 chat_id,
                 "It's Me Node belum terpasang di komputer ini, jadi belum bisa mengundang "
                 "komputer lain. Pasang dulu di komputer ini (PowerShell):\n\n"
                 f"irm {node.INSTALL_URL} | iex\n\nSetelah itu kirim /pasang lagi.",
+            )
+            return
+        hub_url = node.hub_public_url()
+        if not hub_url:
+            await self.tg.send(
+                chat_id,
+                "Hub ini belum punya alamat publik, jadi komputer lain belum bisa "
+                "menyambung tanpa Tailscale. Buka dashboard lewat domain/tunnel sendiri "
+                "(lihat PANDUAN_AKSES_JARAK_JAUH.md), lalu isi di .env:\n\n"
+                "ITSME_PUBLIC_URL=https://domainmu\n\n"
+                "nyalakan ulang It's Me, lalu kirim /pasang lagi.",
             )
             return
         code = node.new_invite_code()
@@ -687,30 +695,19 @@ class App:
                 "diperbarui). Coba /pasang lagi sebentar lagi.",
             )
             return
-        ts_key, ts_note = None, ""
-        if config.TAILSCALE_API_KEY:
-            try:
-                ts_key = await asyncio.to_thread(node.tailscale_auth_key, config.TAILSCALE_API_KEY)
-            except Exception as exc:  # noqa: BLE001 - tanpa izin otomatis pun tetap bisa
-                log.warning("Izin Tailscale untuk /pasang gagal dibuat: %s", type(exc).__name__)
-                ts_note = "\n⚠️ Izin Tailscale otomatis gagal dibuat, jadi komputer baru perlu login Tailscale."
-        login = (
-            "Tailscale tersambung otomatis."
-            if ts_key
-            else "Browser akan terbuka untuk login Tailscale: pilih akun yang sama dengan komputer ini."
-        )
         await self.tg.send(
             chat_id,
-            "Pasang di komputer lain:\n"
+            "Pasang di komputer lain (TANPA Tailscale):\n"
             "1. Buka PowerShell di komputer itu.\n"
             "2. Tempel satu baris di pesan berikut, lalu Enter.\n"
             "3. Klik Ya saat Windows meminta izin Administrator.\n\n"
-            f"{login} Token bot, pemilik, kunci otak, memori, dan kode jaringan disalin "
-            "sendiri dari komputer ini. Tidak ada yang perlu diketik.\n\n"
+            "Komputer itu menyambung ke Hub lewat alamat publiknya. Token bot, pemilik, "
+            "kunci otak, memori, dan kode jaringan disalin sendiri dari komputer ini. "
+            "Tidak ada yang perlu diketik atau login.\n\n"
             f"Kode hanya bisa dipakai sekali dan hangus dalam {node.INVITE_TTL // 60} menit. "
-            "Untuk komputer berikutnya, kirim /pasang lagi." + ts_note,
+            "Untuk komputer berikutnya, kirim /pasang lagi.",
         )
-        await self.tg.send(chat_id, node.install_command(code, ts_key))
+        await self.tg.send(chat_id, node.install_command(code, hub_url))
 
     @staticmethod
     def _use_device(name):

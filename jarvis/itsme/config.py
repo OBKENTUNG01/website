@@ -177,6 +177,11 @@ DASHBOARD_KEY_LOGIN = _bool("ITSME_DASHBOARD_KEY_LOGIN", False)
 # Domain yang boleh dipakai (Host header), dipisah koma. Kosong = bebas ganti
 # domain sesukamu (keamanan tetap dari berkas kunci, bukan dari nama domain).
 DASHBOARD_DOMAINS = (_get("ITSME_DASHBOARD_DOMAINS", "") or "").strip()
+# Alamat publik dashboard ini (mis. https://domainku.com), dipakai /pasang supaya
+# komputer baru menyambung KELUAR ke sini TANPA Tailscale. Kosong = diambil dari
+# domain pertama ITSME_DASHBOARD_DOMAINS (https). Hub harus bisa dibuka dari luar
+# (Cloudflare Tunnel/domain) agar komputer di jaringan lain bisa bergabung.
+PUBLIC_URL = (_get("ITSME_PUBLIC_URL", "") or "").strip().rstrip("/")
 # Percayai header X-Forwarded-For / CF-Connecting-IP dari tunnel di depan, supaya
 # anti brute-force memakai IP asli pengunjung. Matikan kalau tanpa proxy tepercaya.
 DASHBOARD_TRUST_PROXY = _bool("ITSME_DASHBOARD_TRUST_PROXY", True)
@@ -208,9 +213,6 @@ HUB_HEARTBEAT = float(_get("ITSME_HUB_HEARTBEAT", "60"))
 # otomatis mengambil alih kalau pemimpin mati. 0 = abaikan node.
 FOLLOW_NODE = (_get("ITSME_FOLLOW_NODE", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
 NODE_URL = (_get("ITSME_NODE_URL", "http://127.0.0.1:7171") or "").strip().rstrip("/")
-# Opsional: API key Tailscale (tskey-api-…). Kalau diisi, perintah /pasang ikut
-# membawa izin Tailscale sekali pakai, jadi komputer baru tidak perlu login.
-TAILSCALE_API_KEY = _get("TAILSCALE_API_KEY", "")
 
 # --- Website (edit lewat Git) ----------------------------------------------
 # Folder clone lokal dari repo website yang mau diedit It's Me.

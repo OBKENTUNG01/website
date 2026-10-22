@@ -472,7 +472,7 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_UPDATE_BRANCH` | `main` | Cabang yang diikuti |
 | `ITSME_FOLLOW_NODE` | `1` | Kalau It's Me Node terpasang, bot hanya aktif di komputer pemimpin (`0` = abaikan node) |
 | `ITSME_NODE_URL` | `http://127.0.0.1:7171` | Alamat API node di komputer ini |
-| `TAILSCALE_API_KEY` | — | Opsional. Dengan ini `/pasang` ikut membawa izin Tailscale sekali pakai, jadi komputer baru tidak perlu login Tailscale |
+| `ITSME_PUBLIC_URL` | — | Alamat publik dashboard ini (mis. `https://domainku.com`), dipakai `/pasang` agar komputer baru menyambung keluar ke sini **tanpa Tailscale**. Kosong = diambil dari domain pertama `ITSME_DASHBOARD_DOMAINS` |
 | `ITSME_PASSPHRASE` | — | Kata sandi lapisan kedua sebelum bot bisa dipakai; salah selalu dibalas "minimal 20 karakter" (pengecoh). Kosong = mati |
 | `ITSME_LOCK_TTL` | `0` | Menit tanpa dipakai sebelum terkunci otomatis lagi (`0` = tetap terbuka sampai `/lock`) |
 | `ITSME_DASHBOARD_PUBLIC` | `0` | Mode publik (lewat domain/tunnel): wajib login berkas kunci, perketat keamanan, tanpa jalan pintas localhost |

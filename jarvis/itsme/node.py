@@ -200,22 +200,17 @@ def create_invite(code, env, ttl=INVITE_TTL, timeout=5):
         return False
 
 
-def tailscale_auth_key(api_key, ttl=INVITE_TTL):
-    """Izin Tailscale sekali pakai (tskey-auth-…) supaya komputer baru tidak perlu login."""
-    import httpx
-
-    r = httpx.post(
-        "https://api.tailscale.com/api/v2/tailnet/-/keys",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={"capabilities": {"devices": {"create": {
-                  "reusable": False, "ephemeral": False, "preauthorized": True}}},
-              "expirySeconds": ttl, "description": "itsme-pasang"},
-        timeout=20,
-    )
-    r.raise_for_status()
-    return r.json()["key"]
+def hub_public_url():
+    """Alamat publik dashboard Hub tempat komputer baru menukar undangan & menyambung
+    (tanpa Tailscale). Dari ITSME_PUBLIC_URL, atau domain pertama ITSME_DASHBOARD_DOMAINS
+    (https). Kosong = Hub belum punya alamat publik."""
+    if config.PUBLIC_URL:
+        return config.PUBLIC_URL.rstrip("/")
+    first = next((d.strip() for d in config.DASHBOARD_DOMAINS.split(",") if d.strip()), "")
+    return ("https://" + first).rstrip("/") if first else ""
 
 
-def install_command(code, ts_key=None):
-    invite = f"{code}~{ts_key}" if ts_key else code
-    return f"$env:ITSME_INVITE='{invite}'; irm {INSTALL_URL} | iex"
+def install_command(code, hub_url):
+    """Satu baris pemasang: komputer baru menukar kode undangan di dashboard Hub
+    (hub_url) lalu menyambung KELUAR ke sana (bridge.py), tanpa Tailscale."""
+    return f"$env:ITSME_INVITE='{code}'; $env:ITSME_HUB='{hub_url}'; irm {INSTALL_URL} | iex"
