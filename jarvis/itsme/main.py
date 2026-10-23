@@ -44,6 +44,7 @@ HELP = (
     "/help — bantuan ini\n"
     "/otak — lihat otak yang sedang dipakai\n"
     "/alamat — alamat dashboard untuk dibuka dari HP/internet (lewat tunnel)\n"
+    "/wa <nomor> — atur nomor WhatsApp pemilik (bot WA langsung dinyalakan)\n"
     "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
     "/deepseek — pakai otak DeepSeek (murah & pintar); /deepseek <key> untuk simpan key-nya\n"
     "/claudepc — pakai Claude di komputer (akun Claude-mu, tanpa API key)\n"
@@ -69,7 +70,7 @@ HELP = (
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/id",
-    "/lock", "/komputer", "/layar",
+    "/lock", "/komputer", "/layar", "/wa",
 }
 # Paling lama Hub menunggu jawaban dari perangkat (detik).
 _DEVICE_REPLY_TIMEOUT = 3600
@@ -433,6 +434,43 @@ class App:
             f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa, disimpan, dan langsung aktif. {usage}" + note,
         )
 
+    async def _set_wa_owner(self, chat_id, arg):
+        """Atur nomor WhatsApp pemilik dari Telegram (/wa 62812…); tanpa arg = status."""
+        if not arg:
+            nyala = "menyala" if self.wa else ("mati" if not config.WHATSAPP else "gagal menyala")
+            await self.tg.send(
+                chat_id,
+                f"Nomor WhatsApp pemilik: {config.WA_OWNER or '(belum diisi)'}\n"
+                f"Bot WhatsApp: {nyala}\n\nUbah: /wa 6281234567890",
+            )
+            return
+        nomor = re.sub(r"\D", "", arg)
+        if nomor.startswith("0"):
+            nomor = "62" + nomor[1:]
+        if not 8 <= len(nomor) <= 15:
+            await self.tg.send(chat_id, "Nomor tidak valid. Contoh: /wa 6281234567890")
+            return
+        keys._set_env(keys.ENV_FILE, "ITSME_WA_OWNER", nomor)
+        keys._set_env(keys.ENV_FILE, "ITSME_WHATSAPP", "1")
+        config.WA_OWNER, config.WHATSAPP = nomor, True
+        if self.wa:
+            self.wa.stop()
+        self.wa = WhatsApp(self._wa_inbox)
+        if not self.wa.start():
+            self.wa = None
+            await self.tg.send(
+                chat_id,
+                f"Nomor {nomor} disimpan, tapi bot WhatsApp belum bisa menyala. Pastikan "
+                "Node.js terpasang dan 'npm install' sudah jalan di itsme\\whatsapp "
+                "(alasannya tertulis di jendela It's Me).",
+            )
+            return
+        await self.tg.send(
+            chat_id,
+            f"Nomor WhatsApp pemilik disimpan: {nomor}\n"
+            "Bot WA menyala — pindai QR di jendela It's Me dari WhatsApp HP > "
+            "Perangkat tertaut.",
+        )
     # --- WhatsApp -------------------------------------------------------------
     def _wa_inbox(self, jid, text):
         """Dipanggil dari thread pembaca WhatsApp; serahkan ke event loop."""
@@ -579,6 +617,10 @@ class App:
         if text.startswith("/otak"):
             # Sisa kuota ditanyakan ke OpenRouter; jangan tahan bot selama menunggu.
             await self.tg.send(chat_id, await asyncio.to_thread(self._brain_status))
+            return
+        if command == "/wa":
+            # Nomor WA pemilik diatur dari sini supaya .env tak perlu disunting manual.
+            await self._set_wa_owner(chat_id, text.partition(" ")[2].strip())
             return
         if text.startswith("/alamat"):
             await self.tg.send(chat_id, self._tunnel_address())
