@@ -1191,19 +1191,40 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
       <button id="kompTabFiles" onclick="kompShow('files')">📁 Berkas</button>
     </div>
     <div id="kompScreen">
-      <div class="row" style="gap:10px;flex-wrap:wrap;margin:8px 0">
-        <label><input type="checkbox" id="kompCtrl"> Kendalikan (mouse &amp; keyboard)</label>
+      <div class="row" style="gap:10px;flex-wrap:wrap;margin:8px 0;align-items:center">
+        <label><input type="checkbox" id="kompCtrl"> Kendalikan (sentuh / mouse)</label>
         <label>Lebar <select id="kompW"><option>800</option><option selected>1280</option><option>1600</option><option>1920</option></select></label>
         <label>Jeda <select id="kompRate"><option value="250">cepat</option><option value="500" selected>sedang</option><option value="1000">hemat</option></select></label>
         <button onclick="kompSnap()">Ambil sekali</button>
         <span class="sub" id="kompInfo"></span>
       </div>
       <div id="kompWrap" tabindex="0" style="position:relative;background:#000;border:1px solid var(--line,#2a2f3a);border-radius:10px;overflow:hidden;outline:none">
-        <img id="kompImg" alt="layar" style="display:block;max-width:100%;height:auto">
+        <img id="kompImg" alt="layar" style="display:block;max-width:100%;height:auto;user-select:none;-webkit-user-select:none">
+      </div>
+      <div id="kompKbd" class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <input id="kompText" placeholder="ketik teks lalu Kirim / Enter" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;min-width:150px">
+        <button onclick="kompTypeSend()">Kirim</button>
+      </div>
+      <div class="row" id="kompKeys" style="gap:5px;margin-top:6px;flex-wrap:wrap">
+        <button onclick="kompKey('escape')">Esc</button>
+        <button onclick="kompKey('tab')">Tab</button>
+        <button onclick="kompKey('enter')">⏎</button>
+        <button onclick="kompKey('backspace')">⌫</button>
+        <button onclick="kompKey('delete')">Del</button>
+        <button onclick="kompKey('up')">↑</button>
+        <button onclick="kompKey('down')">↓</button>
+        <button onclick="kompKey('left')">←</button>
+        <button onclick="kompKey('right')">→</button>
+        <button onclick="kompKey('c',{ctrl:1})">Ctrl+C</button>
+        <button onclick="kompKey('v',{ctrl:1})">Ctrl+V</button>
+        <button onclick="kompKey('tab',{alt:1})">Alt+Tab</button>
+        <button onclick="kompKey('escape',{ctrl:1})">⊞ Start</button>
       </div>
       <div class="sub" id="kompSelfHint" hidden style="margin-top:8px"></div>
-      <div class="sub" style="margin-top:8px">Gambar diperbarui berkala, jadi ada sedikit jeda. Hanya layar utama.
-        Centang “Kendalikan”, klik kotak layar, lalu pakai mouse &amp; keyboard.</div>
+      <div class="sub" style="margin-top:8px">
+        <b>Di HP (sentuh):</b> ketuk = klik, ketuk 2× = klik ganda, tahan = klik kanan, seret = seret, dua jari = gulir.
+        Ketik lewat kotak di atas. <b>Di komputer:</b> mouse &amp; keyboard biasa. Gambar diperbarui berkala (ada sedikit jeda).
+      </div>
     </div>
     <div id="kompFiles" hidden>
       <div class="row" style="gap:6px;margin:8px 0">
@@ -1670,6 +1691,9 @@ function kompSnap(){
 function kompSend(events){ if(!kompSel) return;
   fetch('/api/node/input',{method:'POST',headers:kompHeaders(),body:JSON.stringify({node:kompSel,events})}).catch(()=>{}); }
 function kompCtrlOn(){ return document.getElementById('kompCtrl').checked; }
+function kompKey(key,mods){ mods=mods||{}; kompSend([{t:'key',key:key,ctrl:!!mods.ctrl,alt:!!mods.alt,shift:!!mods.shift,win:!!mods.win}]); }
+function kompTypeSend(){ const t=document.getElementById('kompText'); if(t.value){ kompSend([{t:'text',text:t.value}]); t.value=''; } }
+document.getElementById('kompText').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); kompTypeSend(); } });
 function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClientRect();
   return {x:Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width)), y:Math.min(1,Math.max(0,(ev.clientY-r.top)/r.height))}; }
 (function(){
@@ -1694,7 +1718,34 @@ function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClie
     let key=map[k]|| (k.length===1?k:k.toLowerCase());
     kompSend([{t:'key',key,ctrl:ev.ctrlKey,alt:ev.altKey,shift:ev.shiftKey,win:ev.metaKey}]);
   });
-  document.getElementById('kompCtrl').addEventListener('change',()=>{ if(kompCtrlOn()) wrap.focus(); });
+  document.getElementById('kompCtrl').addEventListener('change',()=>{
+    if(kompCtrlOn()){ wrap.focus(); img.style.touchAction='none'; } else { img.style.touchAction='auto'; }
+  });
+  // --- Sentuh (HP): ketuk=klik, seret=seret, tahan=klik kanan, dua jari=gulir ---
+  let tS=null, tLast=null, tMoved=false, tDrag=false, tLong=null, tTwo=false, tLastY=0;
+  function tPt(t){ const r=img.getBoundingClientRect();
+    return {x:Math.min(1,Math.max(0,(t.clientX-r.left)/r.width)), y:Math.min(1,Math.max(0,(t.clientY-r.top)/r.height))}; }
+  img.addEventListener('touchstart',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); wrap.focus();
+    if(ev.touches.length>=2){ tTwo=true; tS=null; clearTimeout(tLong); tLastY=ev.touches[0].clientY; return; }
+    tTwo=false; tMoved=false; tDrag=false; const p=tPt(ev.touches[0]); tS={x:p.x,y:p.y,t:Date.now()}; tLast=p;
+    kompSend([{t:'move',x:p.x,y:p.y}]);
+    tLong=setTimeout(()=>{ if(tS&&!tMoved){ kompSend([{t:'down',button:'right',x:tS.x,y:tS.y},{t:'up',button:'right',x:tS.x,y:tS.y}]); tS=null; } },550);
+  },{passive:false});
+  img.addEventListener('touchmove',ev=>{ if(!kompCtrlOn())return; ev.preventDefault();
+    if(tTwo && ev.touches.length>=2){ const y=ev.touches[0].clientY, dy=y-tLastY;
+      if(Math.abs(dy)>3){ tLastY=y; kompSend([{t:'scroll',dy: dy>0?-120:120}]); } return; }
+    if(!tS) return; const p=tPt(ev.touches[0]); tLast=p;
+    if(!tMoved && Math.hypot(p.x-tS.x,p.y-tS.y)>0.02){ tMoved=true; clearTimeout(tLong);
+      kompSend([{t:'down',button:'left',x:tS.x,y:tS.y}]); tDrag=true; }
+    if(tDrag) kompSend([{t:'move',x:p.x,y:p.y}]);
+  },{passive:false});
+  img.addEventListener('touchend',ev=>{ if(!kompCtrlOn())return; clearTimeout(tLong);
+    if(tTwo){ if(ev.touches.length===0) tTwo=false; return; }
+    if(!tS) return; const dt=Date.now()-tS.t, e=tLast||tS;
+    if(tDrag){ kompSend([{t:'up',button:'left',x:e.x,y:e.y}]); }
+    else if(!tMoved && dt<500){ kompSend([{t:'move',x:tS.x,y:tS.y},{t:'down',button:'left',x:tS.x,y:tS.y},{t:'up',button:'left',x:tS.x,y:tS.y}]); }
+    tS=null; tMoved=false; tDrag=false;
+  },{passive:false});
 })();
 async function kompBrowse(path){
   try{ const d=await api('/api/node/fs/list?node='+encodeURIComponent(kompSel||'')+'&path='+encodeURIComponent(path||''));
