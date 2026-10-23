@@ -28,3 +28,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# WhatsApp: dependensi Node & sesi login
+itsme/whatsapp/node_modules/
+data/whatsapp/

@@ -32,6 +32,7 @@ from . import access, brain, config, dashboard, devices, keys, lock, node, updat
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
+from .whatsapp import WhatsApp
 
 log = logging.getLogger("itsme")
 
@@ -179,6 +180,7 @@ class App:
         self._failed_updates = set()  # commit yang gagal dipasang; tidak dicoba lagi
         self._update_warning = None  # masalah pembaruan yang sudah dilaporkan
         self.started = None  # waktu It's Me menyala (diisi di run())
+        self.wa = None  # jembatan WhatsApp (itsme/whatsapp.py)
 
     # --- util ---------------------------------------------------------------
     def _spawn(self, coro):
@@ -430,6 +432,22 @@ class App:
             chat_id,
             f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa, disimpan, dan langsung aktif. {usage}" + note,
         )
+
+    # --- WhatsApp -------------------------------------------------------------
+    def _wa_inbox(self, jid, text):
+        """Dipanggil dari thread pembaca WhatsApp; serahkan ke event loop."""
+        if text.strip():
+            self.loop.call_soon_threadsafe(self._spawn, self._run_wa(jid, text))
+
+    async def _run_wa(self, jid, text):
+        # ponytail: riwayat dipisah per nomor WhatsApp, tapi konfirmasi aksi &
+        # tugas latar tetap lewat chat Telegram pemilik (tombol).
+        key = "wa:" + jid
+        async with self._lock(key):
+            history = self.histories.setdefault(key, [])
+            history.append({"role": "user", "content": _stamped(text)})
+            reply = await self._think(config.OWNER_ID, history, self._ctx_for(config.OWNER_ID))
+        await asyncio.to_thread(self.wa.send, jid, reply)
 
     # --- penanganan pesan ---------------------------------------------------
     async def _handle_message(self, message):
@@ -1061,6 +1079,10 @@ class App:
         brain.restore()
         dashboard.start(self)
         self._start_quick_tunnel()
+        if config.WHATSAPP:
+            self.wa = WhatsApp(self._wa_inbox)
+            if not self.wa.start():
+                self.wa = None
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
         try:
             notice = updater.pop_notice()
@@ -1077,6 +1099,8 @@ class App:
                 if await self._install(update):
                     return EXIT_UPDATED
         finally:
+            if self.wa:
+                self.wa.stop()
             if getattr(self, "quick_tunnel", None):
                 self.quick_tunnel.stop()
             await self.tg.close()

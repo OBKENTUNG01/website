@@ -484,6 +484,23 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_DASHBOARD_DOMAINS` | — | Batasi domain yang boleh (Host), dipisah koma. Kosong = bebas ganti domain |
 | `ITSME_DASHBOARD_TRUST_PROXY` | `1` | Pakai IP asli dari Cloudflare/tunnel untuk anti brute-force |
 
+## WhatsApp (opsional)
+
+Balas pesan dari WhatsApp-mu sendiri, bukan cuma Telegram.
+
+1. Pasang Node.js (nodejs.org), lalu sekali saja:
+   `cd itsme\whatsapp` lalu `npm install --allow-git=all`
+   (npm 12 memblokir paket git; Baileys butuh satu.)
+2. Di `.env`: `ITSME_WHATSAPP=1` dan `ITSME_WA_OWNER=62812xxxxxxx` (tanpa +).
+3. Nyalakan It's Me. QR muncul di jendelanya — pindai dari
+   WhatsApp HP > Perangkat tertaut.
+4. Kirim pesan ke nomornya sendiri (chat "Pesan ke diri sendiri"). Riwayat
+   percakapan dipisah dari Telegram.
+
+Sesi login disimpan di `data/whatsapp/` (jangan di-commit). Hanya nomor
+`ITSME_WA_OWNER` yang dilayani; grup dan nomor lain diabaikan. Tombol
+konfirmasi aksi tetap lewat Telegram.
+
 ## Google Drive (opsional)
 
 It's Me bisa mengakses Google Drive-mu — **cari, unggah, unduh, dan kelola**
