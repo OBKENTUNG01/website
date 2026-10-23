@@ -681,15 +681,24 @@ class App:
                 f"irm {node.INSTALL_URL} | iex\n\nSetelah itu kirim /pasang lagi.",
             )
             return
+        # Domain tetap (ITSME_PUBLIC_URL) kalau ada; kalau tidak, URL Quick Tunnel
+        # yang sedang hidup pun alamat publik yang sah untuk mengundang komputer lain.
         hub_url = node.hub_public_url()
+        ephemeral = False
+        if not hub_url:
+            qt = getattr(self, "quick_tunnel", None)
+            if qt and qt.url:
+                hub_url = qt.url.rstrip("/")
+                ephemeral = True
         if not hub_url:
             await self.tg.send(
                 chat_id,
                 "Hub ini belum punya alamat publik, jadi komputer lain belum bisa "
-                "menyambung tanpa Tailscale. Buka dashboard lewat domain/tunnel sendiri "
-                "(lihat PANDUAN_AKSES_JARAK_JAUH.md), lalu isi di .env:\n\n"
-                "ITSME_PUBLIC_URL=https://domainmu\n\n"
-                "nyalakan ulang It's Me, lalu kirim /pasang lagi.",
+                "menyambung.\n\n"
+                "Cara tercepat (tanpa domain): nyalakan link instan dengan "
+                "quick-tunnel.ps1, lalu kirim /pasang lagi.\n"
+                "Atau pakai domain sendiri: isi ITSME_PUBLIC_URL=https://domainmu di "
+                ".env (lihat PANDUAN_AKSES_JARAK_JAUH.md) lalu nyalakan ulang It's Me.",
             )
             return
         code = node.new_invite_code()
@@ -701,6 +710,12 @@ class App:
                 "diperbarui). Coba /pasang lagi sebentar lagi.",
             )
             return
+        note = (
+            "\n\n⚠️ Alamat ini dari link instan (Quick Tunnel) yang BERUBAH tiap It's Me "
+            "nyala ulang. Komputer baru tersambung sekarang, tapi kalau Hub nyala ulang, "
+            "undang lagi (/pasang) — atau pakai domain tetap (ITSME_PUBLIC_URL) agar permanen."
+            if ephemeral else ""
+        )
         await self.tg.send(
             chat_id,
             "Pasang di komputer lain (TANPA Tailscale):\n"
@@ -711,7 +726,7 @@ class App:
             "kunci otak, memori, dan kode jaringan disalin sendiri dari komputer ini. "
             "Tidak ada yang perlu diketik atau login.\n\n"
             f"Kode hanya bisa dipakai sekali dan hangus dalam {node.INVITE_TTL // 60} menit. "
-            "Untuk komputer berikutnya, kirim /pasang lagi.",
+            "Untuk komputer berikutnya, kirim /pasang lagi." + note,
         )
         await self.tg.send(chat_id, node.install_command(code, hub_url))
 
