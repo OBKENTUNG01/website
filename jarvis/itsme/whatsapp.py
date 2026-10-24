@@ -5,6 +5,7 @@ di thread pembaca. Keluar: send(jid, text) menulis satu baris JSON ke stdin node
 Login pertama: QR muncul di jendela It's Me; sesi disimpan di data/whatsapp/.
 """
 
+import base64
 import json
 import logging
 import os
@@ -18,8 +19,9 @@ log = logging.getLogger("itsme")
 DIR = os.path.join(os.path.dirname(__file__), "whatsapp")
 
 class WhatsApp:
-    def __init__(self, on_message):
+    def __init__(self, on_message, on_qr=None):
         self._on_message = on_message
+        self._on_qr = on_qr
         self._proc = None
         self._lock = threading.Lock()
 
@@ -54,6 +56,13 @@ class WhatsApp:
             try:
                 msg = json.loads(line)
             except ValueError:
+                continue
+            if msg.get("qr"):
+                if self._on_qr:
+                    try:
+                        self._on_qr(base64.b64decode(msg["qr"]))
+                    except Exception:  # noqa: BLE001 - QR rusak tidak boleh mematikan pembaca
+                        log.exception("gagal memproses QR WhatsApp")
                 continue
             try:
                 self._on_message(msg.get("jid"), msg.get("text") or "")

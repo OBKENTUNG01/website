@@ -4,6 +4,7 @@
 // QR login dicetak ke stderr, jadi muncul di jendela It's Me.
 const readline = require('readline');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } =
   require('@whiskeysockets/baileys');
 
@@ -25,7 +26,12 @@ async function start() {
   sock = makeWASocket({ auth: state, browser: ["It's Me", 'Chrome', '1.0'] });
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-    if (qr) qrcode.generate(qr, { small: true }, (t) => process.stderr.write(t + '\n'));
+    if (qr) {
+      qrcode.generate(qr, { small: true }, (t) => process.stderr.write(t + '\n'));
+      QRCode.toBuffer(qr, { width: 600, margin: 1 })
+        .then((b) => process.stdout.write(JSON.stringify({ qr: b.toString('base64') }) + '\n'))
+        .catch((e) => process.stderr.write('gagal membuat QR: ' + e.message + '\n'));
+    }
     if (connection === 'open') process.stderr.write('WhatsApp tersambung.\n');
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;

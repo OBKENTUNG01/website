@@ -181,6 +181,7 @@ class App:
         self._failed_updates = set()  # commit yang gagal dipasang; tidak dicoba lagi
         self._update_warning = None  # masalah pembaruan yang sudah dilaporkan
         self.started = None  # waktu It's Me menyala (diisi di run())
+        self._qr_at = 0.0  # kapan QR WhatsApp terakhir dikirim
         self.wa = None  # jembatan WhatsApp (itsme/whatsapp.py)
 
     # --- util ---------------------------------------------------------------
@@ -455,7 +456,7 @@ class App:
         config.WA_OWNER, config.WHATSAPP = nomor, True
         if self.wa:
             self.wa.stop()
-        self.wa = WhatsApp(self._wa_inbox)
+        self.wa = WhatsApp(self._wa_inbox, self._wa_qr)
         if not self.wa.start():
             self.wa = None
             await self.tg.send(
@@ -468,9 +469,19 @@ class App:
         await self.tg.send(
             chat_id,
             f"Nomor WhatsApp pemilik disimpan: {nomor}\n"
-            "Bot WA menyala — pindai QR di jendela It's Me dari WhatsApp HP > "
+            "Bot WA menyala — QR-nya kukirim ke chat ini; pindai dari WhatsApp HP > "
             "Perangkat tertaut.",
         )
+    def _wa_qr(self, png):
+        """QR login dari thread node: kirim sebagai foto ke Telegram (maks. 1x/45 dtk)."""
+        if self.loop.time() - self._qr_at < 45:
+            return
+        self._qr_at = self.loop.time()
+        self.loop.call_soon_threadsafe(self._spawn, self.tg.send_photo(
+            config.OWNER_ID, png, "whatsapp-qr.png",
+            "WhatsApp: buka WhatsApp HP > Perangkat tertaut > Tautkan perangkat, "
+            "lalu pindai QR ini."))
+
     # --- WhatsApp -------------------------------------------------------------
     def _wa_inbox(self, jid, text):
         """Dipanggil dari thread pembaca WhatsApp; serahkan ke event loop."""
@@ -1122,7 +1133,7 @@ class App:
         dashboard.start(self)
         self._start_quick_tunnel()
         if config.WHATSAPP:
-            self.wa = WhatsApp(self._wa_inbox)
+            self.wa = WhatsApp(self._wa_inbox, self._wa_qr)
             if not self.wa.start():
                 self.wa = None
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
