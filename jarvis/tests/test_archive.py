@@ -112,8 +112,10 @@ class ExtractTest(unittest.TestCase):
         out = tools.handle_tool("ekstrak", {"arsip": archive}, ctx)
         self.assertEqual(len(ctx.asked), 1)
         dest = os.path.join(self.d, "data")
-        self.assertEqual(open(os.path.join(dest, "a.txt"), encoding="utf-8").read(), "satu")
-        self.assertEqual(open(os.path.join(dest, "sub", "b.txt"), encoding="utf-8").read(), "dua")
+        with open(os.path.join(dest, "a.txt"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "satu")
+        with open(os.path.join(dest, "sub", "b.txt"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "dua")
         self.assertIn("Diekstrak", out)
 
     def test_declined_extracts_nothing(self):

@@ -36,8 +36,8 @@ class NodeInviteIngressTest(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.server = dashboard.start(FakeApp(self.dir))
-        self.addCleanup(self.server.shutdown)
         self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def test_invite_forwarded_and_bridge_token_added(self):

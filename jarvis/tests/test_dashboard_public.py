@@ -46,8 +46,8 @@ class PublicDashboardTest(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.server = dashboard.start(FakeApp(self.dir))
-        self.addCleanup(self.server.shutdown)
         self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         with open(os.path.join(self.dir, "dashboard.key"), encoding="utf-8") as f:
             self.key = f.read().strip()
@@ -118,8 +118,8 @@ class DomainAllowlistTest(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.server = dashboard.start(FakeApp(self.dir))
-        self.addCleanup(self.server.shutdown)
         self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def test_wrong_host_forbidden(self):
@@ -143,8 +143,8 @@ class KeyLoginOnlyTest(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.server = dashboard.start(FakeApp(self.dir))
-        self.addCleanup(self.server.shutdown)
         self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def test_login_required_no_hsts(self):

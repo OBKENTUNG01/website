@@ -67,6 +67,7 @@ class DashboardTest(unittest.TestCase):
         with open(os.path.join(self.tree, ".env"), "w", encoding="utf-8") as f:
             f.write("SECRET=x")
         self.server = dashboard.start(self.app)
+        self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
@@ -216,7 +217,6 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("drive_login", r.json()["error"])
 
     def test_drive_list_renders_items(self):
-        items = [{"id": "F", "name": "Foto", "folder": True, "size": 0, "mime": "", "modified": ""}]
         with mock.patch.object(dashboard, "drive_list", return_value=({"items": [{"id": "F", "name": "Foto", "folder": True, "size": 0}]}, None)):
             d = self.getp("/api/drive/list", folder="root").json()
         self.assertEqual(d["items"][0]["name"], "Foto")
@@ -253,6 +253,7 @@ class DashboardLoginTest(unittest.TestCase):
         open(os.path.join(self.dir, "itsme.log"), "w").close()
         self.app = FakeApp(self.dir)
         self.server = dashboard.start(self.app)
+        self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.hdr = {"X-Itsme-Dashboard": "1"}
@@ -302,6 +303,7 @@ class DashboardTokenTest(unittest.TestCase):
             self.addCleanup(p.stop)
         self.app = FakeApp(self.dir)
         self.server = dashboard.start(self.app)
+        self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.token = dashboard._load_or_make_token()
@@ -347,6 +349,7 @@ class DashboardDevicesTest(unittest.TestCase):
         open(os.path.join(self.dir, "itsme.log"), "w").close()
         self.app = FakeApp(self.dir)
         self.server = dashboard.start(self.app)
+        self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 

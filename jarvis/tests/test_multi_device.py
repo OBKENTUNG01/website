@@ -110,6 +110,7 @@ class HubEndpointsTest(_TempData):
         open(config.LOG_FILE, "w").close()
         self.app = FakeHubApp(self.dir)
         self.server = dashboard.start(self.app)
+        self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
