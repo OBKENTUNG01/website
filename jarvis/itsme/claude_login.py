@@ -49,9 +49,11 @@ def _sdk():
     except ImportError:
         # Cadangan terakhir: proses Python baru membaca semua paket yang baru dipasang.
         if os.environ.get(_RESTARTED):
-            raise _Stop("Claude Code sudah terpasang tapi belum bisa dimuat. Tutup jendela ini, buka lagi, lalu jalankan perintah ini lagi.")
+            raise _Stop("[CC] sudah terpasang tapi belum bisa dimuat. Tutup jendela ini, "
+                        "buka lagi, lalu jalankan perintah ini lagi.") from None
         env = dict(os.environ, **{_RESTARTED: "1"})
-        raise SystemExit(subprocess.call([sys.executable, "-m", "itsme.claude_login"], env=env))
+        # from None: ImportError tadi bukan penyebabnya, jangan ditumpuk di traceback.
+        raise SystemExit(subprocess.call([sys.executable, "-m", "itsme.claude_login"], env=env)) from None
 
 
 def _cli(sdk):
