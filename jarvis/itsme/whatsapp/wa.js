@@ -10,6 +10,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } =
 
 const owner = (process.env.WA_OWNER || '').replace(/\D/g, '');
 const authDir = process.env.WA_AUTH || './auth';
+const sent = new Set(); // id pesan yang kita kirim sendiri, supaya tidak dibalas lagi
 let sock = null;
 
 function bodyOf(m) {
@@ -46,8 +47,13 @@ async function start() {
     if (type !== 'notify') return;
     for (const m of messages) {
       const jid = m.key?.remoteJid || '';
-      if (m.key?.fromMe || !jid.endsWith('@s.whatsapp.net')) continue; // abaikan grup
-      if (jid.split('@')[0] !== owner) continue;                        // hanya pemilik
+      // Hanya chat dengan nomor pemilik. Bot memakai akun WhatsApp pemilik sendiri,
+      // jadi pesannya datang sebagai fromMe (chat ke diri sendiri) — bukan diabaikan.
+      const num = jid.endsWith('@s.whatsapp.net')
+        ? jid.split('@')[0]
+        : (m.key?.remoteJidAlt || '').split('@')[0];
+      if (num !== owner) continue;
+      if (m.key?.fromMe && sent.has(m.key.id)) continue; // jangan balas balasan sendiri
       const text = bodyOf(m);
       if (text) process.stdout.write(JSON.stringify({ jid, text }) + '\n');
     }
@@ -59,7 +65,11 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
   try { out = JSON.parse(line); } catch { return; }
   if (!sock || !out.jid) return;
   try {
-    await sock.sendMessage(out.jid, { text: String(out.text).slice(0, 60000) });
+    const r = await sock.sendMessage(out.jid, { text: String(out.text).slice(0, 60000) });
+    if (r?.key?.id) {
+      if (sent.size > 200) sent.clear();
+      sent.add(r.key.id);
+    }
   } catch (e) {
     process.stderr.write('gagal kirim WhatsApp: ' + e.message + '\n');
   }
