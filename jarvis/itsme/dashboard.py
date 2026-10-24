@@ -708,7 +708,8 @@ def _make_handler(app, token):
             # -- HP (aplikasi It's Me HP) --
             if path == "/api/hp":
                 hp.forget_stale()
-                return self._json({"phones": hp.listing(), "token": hp.token()})
+                return self._json({"phones": hp.listing(), "token": hp.token(),
+                                   "code": hp.pair_code()})
             if path == "/api/hp/build":  # Pembuat Aplikasi: status build APK
                 from . import hpbuild
                 return self._json(hpbuild.status())
@@ -1854,7 +1855,7 @@ async function hpbBuild(){
   }catch(e){ msg.textContent='❌ '+e.message; go.disabled=false; }
 }
 async function hpLoad(){
-  try{ const s = await api('/api/hp'); hpToken = s.token||''; const phones = s.phones||[];
+  try{ const s = await api('/api/hp'); hpToken = s.code||s.token||''; const phones = s.phones||[];
     const online = phones.filter(p=>p.online);
     if(!hpSel || !phones.find(p=>p.name===hpSel && p.online)) hpSel = (online[0]||{}).name || null;
     const box=document.getElementById('hpPcs'); box.innerHTML='';
@@ -1867,8 +1868,8 @@ async function hpLoad(){
     const setup=document.getElementById('hpSetup');
     if(!phones.length){
       setup.innerHTML = 'Belum ada HP tersambung. Pasang aplikasi <b>It\'s Me HP</b> (APK dari repo itsme-hp), buka, '+
-        'lalu isi alamat dashboard ini dan token berikut:<br><code style="user-select:all">'+ (hpToken||'(token)') +'</code>';
-    } else { setup.innerHTML = 'Token HP (untuk menambah HP lain): <code style="user-select:all">'+(hpToken||'')+'</code>'; }
+        'lalu isi alamat dashboard ini dan kode pasang 6 karakter ini:<br><code style="user-select:all;font-size:1.4em;letter-spacing:.15em">'+ (hpToken||'(kode)') +'</code>';
+    } else { setup.innerHTML = 'Kode pasang HP lain: <code style="user-select:all">'+(hpToken||'')+'</code>'; }
     if(hpActive && hpView==='screen' && hpSel) hpSnap();
   }catch(e){ document.getElementById('hpSetup').textContent = 'Gagal memuat: '+e.message; }
 }

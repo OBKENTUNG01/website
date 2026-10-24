@@ -10,6 +10,7 @@ tanpa server pihak ketiga. Aman: HP harus tahu token (ditampilkan di dashboard),
 dan aplikasi di HP terlihat serta izinnya diberikan pemilik (layar, Accessibility).
 """
 
+import hashlib
 import os
 import secrets
 import threading
@@ -74,8 +75,36 @@ def token():
     return t
 
 
+def pair_code():
+    """Kode pendek 6 karakter untuk diketik di aplikasi HP, supaya token 24 karakter
+    tidak perlu disalin. Diturunkan dari token, jadi ikut berganti kalau token
+    diganti (ITSME_HP_SECRET) — tidak ada berkas tambahan yang harus dijaga."""
+    return hashlib.sha256(("itsme-pair:" + token()).encode()).hexdigest()[:6].upper()
+
+
+# Kode pendek lebih mudah ditebak: batasi percobaan gagal seperti invites.py.
+_FAILS, FAIL_MAX, FAIL_WINDOW = [], 30, 600
+
+
+def _fail_gate():
+    now = time.monotonic()
+    _FAILS[:] = [t for t in _FAILS if now - t < FAIL_WINDOW]
+    return len(_FAILS) < FAIL_MAX
+
+
+def _fail():
+    _FAILS.append(time.monotonic())
+
+
 def check_token(given):
-    return bool(given) and secrets.compare_digest(str(given), token())
+    """True kalau `given` sama dengan token HP atau kode pasang pendeknya."""
+    if not given or not _fail_gate():
+        return False
+    got = str(given).strip()
+    ok = secrets.compare_digest(got, token()) or secrets.compare_digest(got.upper(), pair_code())
+    if not ok:
+        _fail()
+    return ok
 
 
 # --- sisi HP (aplikasi Android) ------------------------------------------------

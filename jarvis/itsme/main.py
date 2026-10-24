@@ -1217,9 +1217,17 @@ class App:
         from . import tunnel
 
         def announce(url):
+            previous = self._remember_public_url(url)
             msg = (f"🌐 Dashboard It's Me bisa dibuka dari HP / mana saja:\n{url}\n\n"
                    "Login pakai berkas data/dashboard.key. Alamat ini sementara (berubah "
                    "tiap It's Me nyala ulang) — ketik /alamat untuk yang terbaru.")
+            if previous and previous != url:
+                # Alamat berubah (link instan berganti setelah nyala ulang/pembaruan).
+                # Komputer lain tidak perlu DIPASANG ULANG, cuma diarahkan ke alamat baru.
+                msg += ("\n\nℹ️ Alamat berubah dari sebelumnya. Komputer yang sudah tersambung "
+                        "tidak perlu dipasang ulang — cukup jalankan satu baris ini di komputer "
+                        "itu (data dan pengaturan tetap):\n"
+                        f"$env:ITSME_HUB='{url}'; irm {node.INSTALL_URL} | iex")
             try:
                 asyncio.run_coroutine_threadsafe(self.tg.send(config.OWNER_ID, msg), self.loop)
             except Exception:  # noqa: BLE001 - tunnel tetap jalan walau kirim gagal
@@ -1228,6 +1236,29 @@ class App:
         self.quick_tunnel = tunnel.QuickTunnel(config.DASHBOARD_PORT, announce)
         self.quick_tunnel.start()
         log.info("Quick tunnel diminta; menunggu alamat dari cloudflared.")
+
+    @staticmethod
+    def _remember_public_url(url):
+        """Simpan alamat publik terakhir; kembalikan yang lama (atau None).
+
+        Dipakai untuk memberi tahu pemilik saat alamat berganti, supaya komputer lain
+        cukup diarahkan ulang satu baris — bukan dipasang ulang dari nol.
+        """
+        path = os.path.join(config.DATA_DIR, "hub_url.txt")
+        previous = None
+        try:
+            with open(path, encoding="utf-8") as f:
+                previous = f.read().strip() or None
+        except OSError:
+            pass
+        if url and url != previous:
+            try:
+                os.makedirs(config.DATA_DIR, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(url + "\n")
+            except OSError:
+                log.warning("gagal menyimpan alamat publik ke %s", path)
+        return previous
 
     def _tunnel_address(self):
         if config.PUBLIC_URL:
