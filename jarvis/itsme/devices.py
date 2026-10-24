@@ -184,12 +184,16 @@ def resolve(task_id, text):
 
 def sync_bundle(app):
     """Hal yang harus sama di semua perangkat, beserta sidik jarinya."""
-    from . import access, brain
+    from . import access, brain, keys, node
 
     bundle = {
         "memory": app.memory.text(),
         "brain": brain.current_backend(),
         "full_access": access.full(),
+        # Isi .env yang ditanam saat /pasang: kalau Hub mengganti token bot, pemilik,
+        # kata sandi, atau daftar tamu, perangkat menyusul sendiri — tidak perlu
+        # dipasang ulang. Nilai khusus komputer (folder, alamat) tidak ikut.
+        "env": node.invite_env(keys.ENV_FILE),
     }
     raw = json.dumps(bundle, sort_keys=True).encode("utf-8")
     bundle["version"] = hashlib.sha1(raw).hexdigest()[:12]

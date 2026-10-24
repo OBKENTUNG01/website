@@ -646,7 +646,21 @@ def _make_handler(app, token):
                 return self._json(data or {"error": err}, 200 if data else 400)
             if path == "/api/devices":
                 from . import devices
-                return self._json({"devices": devices.listing(), "is_hub": not config.AGENT_MODE, "target": devices.get_target()})
+                # Dua jalur koneksi, satu tampilan: perangkat It's Me (poll) dan komputer
+                # yang tersambung lewat It's Me Node / jembatan. Dulu tab ini hanya
+                # membaca devices.json, jadi komputer yang sudah terhubung tetap tampil
+                # sebagai "belum ada komputer yang terhubung".
+                code, _ct, body, _cd = _node_get("/status", {})
+                try:
+                    st = json.loads(body) if code == 200 else {}
+                except ValueError:
+                    st = {}
+                comps = [{"name": n.get("name"), "id": n.get("id"), "via": "node"}
+                         for n in st.get("nodes") or [] if n.get("name")]
+                comps += [{"name": d.get("name"), "id": "bridge:" + (d.get("name") or ""), "via": "bridge"}
+                          for d in hp.listing() if d.get("kind") == "computer" and d.get("name")]
+                return self._json({"devices": devices.listing(), "computers": comps,
+                                   "is_hub": not config.AGENT_MODE, "target": devices.get_target()})
             # -- komputer lain lewat It's Me Node (Tailscale) ATAU jembatan (tanpa Tailscale) --
             if path == "/api/node/status":
                 code, ctype, body, _ = _node_get("/status", {})
@@ -1622,8 +1636,11 @@ function loadDevices(){
       hint.textContent = '';
     }
     const box = document.getElementById('devList'); box.innerHTML = '';
-    if(!d.devices.length){ box.innerHTML = '<div class="fsrow"><span class="nm">(belum ada perangkat lain)</span></div>'; return; }
-    for(const dev of d.devices){
+    // Perangkat (poll) + komputer lewat It's Me Node/jembatan, tanpa duplikat nama.
+    const seenNames = new Set(d.devices.map(x => (x.name||'').toLowerCase()));
+    const all = d.devices.concat((d.computers||[]).filter(c => c.name && !seenNames.has(c.name.toLowerCase())).map(c => ({name:c.name, online:true, url:'/#komputer', via:c.via})));
+    if(!all.length){ box.innerHTML = '<div class="fsrow"><span class="nm">(belum ada komputer yang terhubung — tambah lewat /pasang di Telegram)</span></div>'; return; }
+    for(const dev of all){
       const row = document.createElement('div'); row.className = 'fsrow';
       row.innerHTML = '<span>' + (dev.online ? '🟢' : '⚪') + '</span>'
         + '<span class="nm"></span>'
@@ -1698,7 +1715,13 @@ function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClie
   return {x:Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width)), y:Math.min(1,Math.max(0,(ev.clientY-r.top)/r.height))}; }
 (function(){
   const img=document.getElementById('kompImg'), wrap=document.getElementById('kompWrap');
-  img.addEventListener('mousemove',ev=>{ if(!kompCtrlOn())return; const n=Date.now(); if(n-kompLastMove<60)return; kompLastMove=n; kompSend([{t:'move',...kompRel(ev)}]); });
+  // Kursor: simpan posisi terakhir, kirim sekali per frame. Sebelumnya dibatasi
+  // 1 per 60 ms sehingga gerak mouse terasa patah-patah dibanding remote desktop.
+  let pendingMove=null, moveQueued=false;
+  function flushMove(){ moveQueued=false; if(!pendingMove)return; const p=pendingMove; pendingMove=null;
+    kompSend([{t:'move',x:p.x,y:p.y}]); }
+  img.addEventListener('mousemove',ev=>{ if(!kompCtrlOn())return; pendingMove=kompRel(ev);
+    if(!moveQueued){ moveQueued=true; requestAnimationFrame(flushMove); } });
   img.addEventListener('mousedown',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); wrap.focus(); const b=['left','middle','right'][ev.button]||'left'; kompSend([{t:'down',button:b,...kompRel(ev)}]); });
   img.addEventListener('mouseup',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); const b=['left','middle','right'][ev.button]||'left'; kompSend([{t:'up',button:b,...kompRel(ev)}]); });
   img.addEventListener('dblclick',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); kompSend([{t:'dblclick',...kompRel(ev)}]); });
@@ -1706,17 +1729,31 @@ function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClie
   wrap.addEventListener('wheel',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); kompSend([{t:'scroll',dy:ev.deltaY<0?120:-120}]); },{passive:false});
   // Keyboard ditangkap di tingkat dokumen supaya jalan walau fokus tidak di gambar,
   // tapi hanya saat tab Komputer + Kendalikan aktif dan fokus bukan di kotak isian.
+  const MODS={Control:'ctrl',Shift:'shift',Alt:'alt',Meta:'win',AltGraph:'alt'};
   document.addEventListener('keydown',ev=>{
     if(!(kompActive && kompView==='screen' && kompCtrlOn())) return;
     const tg=ev.target, tag=tg&&tg.tagName;
     if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
     ev.preventDefault();
     const k=ev.key;
+    if(MODS[k]){ kompSend([{t:'key',key:MODS[k],down:true}]); return; }
     if(k.length===1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey){ kompSend([{t:'text',text:k}]); return; }
     const map={Enter:'enter',Backspace:'backspace',Tab:'tab',Escape:'escape',Delete:'delete',' ':'space',
       ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',Home:'home',End:'end',PageUp:'pageup',PageDown:'pagedown'};
     let key=map[k]|| (k.length===1?k:k.toLowerCase());
     kompSend([{t:'key',key,ctrl:ev.ctrlKey,alt:ev.altKey,shift:ev.shiftKey,win:ev.metaKey}]);
+  });
+  document.addEventListener('keyup',ev=>{
+    if(!(kompActive && kompView==='screen' && kompCtrlOn())) return;
+    const tg=ev.target, tag=tg&&tg.tagName;
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+    if(MODS[ev.key]){ ev.preventDefault(); kompSend([{t:'key',key:MODS[ev.key],up:true}]); }
+  });
+  // Tempel dari clipboard komputer ini: teks dikirim sebagai ketikan ke komputer tujuan.
+  wrap.addEventListener('paste',ev=>{
+    if(!kompCtrlOn()) return;
+    const t=(ev.clipboardData||window.clipboardData)?.getData('text');
+    if(t){ ev.preventDefault(); kompSend([{t:'text',text:t.slice(0,2000)}]); }
   });
   document.getElementById('kompCtrl').addEventListener('change',()=>{
     if(kompCtrlOn()){ wrap.focus(); img.style.touchAction='none'; } else { img.style.touchAction='auto'; }
