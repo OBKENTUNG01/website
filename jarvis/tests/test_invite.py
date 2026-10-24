@@ -28,7 +28,7 @@ class InviteHelpersTest(unittest.TestCase):
         path = os.path.join(d, ".env")
         with open(path, "w", encoding="utf-8") as f:
             f.write("# komentar\nTELEGRAM_BOT_TOKEN=123:abc\nOWNER_TELEGRAM_ID=42\n"
-                    "OPENROUTER_API_KEY=sk-or-x\nWEBSITE_REPO_DIR=C:\web\nOLLAMA_URL=http://x\n"
+                    "OPENROUTER_API_KEY=sk-or-x\nWEBSITE_REPO_DIR=C:\\web\nOLLAMA_URL=http://x\n"
                     "ITSME_FOLLOW_NODE=0\nITSME_BACKEND=\n")
         env = node.invite_env(path)
         self.assertEqual(env, {"TELEGRAM_BOT_TOKEN": "123:abc", "OWNER_TELEGRAM_ID": "42",

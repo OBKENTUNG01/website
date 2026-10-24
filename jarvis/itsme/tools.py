@@ -697,7 +697,10 @@ def _safe_extract(archive, dest):
             for member in tf.getmembers():
                 if not ok(member.name):
                     raise ValueError(f"Entri keluar folder tujuan: {member.name}")
-            tf.extractall(dest)
+            if hasattr(tarfile, "data_filter"):  # Python 3.12+ (PEP 706): tolak symlink/perangkat
+                tf.extractall(dest, filter="data")
+            else:
+                tf.extractall(dest)
 
 
 def _make_zip(sources, dest, ctx):

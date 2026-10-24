@@ -460,7 +460,7 @@ class ConsoleTest(unittest.TestCase):
                 self.assertLess(time.monotonic() - started, 0.5)
             finally:
                 gate.set()
-                listener.stop()
+                main._stop_listener(listener)
         self.assertIn("halo dari uji", stream.getvalue())
 
     def test_disable_quick_edit_is_safe_anywhere(self):

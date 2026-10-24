@@ -80,8 +80,8 @@ class HpBridgeTest(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.server = dashboard.start(FakeApp(self.dir))
-        self.addCleanup(self.server.shutdown)
         self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.token = httpx.get(self.base + "/api/hp", timeout=5).json()["token"]
         self.assertTrue(self.token)
