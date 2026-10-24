@@ -851,6 +851,13 @@ def _make_handler(app, token):
                 if isinstance(res, dict):
                     return self._json(res)
                 return self._json({"error": "HP tidak menjawab"}, 504)
+            elif path in ("/api/hp/uitree", "/api/hp/shell", "/api/hp/devowner"):
+                ctype = path.rsplit("/", 1)[-1]
+                args = {"cmd": data.get("cmd", "")} if ctype == "shell" else None
+                res = hp.command(data.get("name", ""), ctype, args, wait=20)
+                if isinstance(res, dict):
+                    return self._json(res)
+                return self._json({"error": "HP tidak menjawab"}, 504)
             elif path == "/api/hp/build":  # Pembuat Aplikasi: picu build APK
                 from . import hpbuild
                 try:
@@ -1306,6 +1313,16 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
           <input id="hpText" style="flex:1" placeholder="ketik teks lalu Kirim…" autocomplete="off">
           <button onclick="hpTypeSend()">Kirim</button>
         </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button onclick="hpUi()">🔎 Lihat isi layar</button>
+          <span class="sub" id="hpCaps"></span>
+        </div>
+        <pre id="hpUiOut" hidden style="max-height:240px;overflow:auto"></pre>
+        <div class="row" style="gap:6px;margin-top:6px">
+          <input id="hpShell" style="flex:1" placeholder="perintah shell lewat Shizuku (mis. pm list packages | grep wa)" autocomplete="off">
+          <button onclick="hpShellSend()">Jalankan</button>
+        </div>
+        <pre id="hpShellOut" hidden style="max-height:200px;overflow:auto"></pre>
         <div class="sub" style="margin-top:8px">Perlu izin “rekam layar” (untuk melihat) dan “Accessibility” (untuk kontrol) di HP. Centang “Kendalikan”, lalu klik/seret di layar, atau pakai tombol &amp; ketik. Seret = geser/scroll.</div>
       </div>
       <div id="hpFiles" hidden>
@@ -1870,6 +1887,10 @@ async function hpLoad(){
       setup.innerHTML = 'Belum ada HP tersambung. Pasang aplikasi <b>It\'s Me HP</b> (APK dari repo itsme-hp), buka, '+
         'lalu isi alamat dashboard ini dan kode pasang 6 karakter ini:<br><code style="user-select:all;font-size:1.4em;letter-spacing:.15em">'+ (hpToken||'(kode)') +'</code>';
     } else { setup.innerHTML = 'Kode pasang HP lain: <code style="user-select:all">'+(hpToken||'')+'</code>'; }
+    const sel = phones.find(p => (p.name||'').toLowerCase() === (hpSel||'').toLowerCase());
+    const caps = (sel && sel.caps) || [];
+    document.getElementById('hpCaps').textContent = caps.includes('shell')
+      ? '🔓 Shizuku aktif (hak adb)' : 'ℹ️ Shizuku belum aktif — hak adb belum tersedia';
     if(hpActive && hpView==='screen' && hpSel) hpSnap();
   }catch(e){ document.getElementById('hpSetup').textContent = 'Gagal memuat: '+e.message; }
 }
@@ -1893,6 +1914,17 @@ function hpSnap(){
 function hpCtrlOn(){ const c=document.getElementById('hpCtrl'); return c && c.checked; }
 function hpSend(events){ if(!hpSel) return;
   api('/api/hp/input',{method:'POST',body:JSON.stringify({name:hpSel,events})}).catch(()=>{}); }
+async function hpUi(){ const out=document.getElementById('hpUiOut');
+  try{ const d=await api('/api/hp/uitree',{method:'POST',body:JSON.stringify({name:hpSel})});
+    out.hidden=false;
+    if(d.error){ out.textContent=d.error; return; }
+    out.textContent=(d.nodes||[]).map(n=>('['+n.cls+'] '+(n.text||n.desc||'')+(n.tap?' (bisa diketuk)':'')+' @'+n.x+','+n.y)).join('\n')||'(layar kosong / tidak terbaca)';
+  }catch(e){ out.hidden=false; out.textContent='Gagal: '+e.message; } }
+async function hpShellSend(){ const i=document.getElementById('hpShell'), out=document.getElementById('hpShellOut');
+  if(!i.value.trim()) return; out.hidden=false; out.textContent='menjalankan…';
+  try{ const d=await api('/api/hp/shell',{method:'POST',body:JSON.stringify({name:hpSel,cmd:i.value})});
+    out.textContent=(d.error? 'Gagal: '+d.error : (d.out||'(tanpa keluaran)'));
+  }catch(e){ out.textContent='Gagal: '+e.message; } }
 function hpKey(k){ if(hpSel) hpSend([{t:'key',key:k}]); }
 function hpTypeSend(){ const t=document.getElementById('hpText'); if(t.value){ hpSend([{t:'text',text:t.value}]); t.value=''; } }
 function hpRel(ev){ const r=document.getElementById('hpImg').getBoundingClientRect();
