@@ -12,11 +12,15 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 
 from . import config
 
 log = logging.getLogger("itsme")
 DIR = os.path.join(os.path.dirname(__file__), "whatsapp")
+# Jembatan yang mati dicoba nyalakan lagi, tapi berhenti kalau terus gagal.
+_RETRY_WINDOW = 60
+_RETRY_MAX = 5
 
 class WhatsApp:
     def __init__(self, on_message, on_qr=None):
@@ -24,6 +28,9 @@ class WhatsApp:
         self._on_qr = on_qr
         self._proc = None
         self._lock = threading.Lock()
+        self._stop = False
+        self._tries = 0
+        self._last = 0.0
 
     def start(self):
         """Nyalakan node. False kalau tidak bisa (lihat log)."""
@@ -34,12 +41,11 @@ class WhatsApp:
         if not os.path.isdir(os.path.join(DIR, "node_modules")):
             log.warning("WhatsApp: jalankan dulu 'npm install' di %s", DIR)
             return False
+        self._stop = False
+        _kill_orphans()
         env = dict(os.environ,
                    WA_OWNER=str(config.WA_OWNER or ""),
                    WA_AUTH=os.path.join(config.DATA_DIR, "whatsapp"))
-        # ponytail: node dianggap hidup sampai keluar; tanpa auto-restart dari Python
-        # (wa.js sudah menyambung ulang sendiri). Perlu restart dari Python kalau
-        # prosesnya mati total — tambahkan loop di sini kalau itu sering terjadi.
         self._proc = subprocess.Popen(
             [node, "wa.js"], cwd=DIR, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
@@ -68,7 +74,21 @@ class WhatsApp:
                 self._on_message(msg.get("jid"), msg.get("text") or "")
             except Exception:  # noqa: BLE001 - satu pesan gagal tidak boleh mematikan pembaca
                 log.exception("gagal memproses pesan WhatsApp")
-        log.warning("WhatsApp: jembatan node berhenti (keluar kode %s).", self._proc.poll())
+        code = self._proc.poll()
+        log.warning("WhatsApp: jembatan node berhenti (keluar kode %s).", code)
+        if self._stop:
+            return
+        # ponytail: nyalakan ulang sendiri, tapi berhenti setelah _RETRY_MAX kali
+        # dalam semenit supaya sesi yang dicabut dari HP tidak jadi spam. Pulih:
+        # hapus data/whatsapp lalu nyalakan ulang It's Me (QR baru terkirim).
+        now = time.time()
+        self._tries = self._tries + 1 if now - self._last < _RETRY_WINDOW else 1
+        self._last = now
+        if self._tries > _RETRY_MAX:
+            log.error("WhatsApp: gagal menyambung %dx; bot WA dimatikan.", _RETRY_MAX)
+            return
+        time.sleep(3)
+        self.start()
 
     def send(self, jid, text):
         with self._lock:
@@ -84,5 +104,21 @@ class WhatsApp:
                 return False
 
     def stop(self):
+        self._stop = True
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
+
+
+def _kill_orphans():
+    """Bunuh wa.js sisa dari It's Me yang mati mendadak — dua sesi pada folder
+    auth yang sama membuat WhatsApp saling tendang."""
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | "
+             "Where-Object { $_.CommandLine -like '*wa.js*' } | "
+             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+            capture_output=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning("WhatsApp: gagal membersihkan node wa.js lama", exc_info=True)
