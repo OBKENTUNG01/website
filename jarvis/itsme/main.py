@@ -67,6 +67,8 @@ HELP = (
 )
 # Perintah yang tetap dikerjakan Hub walau ada perangkat tujuan (/pakai).
 # Memori & mode akses Hub disalin ke semua perangkat, jadi diatur di sini.
+# Perintah yang tetap boleh dipakai tamu (sisanya: pemilik saja).
+_GUEST_OK = {"", "/start", "/help", "/id", "/lock"}
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/id",
@@ -179,6 +181,7 @@ class App:
         # membuangnya (garbage collect) di tengah pekerjaan.
         self._tasks = set()
         self._failed_updates = set()  # commit yang gagal dipasang; tidak dicoba lagi
+        self._env_changed = False  # .env dari Hub berubah -> perlu nyala ulang
         self._update_warning = None  # masalah pembaruan yang sudah dilaporkan
         self.started = None  # waktu It's Me menyala (diisi di run())
         self._qr_at = 0.0  # kapan QR WhatsApp terakhir dikirim
@@ -254,7 +257,7 @@ class App:
             seen.clear()
         return seen
 
-    def _ctx_for(self, chat_id, in_background=False):
+    def _ctx_for(self, chat_id, in_background=False, guest=False):
         return {
             "website_dir": config.WEBSITE_REPO_DIR or None,
             "memory": self.memory,
@@ -266,6 +269,7 @@ class App:
             ),
             "seen_urls": self._seen(chat_id),
             "in_background": in_background,
+            "guest": guest,
         }
 
     async def _keep_typing(self, chat_id):
@@ -483,19 +487,20 @@ class App:
             "lalu pindai QR ini."))
 
     # --- WhatsApp -------------------------------------------------------------
-    def _wa_inbox(self, jid, text):
+    def _wa_inbox(self, jid, text, guest=False):
         """Dipanggil dari thread pembaca WhatsApp; serahkan ke event loop."""
         if text.strip():
-            self.loop.call_soon_threadsafe(self._spawn, self._run_wa(jid, text))
+            self.loop.call_soon_threadsafe(self._spawn, self._run_wa(jid, text, guest))
 
-    async def _run_wa(self, jid, text):
+    async def _run_wa(self, jid, text, guest=False):
         # ponytail: riwayat dipisah per nomor WhatsApp, tapi konfirmasi aksi &
         # tugas latar tetap lewat chat Telegram pemilik (tombol).
         key = "wa:" + jid
         async with self._lock(key):
             history = self.histories.setdefault(key, [])
             history.append({"role": "user", "content": _stamped(text)})
-            reply = await self._think(config.OWNER_ID, history, self._ctx_for(config.OWNER_ID))
+            ctx = self._ctx_for(config.OWNER_ID, guest=guest)
+            reply = await self._think(config.OWNER_ID, history, ctx)
         await asyncio.to_thread(self.wa.send, jid, reply)
 
     # --- penanganan pesan ---------------------------------------------------
@@ -509,8 +514,9 @@ class App:
             await self.tg.send(chat_id, f"User id kamu: {user_id}")
             return
 
-        if user_id != config.OWNER_ID:
-            # Bukan pemilik — abaikan diam-diam (keamanan).
+        guest = user_id != config.OWNER_ID
+        if guest and user_id not in config.GUEST_IDS:
+            # Bukan pemilik dan bukan tamu — abaikan diam-diam (keamanan).
             return
 
         # Lapisan kedua: kata sandi. Selama terkunci, apa pun selain kata sandi yang
@@ -529,6 +535,13 @@ class App:
             return
 
         first = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        if guest and first not in _GUEST_OK:
+            await self.tg.send(
+                chat_id,
+                "Mode tamu: aku bisa menjawab pertanyaan, tapi perintah dan alat "
+                "(berkas, shell, komputer lain) hanya untuk pemilik.",
+            )
+            return
         if first == "/perangkat":
             await self.tg.send(chat_id, self._devices_status())
             return
@@ -670,7 +683,7 @@ class App:
         async with self._lock(chat_id):
             history = self.histories.setdefault(chat_id, [])
             history.append({"role": "user", "content": _with_image(_stamped(text), image_path)})
-            ctx = self._ctx_for(chat_id)
+            ctx = self._ctx_for(chat_id, guest=guest)
             reply = await self._think(chat_id, history, ctx)
             await self.tg.send(chat_id, reply)
 
@@ -890,7 +903,36 @@ class App:
                     devices.send_message,
                     f"⚠️ Otak Hub ({wanted}) belum bisa dipakai di sini, tetap {brain.describe()}: {exc}",
                 )
+        changed = self._apply_hub_env(data.get("env"))
+        if changed:
+            log.info("Env dari Hub berubah (%s); perangkat akan menyala ulang.", ", ".join(changed))
+            self._env_changed = True
         return data.get("version")
+
+    @staticmethod
+    def _apply_hub_env(env):
+        """Tulis isi .env dari Hub ke .env perangkat ini. Kembalikan kunci yang berubah.
+
+        Dipakai supaya pembaruan di Hub (token bot, pemilik, kata sandi, daftar tamu,
+        kunci otak) tidak menuntut pemasangan ulang di komputer lain."""
+        if not isinstance(env, dict) or not env:
+            return []
+        from dotenv import dotenv_values
+        from . import keys as keys_mod
+
+        current = {k: v for k, v in dotenv_values(keys_mod.ENV_FILE).items() if v}
+        changed = []
+        for k, v in env.items():
+            v = str(v or "")
+            if not v or "\n" in v or current.get(k) == v:
+                continue
+            try:
+                keys_mod._set_env(keys_mod.ENV_FILE, str(k), v)
+            except OSError:
+                log.warning("gagal menulis %s ke .env", k)
+                continue
+            changed.append(str(k))
+        return changed
 
     def owner_ctx(self):
         """ctx alat untuk aksi dari dashboard: konfirmasi muncul sebagai tombol
@@ -1056,6 +1098,10 @@ class App:
         notice = updater.pop_notice()
         if notice:
             await asyncio.to_thread(devices.send_message, notice)
+        if self._env_changed:
+            # .env baru hanya terbaca saat proses mulai; mulai ulang sekarang
+            # (tidak ada tugas yang sedang jalan di titik ini).
+            return EXIT_UPDATED
         next_update = self.loop.time() + _FIRST_UPDATE_CHECK
         while True:
             reply = await asyncio.to_thread(devices.poll_hub)  # tunggu tugas + heartbeat
@@ -1066,6 +1112,10 @@ class App:
                     self._spawn(self._handle_remote(reply["task"]))
                 if reply.get("sync") and reply["sync"] != synced:
                     synced = await self._sync_from_hub() or synced
+                    if self._env_changed:
+                        await self._wait_idle(_UPDATE_MAX_WAIT)
+                        log.info("Env Hub dipakai; perangkat menyala ulang.")
+                        return EXIT_UPDATED
             if config.AUTO_UPDATE and self.loop.time() >= next_update:
                 next_update = self.loop.time() + config.UPDATE_INTERVAL
                 try:

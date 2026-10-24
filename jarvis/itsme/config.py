@@ -38,6 +38,11 @@ TELEGRAM_API_URL = (_get("TELEGRAM_API_URL", "https://api.telegram.org") or "").
 # pemilik id). Kosong = mati. Jawaban salah selalu "minimal 20 karakter" sebagai
 # pengecoh, walau kata sandi aslinya boleh lebih pendek. Simpan HANYA di .env.
 PASSPHRASE = _get("ITSME_PASSPHRASE", "") or ""
+# Tamu: id Telegram lain yang boleh ikut memakai bot (dipisah koma). Mereka
+# harus memasukkan ITSME_PASSPHRASE yang sama, dan hanya bisa tanya-jawab —
+# alat (berkas, shell, web) tidak diberikan supaya komputer tetap aman.
+GUEST_IDS = {int(x) for x in (_get("ITSME_GUEST_IDS", "") or "").replace(";", ",").split(",")
+             if x.strip().lstrip("-").isdigit()}
 # Kunci otomatis lagi setelah sekian menit tanpa dibuka (0 = tetap terbuka
 # sampai /lock atau bot diganti).
 try:
@@ -292,6 +297,11 @@ DRIVE_DOWNLOAD_DIR = _get("ITSME_DRIVE_DOWNLOAD_DIR", os.path.join(os.path.expan
 # WhatsApp HP (Perangkat tertaut). Hanya nomor WA_OWNER yang dilayani.
 WHATSAPP = _bool("ITSME_WHATSAPP", False)
 WA_OWNER = (_get("ITSME_WA_OWNER", "") or "").strip()
+# Nomor WA lain yang dilayani (dipisah koma). WA_OPEN=1 melayani semua nomor.
+# Tamu WA juga hanya tanya-jawab (tanpa alat), sama seperti tamu Telegram.
+WA_GUESTS = ({x.strip() for x in (_get("ITSME_WA_GUESTS", "") or "").replace(";", ",").split(",")
+              if x.strip()})
+WA_OPEN = _bool("ITSME_WA_OPEN", False)
 
 # Nama persona.
 NAME = _get("ITSME_NAME", "It's Me")
