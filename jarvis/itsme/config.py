@@ -43,6 +43,11 @@ PASSPHRASE = _get("ITSME_PASSPHRASE", "") or ""
 # alat (berkas, shell, web) tidak diberikan supaya komputer tetap aman.
 GUEST_IDS = {int(x) for x in (_get("ITSME_GUEST_IDS", "") or "").replace(";", ",").split(",")
              if x.strip().lstrip("-").isdigit()}
+# Batas pertanyaan tamu per hari (0 = tanpa batas). Pemilik tidak dihitung.
+try:
+    GUEST_DAILY_MAX = int(_get("ITSME_GUEST_DAILY_MAX", "50") or "50")
+except ValueError:
+    GUEST_DAILY_MAX = 50
 # Kunci otomatis lagi setelah sekian menit tanpa dibuka (0 = tetap terbuka
 # sampai /lock atau bot diganti).
 try:

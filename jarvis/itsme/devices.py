@@ -184,6 +184,8 @@ def resolve(task_id, text):
 
 def sync_bundle(app):
     """Hal yang harus sama di semua perangkat, beserta sidik jarinya."""
+    from dotenv import dotenv_values
+
     from . import access, brain, keys, node
 
     bundle = {
@@ -194,6 +196,9 @@ def sync_bundle(app):
         # kata sandi, atau daftar tamu, perangkat menyusul sendiri — tidak perlu
         # dipasang ulang. Nilai khusus komputer (folder, alamat) tidak ikut.
         "env": node.invite_env(keys.ENV_FILE),
+        # Daftar kunci yang dikelola, TERMASUK yang sudah dikosongkan: tanpa ini,
+        # menghapus ITSME_PASSPHRASE di Hub tidak pernah sampai ke perangkat.
+        "env_managed": sorted(k for k, v in dotenv_values(keys.ENV_FILE).items() if v is not None),
     }
     raw = json.dumps(bundle, sort_keys=True).encode("utf-8")
     bundle["version"] = hashlib.sha1(raw).hexdigest()[:12]

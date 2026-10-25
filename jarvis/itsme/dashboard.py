@@ -844,6 +844,13 @@ def _make_handler(app, token):
                 return self._json({"message": drive_action(app, "drive_unduh", {"file_id": data.get("file_id", ""), "path_lokal": data.get("path_lokal", "")})})
             elif path == "/api/drive/manage":
                 return self._json({"message": drive_action(app, "drive_kelola", {k: data.get(k, "") for k in ("aksi", "file_id", "folder_id", "nama")})})
+            elif path == "/api/node/fs/write":
+                bn = _bridge_name(data.get("node", ""))
+                if bn is not None:
+                    return self._json({"error": "komputer lewat jembatan belum mendukung unggah"}, 400)
+                code, body = _node_post("/fs/write",
+                                        {"path": data.get("path", ""), "b64": data.get("b64", "")})
+                return self._send(code, body)
             elif path == "/api/node/input":
                 bn = _bridge_name(data.get("node", ""))
                 if bn is not None:
@@ -1257,8 +1264,10 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
     <div id="kompFiles" hidden>
       <div class="row" style="gap:6px;margin:8px 0">
         <button onclick="kompUp()">↑ Naik</button>
+        <input type="file" id="kompUpFile" hidden onchange="kompUpload(this)">
         <input id="kompPath" style="flex:1" placeholder="C:\ atau /home/…" autocomplete="off">
         <button onclick="kompGo()">Buka</button>
+        <button onclick="document.getElementById('kompUpFile').click()">⬆ Unggah</button>
       </div>
       <div id="kompList" class="fslist"></div>
       <pre id="kompPrev" hidden></pre>
@@ -1829,6 +1838,25 @@ async function kompPrev(e){ try{ const d=await api('/api/node/fs/read?node='+enc
     const p=document.getElementById('kompPrev'); p.hidden=false; p.textContent=(d.text||'')+(d.truncated?'\n…(dipotong)':''); }
   catch(err){ const p=document.getElementById('kompPrev'); p.hidden=false; p.textContent='('+err.message+')'; } }
 function kompUp(){ kompBrowse(document.getElementById('kompList').dataset.parent||''); }
+// Unggah: berkas dibaca di browser ini, dikirim sebagai base64 ke komputer tujuan.
+function kompUpload(input){
+  const f = input.files && input.files[0]; if(!f) return;
+  const dir = document.getElementById('kompPath').value || '';
+  const sep = (dir && !/[\\/]$/.test(dir)) ? (dir.includes('\\') ? '\\' : '/') : '';
+  const toast2 = m => { const t=document.getElementById('kompInfo'); if(t) t.textContent = m; };
+  const r = new FileReader();
+  r.onload = async () => {
+    const b64 = String(r.result).split(',')[1] || '';
+    toast2('mengunggah ' + f.name + ' (' + Math.round(f.size/1024) + ' KB)…');
+    try{
+      const d = await api('/api/node/fs/write', {method:'POST', body: JSON.stringify(
+        {node: kompSel, path: dir + sep + f.name, b64})});
+      toast2(d.error ? ('gagal: ' + d.error) : ('terunggah: ' + (d.path||f.name)));
+    }catch(e){ toast2('gagal: ' + e.message); }
+    input.value = '';
+  };
+  r.readAsDataURL(f);
+}
 function kompGo(){ kompBrowse(document.getElementById('kompPath').value); }
 document.getElementById('kompPath').addEventListener('keydown',e=>{ if(e.key==='Enter') kompGo(); });
 

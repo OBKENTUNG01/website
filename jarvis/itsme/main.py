@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
-from . import access, brain, config, dashboard, devices, keys, lock, node, updater
+from . import access, brain, config, dashboard, devices, keys, launch, lock, node, quota, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -495,6 +495,9 @@ class App:
     async def _run_wa(self, jid, text, guest=False):
         # ponytail: riwayat dipisah per nomor WhatsApp, tapi konfirmasi aksi &
         # tugas latar tetap lewat chat Telegram pemilik (tombol).
+        if guest and not quota.allow("wa:" + jid):
+            await asyncio.to_thread(self.wa.send, jid, "Kuota harian tamu sudah habis. Coba lagi besok.")
+            return
         key = "wa:" + jid
         async with self._lock(key):
             history = self.histories.setdefault(key, [])
@@ -535,6 +538,13 @@ class App:
             return
 
         first = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+        if guest and not quota.allow("tg:%s" % user_id):
+            await self.tg.send(
+                chat_id,
+                "Kuota harian tamu sudah habis. Coba lagi besok, atau minta pemilik "
+                "menambah ITSME_GUEST_DAILY_MAX.",
+            )
+            return
         if guest and first not in _GUEST_OK:
             await self.tg.send(
                 chat_id,
@@ -903,19 +913,23 @@ class App:
                     devices.send_message,
                     f"⚠️ Otak Hub ({wanted}) belum bisa dipakai di sini, tetap {brain.describe()}: {exc}",
                 )
-        changed = self._apply_hub_env(data.get("env"))
+        changed = self._apply_hub_env(data.get("env"), data.get("env_managed"))
         if changed:
             log.info("Env dari Hub berubah (%s); perangkat akan menyala ulang.", ", ".join(changed))
             self._env_changed = True
         return data.get("version")
 
     @staticmethod
-    def _apply_hub_env(env):
+    def _apply_hub_env(env, managed=None):
         """Tulis isi .env dari Hub ke .env perangkat ini. Kembalikan kunci yang berubah.
 
         Dipakai supaya pembaruan di Hub (token bot, pemilik, kata sandi, daftar tamu,
-        kunci otak) tidak menuntut pemasangan ulang di komputer lain."""
-        if not isinstance(env, dict) or not env:
+        kunci otak) tidak menuntut pemasangan ulang di komputer lain.
+
+        `managed` = semua kunci yang dikelola Hub (termasuk yang dikosongkan). Tanpa
+        itu, menghapus ITSME_PASSPHRASE di Hub tidak pernah sampai ke perangkat,
+        karena nilai kosong tersaring di sisi Hub."""
+        if not isinstance(env, dict):
             return []
         from dotenv import dotenv_values
         from . import keys as keys_mod
@@ -932,6 +946,17 @@ class App:
                 log.warning("gagal menulis %s ke .env", k)
                 continue
             changed.append(str(k))
+        # Dikosongkan di Hub -> kosongkan juga di sini (jangan pertahankan nilai lama).
+        for k in managed or ():
+            k = str(k)
+            if k in env or k not in current:
+                continue
+            try:
+                keys_mod._set_env(keys_mod.ENV_FILE, k, "")
+            except OSError:
+                log.warning("gagal mengosongkan %s di .env", k)
+                continue
+            changed.append(k)
         return changed
 
     def owner_ctx(self):
@@ -1373,6 +1398,12 @@ def _restart(lock, listener):
 def main():
     _disable_quick_edit()
     listener = _setup_logging()
+    try:
+        written = launch.ensure(updater.APP_DIR)
+        if written:
+            log.info("Skrip peluncur disegarkan: %s", ", ".join(written))
+    except Exception:  # noqa: BLE001 - peluncur rusak tidak boleh mematikan bot
+        log.exception("gagal menyegarkan skrip peluncur")
     problems = config.check()
     if problems:
         print("Konfigurasi belum lengkap:")
