@@ -91,8 +91,8 @@ def check(skip=()):
 
 def _check_archive(skip):
     sha, message = _latest_commit()
-    if sha in skip:
-        return None
+    if not sha or sha in skip:
+        return None  # 304 Not Modified: tidak ada commit baru (dan tidak dihitung kuota)
     installed = installed_version()
     if installed is None:
         # Baru dipasang skrip setup, yang mengunduh versi terbaru: cukup dicatat.
@@ -143,13 +143,46 @@ def _check_git(root, skip):
 def _latest_commit():
     """(sha, baris pertama pesan commit) terbaru di cabang yang diikuti."""
     url = f"{_GITHUB_API}/repos/{config.UPDATE_REPO}/commits/{config.UPDATE_BRANCH}"
-    r = httpx.get(url, headers=_HEADERS, timeout=30, follow_redirects=True)
+    headers = dict(_HEADERS)
+    etag = _etag_read()
+    if etag:
+        # Permintaan bersyarat: jawaban 304 TIDAK dihitung ke batas 60/jam GitHub.
+        # Tanpa ini, pemeriksaan tiap 2 menit menghabiskan kuota < 1 jam lalu
+        # pembaruan berhenti sampai berjam-jam (gejala: "GitHub menjawab 403").
+        headers["If-None-Match"] = etag
+    r = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
+    if r.status_code == 304:
+        return None, ""
     if r.status_code != 200:
         # 403/429 = batas pemeriksaan GitHub per jam habis; 404 = repo/cabang salah.
         raise UpdateError(f"GitHub menjawab {r.status_code} untuk {url}")
+    _etag_write(r.headers.get("ETag"))
     data = r.json()
     message = ((data.get("commit") or {}).get("message") or "").strip()
     return data["sha"], (message.splitlines() or [""])[0]
+
+
+def _etag_file():
+    return os.path.join(config.DATA_DIR, "update_etag.txt")
+
+
+def _etag_read():
+    try:
+        with open(_etag_file(), encoding="utf-8") as f:
+            return f.read().strip() or ""
+    except OSError:
+        return ""
+
+
+def _etag_write(etag):
+    if not etag:
+        return
+    try:
+        os.makedirs(config.DATA_DIR, exist_ok=True)
+        with open(_etag_file(), "w", encoding="utf-8") as f:
+            f.write(etag)
+    except OSError:
+        pass  # hanya penghematan kuota; gagal menulis bukan alasan menghentikan bot
 
 
 def _download(sha, tmp):
