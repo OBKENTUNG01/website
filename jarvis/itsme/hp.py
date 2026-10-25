@@ -82,28 +82,33 @@ def pair_code():
     return hashlib.sha256(("itsme-pair:" + token()).encode()).hexdigest()[:6].upper()
 
 
-# Kode pendek lebih mudah ditebak: batasi percobaan gagal seperti invites.py.
-_FAILS, FAIL_MAX, FAIL_WINDOW = [], 30, 600
+# Kode pasang 6 karakter lebih mudah ditebak: batasi percobaan gagal.
+# Hitungan PER PENEBAK (mis. alamat IP), bukan global — hitungan global berarti siapa
+# pun di internet bisa mengunci HP pemilik sendiri hanya dengan salah 30 kali.
+_FAILS = {}
+FAIL_MAX, FAIL_WINDOW = 30, 600
 
 
-def _fail_gate():
+def _recent(key):
     now = time.monotonic()
-    _FAILS[:] = [t for t in _FAILS if now - t < FAIL_WINDOW]
-    return len(_FAILS) < FAIL_MAX
+    hits = [t for t in _FAILS.get(key, []) if now - t < FAIL_WINDOW]
+    if hits:
+        _FAILS[key] = hits
+    else:
+        _FAILS.pop(key, None)
+    return hits
 
 
-def _fail():
-    _FAILS.append(time.monotonic())
+def check_token(given, key=""):
+    """True kalau `given` sama dengan token HP atau kode pasang pendeknya.
 
-
-def check_token(given):
-    """True kalau `given` sama dengan token HP atau kode pasang pendeknya."""
-    if not given or not _fail_gate():
+    `key` = identitas penebak (alamat IP). Kosong = dihitung bersama ("anonymous")."""
+    if not given or len(_recent(key or "anonymous")) >= FAIL_MAX:
         return False
     got = str(given).strip()
     ok = secrets.compare_digest(got, token()) or secrets.compare_digest(got.upper(), pair_code())
     if not ok:
-        _fail()
+        _FAILS.setdefault(key or "anonymous", []).append(time.monotonic())
     return ok
 
 

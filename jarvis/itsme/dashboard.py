@@ -61,10 +61,14 @@ def _bridge_name(node_id):
     return node_id[len("bridge:"):] if node_id and node_id.startswith("bridge:") else None
 
 
-def _node_post(path, body):
+def _node_post(path, body, client_ip=""):
     data = json.dumps(body or {}).encode()
-    req = urllib.request.Request(config.NODE_URL + path, data=data,
-                                 headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if client_ip:
+        # Node menganggap semua panggilan dari 127.0.0.1 sebagai "lokal", jadi tanpa
+        # ini penjaga /enroll di node tidak pernah tahu siapa pemanggil sebenarnya.
+        headers["X-Itsme-Client-IP"] = client_ip
+    req = urllib.request.Request(config.NODE_URL + path, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=25) as r:
             return r.status, r.read()
@@ -735,7 +739,7 @@ def _make_handler(app, token):
                 return self._json({"error": "domain tidak diizinkan"}, 403)
             if path == "/api/hp/frame":  # bingkai layar = bytes mentah (JPEG)
                 q = self._query()
-                if not hp.check_token((q.get("token") or [""])[0]):
+                if not hp.check_token((q.get("token") or [""])[0], self._client_ip()):
                     return self._json({"error": "token HP salah"}, 401)
                 n = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(n) if n > 0 else b""
@@ -743,7 +747,7 @@ def _make_handler(app, token):
                 hp.seen((q.get("name") or [""])[0])
                 return self._json({"ok": True})
             data = self._body()
-            if not hp.check_token(data.get("token", "")):
+            if not hp.check_token(data.get("token", ""), self._client_ip()):
                 return self._json({"error": "token HP salah"}, 401)
             if path == "/api/hp/poll":
                 cmd = hp.poll(data.get("name", "HP"), data.get("caps") or [], kind=data.get("kind", "hp"))
@@ -768,12 +772,14 @@ def _make_handler(app, token):
                 code = str(data.get("code") or "").strip()
                 if not code:
                     return self._json({"error": "kode undangan kosong"}, 400)
-                status, body = _node_post("/invite", {"code": code, "name": name})
+                status, body = _node_post("/invite", {"code": code, "name": name},
+                                          self._client_ip())
             else:  # /api/node/enroll: gabung-ulang pakai sidik jari perangkat keras
                 fp = str(data.get("fingerprint") or "").strip()
                 if not fp:
                     return self._json({"error": "sidik jari kosong"}, 400)
-                status, body = _node_post("/enroll", {"fingerprint": fp, "name": name})
+                status, body = _node_post("/enroll", {"fingerprint": fp, "name": name},
+                                          self._client_ip())
             if status != 200:
                 return self._send(status, body)
             try:
