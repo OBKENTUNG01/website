@@ -854,6 +854,10 @@ def handle_tool(name, tool_input, ctx):
     seen_urls (set alamat yang boleh langsung dibuka), dan in_background
     (True di dalam tugas latar).
     """
+    if ctx.get("guest"):
+        # Satu gerbang untuk semua alat: tamu cuma boleh tanya-jawab.
+        return ("Mode tamu: aku hanya bisa menjawab pertanyaan, tidak menjalankan alat "
+                "(berkas, shell, web). Minta pemilik kalau ini memang perlu dikerjakan.")
     try:
         if name == "jalankan_perintah":
             perintah = tool_input.get("perintah", "").strip()

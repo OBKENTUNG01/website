@@ -65,16 +65,38 @@ def is_unlocked(chat_id):
     return True
 
 
+# Pembatas tebakan: tamu (ITSME_GUEST_IDS) juga harus memasukkan kata sandi ini,
+# jadi gerbang yang sama bisa ditebak terus-menerus kalau tidak dibatasi.
+FAIL_MAX, FAIL_WINDOW = 10, 15 * 60
+_FAILS = {}  # chat_id -> [waktu tebakan salah]
+
+
+def _recent_fails(chat_id):
+    now = time.time()
+    hits = [t for t in _FAILS.get(str(chat_id), []) if now - t < FAIL_WINDOW]
+    _FAILS[str(chat_id)] = hits
+    return hits
+
+
+def locked_out(chat_id):
+    """True kalau tebakan salah untuk chat ini sudah terlalu banyak."""
+    return len(_recent_fails(chat_id)) >= FAIL_MAX
+
+
 def try_unlock(chat_id, text):
     """Buka kalau text sama persis dengan kata sandi. True kalau berhasil."""
     if not active():
         return True
+    if locked_out(chat_id):
+        return False
     given = (text or "").strip()
     if not given or not hmac.compare_digest(given, config.PASSPHRASE):
+        _recent_fails(chat_id).append(time.time())
         return False
     data = _load()
     data[str(chat_id)] = time.time()
     _save(data)
+    _FAILS.pop(str(chat_id), None)
     return True
 
 

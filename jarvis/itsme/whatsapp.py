@@ -45,6 +45,8 @@ class WhatsApp:
         _kill_orphans()
         env = dict(os.environ,
                    WA_OWNER=str(config.WA_OWNER or ""),
+                   WA_GUESTS=",".join(config.WA_GUESTS),
+                   WA_OPEN="1" if config.WA_OPEN else "0",
                    WA_AUTH=os.path.join(config.DATA_DIR, "whatsapp"))
         self._proc = subprocess.Popen(
             [node, "wa.js"], cwd=DIR, env=env,
@@ -71,7 +73,7 @@ class WhatsApp:
                         log.exception("gagal memproses QR WhatsApp")
                 continue
             try:
-                self._on_message(msg.get("jid"), msg.get("text") or "")
+                self._on_message(msg.get("jid"), msg.get("text") or "", bool(msg.get("guest")))
             except Exception:  # noqa: BLE001 - satu pesan gagal tidak boleh mematikan pembaca
                 log.exception("gagal memproses pesan WhatsApp")
         code = self._proc.poll()

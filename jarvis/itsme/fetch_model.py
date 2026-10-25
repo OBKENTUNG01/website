@@ -449,7 +449,7 @@ class Fetcher:
             final.unlink()
         part = part_dir / f"sha256-{blob.hex}.part"
         state = part_dir / f"sha256-{blob.hex}.json"
-        for attempt in (1, 2):
+        for _attempt in (1, 2):
             _ChunkedDownload(self, blob, part, state).run()
             if _sha256_file(part, blob.label if big else None) == blob.hex:
                 _replace(part, final)

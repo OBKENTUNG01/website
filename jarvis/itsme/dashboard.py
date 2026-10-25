@@ -646,7 +646,21 @@ def _make_handler(app, token):
                 return self._json(data or {"error": err}, 200 if data else 400)
             if path == "/api/devices":
                 from . import devices
-                return self._json({"devices": devices.listing(), "is_hub": not config.AGENT_MODE, "target": devices.get_target()})
+                # Dua jalur koneksi, satu tampilan: perangkat It's Me (poll) dan komputer
+                # yang tersambung lewat It's Me Node / jembatan. Dulu tab ini hanya
+                # membaca devices.json, jadi komputer yang sudah terhubung tetap tampil
+                # sebagai "belum ada komputer yang terhubung".
+                code, _ct, body, _cd = _node_get("/status", {})
+                try:
+                    st = json.loads(body) if code == 200 else {}
+                except ValueError:
+                    st = {}
+                comps = [{"name": n.get("name"), "id": n.get("id"), "via": "node"}
+                         for n in st.get("nodes") or [] if n.get("name")]
+                comps += [{"name": d.get("name"), "id": "bridge:" + (d.get("name") or ""), "via": "bridge"}
+                          for d in hp.listing() if d.get("kind") == "computer" and d.get("name")]
+                return self._json({"devices": devices.listing(), "computers": comps,
+                                   "is_hub": not config.AGENT_MODE, "target": devices.get_target()})
             # -- komputer lain lewat It's Me Node (Tailscale) ATAU jembatan (tanpa Tailscale) --
             if path == "/api/node/status":
                 code, ctype, body, _ = _node_get("/status", {})
@@ -694,7 +708,8 @@ def _make_handler(app, token):
             # -- HP (aplikasi It's Me HP) --
             if path == "/api/hp":
                 hp.forget_stale()
-                return self._json({"phones": hp.listing(), "token": hp.token()})
+                return self._json({"phones": hp.listing(), "token": hp.token(),
+                                   "code": hp.pair_code()})
             if path == "/api/hp/build":  # Pembuat Aplikasi: status build APK
                 from . import hpbuild
                 return self._json(hpbuild.status())
@@ -833,6 +848,13 @@ def _make_handler(app, token):
                 return self._send(code, body)
             elif path == "/api/hp/input":
                 res = hp.command(data.get("name", ""), "input", {"events": data.get("events") or []}, wait=8)
+                if isinstance(res, dict):
+                    return self._json(res)
+                return self._json({"error": "HP tidak menjawab"}, 504)
+            elif path in ("/api/hp/uitree", "/api/hp/shell", "/api/hp/devowner"):
+                ctype = path.rsplit("/", 1)[-1]
+                args = {"cmd": data.get("cmd", "")} if ctype == "shell" else None
+                res = hp.command(data.get("name", ""), ctype, args, wait=20)
                 if isinstance(res, dict):
                     return self._json(res)
                 return self._json({"error": "HP tidak menjawab"}, 504)
@@ -1291,6 +1313,16 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
           <input id="hpText" style="flex:1" placeholder="ketik teks lalu Kirim…" autocomplete="off">
           <button onclick="hpTypeSend()">Kirim</button>
         </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button onclick="hpUi()">🔎 Lihat isi layar</button>
+          <span class="sub" id="hpCaps"></span>
+        </div>
+        <pre id="hpUiOut" hidden style="max-height:240px;overflow:auto"></pre>
+        <div class="row" style="gap:6px;margin-top:6px">
+          <input id="hpShell" style="flex:1" placeholder="perintah shell lewat Shizuku (mis. pm list packages | grep wa)" autocomplete="off">
+          <button onclick="hpShellSend()">Jalankan</button>
+        </div>
+        <pre id="hpShellOut" hidden style="max-height:200px;overflow:auto"></pre>
         <div class="sub" style="margin-top:8px">Perlu izin “rekam layar” (untuk melihat) dan “Accessibility” (untuk kontrol) di HP. Centang “Kendalikan”, lalu klik/seret di layar, atau pakai tombol &amp; ketik. Seret = geser/scroll.</div>
       </div>
       <div id="hpFiles" hidden>
@@ -1622,8 +1654,11 @@ function loadDevices(){
       hint.textContent = '';
     }
     const box = document.getElementById('devList'); box.innerHTML = '';
-    if(!d.devices.length){ box.innerHTML = '<div class="fsrow"><span class="nm">(belum ada perangkat lain)</span></div>'; return; }
-    for(const dev of d.devices){
+    // Perangkat (poll) + komputer lewat It's Me Node/jembatan, tanpa duplikat nama.
+    const seenNames = new Set(d.devices.map(x => (x.name||'').toLowerCase()));
+    const all = d.devices.concat((d.computers||[]).filter(c => c.name && !seenNames.has(c.name.toLowerCase())).map(c => ({name:c.name, online:true, url:'/#komputer', via:c.via})));
+    if(!all.length){ box.innerHTML = '<div class="fsrow"><span class="nm">(belum ada komputer yang terhubung — tambah lewat /pasang di Telegram)</span></div>'; return; }
+    for(const dev of all){
       const row = document.createElement('div'); row.className = 'fsrow';
       row.innerHTML = '<span>' + (dev.online ? '🟢' : '⚪') + '</span>'
         + '<span class="nm"></span>'
@@ -1698,7 +1733,13 @@ function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClie
   return {x:Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width)), y:Math.min(1,Math.max(0,(ev.clientY-r.top)/r.height))}; }
 (function(){
   const img=document.getElementById('kompImg'), wrap=document.getElementById('kompWrap');
-  img.addEventListener('mousemove',ev=>{ if(!kompCtrlOn())return; const n=Date.now(); if(n-kompLastMove<60)return; kompLastMove=n; kompSend([{t:'move',...kompRel(ev)}]); });
+  // Kursor: simpan posisi terakhir, kirim sekali per frame. Sebelumnya dibatasi
+  // 1 per 60 ms sehingga gerak mouse terasa patah-patah dibanding remote desktop.
+  let pendingMove=null, moveQueued=false;
+  function flushMove(){ moveQueued=false; if(!pendingMove)return; const p=pendingMove; pendingMove=null;
+    kompSend([{t:'move',x:p.x,y:p.y}]); }
+  img.addEventListener('mousemove',ev=>{ if(!kompCtrlOn())return; pendingMove=kompRel(ev);
+    if(!moveQueued){ moveQueued=true; requestAnimationFrame(flushMove); } });
   img.addEventListener('mousedown',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); wrap.focus(); const b=['left','middle','right'][ev.button]||'left'; kompSend([{t:'down',button:b,...kompRel(ev)}]); });
   img.addEventListener('mouseup',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); const b=['left','middle','right'][ev.button]||'left'; kompSend([{t:'up',button:b,...kompRel(ev)}]); });
   img.addEventListener('dblclick',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); kompSend([{t:'dblclick',...kompRel(ev)}]); });
@@ -1706,17 +1747,31 @@ function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClie
   wrap.addEventListener('wheel',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); kompSend([{t:'scroll',dy:ev.deltaY<0?120:-120}]); },{passive:false});
   // Keyboard ditangkap di tingkat dokumen supaya jalan walau fokus tidak di gambar,
   // tapi hanya saat tab Komputer + Kendalikan aktif dan fokus bukan di kotak isian.
+  const MODS={Control:'ctrl',Shift:'shift',Alt:'alt',Meta:'win',AltGraph:'alt'};
   document.addEventListener('keydown',ev=>{
     if(!(kompActive && kompView==='screen' && kompCtrlOn())) return;
     const tg=ev.target, tag=tg&&tg.tagName;
     if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
     ev.preventDefault();
     const k=ev.key;
+    if(MODS[k]){ kompSend([{t:'key',key:MODS[k],down:true}]); return; }
     if(k.length===1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey){ kompSend([{t:'text',text:k}]); return; }
     const map={Enter:'enter',Backspace:'backspace',Tab:'tab',Escape:'escape',Delete:'delete',' ':'space',
       ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',Home:'home',End:'end',PageUp:'pageup',PageDown:'pagedown'};
     let key=map[k]|| (k.length===1?k:k.toLowerCase());
     kompSend([{t:'key',key,ctrl:ev.ctrlKey,alt:ev.altKey,shift:ev.shiftKey,win:ev.metaKey}]);
+  });
+  document.addEventListener('keyup',ev=>{
+    if(!(kompActive && kompView==='screen' && kompCtrlOn())) return;
+    const tg=ev.target, tag=tg&&tg.tagName;
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+    if(MODS[ev.key]){ ev.preventDefault(); kompSend([{t:'key',key:MODS[ev.key],up:true}]); }
+  });
+  // Tempel dari clipboard komputer ini: teks dikirim sebagai ketikan ke komputer tujuan.
+  wrap.addEventListener('paste',ev=>{
+    if(!kompCtrlOn()) return;
+    const t=(ev.clipboardData||window.clipboardData)?.getData('text');
+    if(t){ ev.preventDefault(); kompSend([{t:'text',text:t.slice(0,2000)}]); }
   });
   document.getElementById('kompCtrl').addEventListener('change',()=>{
     if(kompCtrlOn()){ wrap.focus(); img.style.touchAction='none'; } else { img.style.touchAction='auto'; }
@@ -1817,7 +1872,7 @@ async function hpbBuild(){
   }catch(e){ msg.textContent='❌ '+e.message; go.disabled=false; }
 }
 async function hpLoad(){
-  try{ const s = await api('/api/hp'); hpToken = s.token||''; const phones = s.phones||[];
+  try{ const s = await api('/api/hp'); hpToken = s.code||s.token||''; const phones = s.phones||[];
     const online = phones.filter(p=>p.online);
     if(!hpSel || !phones.find(p=>p.name===hpSel && p.online)) hpSel = (online[0]||{}).name || null;
     const box=document.getElementById('hpPcs'); box.innerHTML='';
@@ -1830,8 +1885,12 @@ async function hpLoad(){
     const setup=document.getElementById('hpSetup');
     if(!phones.length){
       setup.innerHTML = 'Belum ada HP tersambung. Pasang aplikasi <b>It\'s Me HP</b> (APK dari repo itsme-hp), buka, '+
-        'lalu isi alamat dashboard ini dan token berikut:<br><code style="user-select:all">'+ (hpToken||'(token)') +'</code>';
-    } else { setup.innerHTML = 'Token HP (untuk menambah HP lain): <code style="user-select:all">'+(hpToken||'')+'</code>'; }
+        'lalu isi alamat dashboard ini dan kode pasang 6 karakter ini:<br><code style="user-select:all;font-size:1.4em;letter-spacing:.15em">'+ (hpToken||'(kode)') +'</code>';
+    } else { setup.innerHTML = 'Kode pasang HP lain: <code style="user-select:all">'+(hpToken||'')+'</code>'; }
+    const sel = phones.find(p => (p.name||'').toLowerCase() === (hpSel||'').toLowerCase());
+    const caps = (sel && sel.caps) || [];
+    document.getElementById('hpCaps').textContent = caps.includes('shell')
+      ? '🔓 Shizuku aktif (hak adb)' : 'ℹ️ Shizuku belum aktif — hak adb belum tersedia';
     if(hpActive && hpView==='screen' && hpSel) hpSnap();
   }catch(e){ document.getElementById('hpSetup').textContent = 'Gagal memuat: '+e.message; }
 }
@@ -1855,6 +1914,17 @@ function hpSnap(){
 function hpCtrlOn(){ const c=document.getElementById('hpCtrl'); return c && c.checked; }
 function hpSend(events){ if(!hpSel) return;
   api('/api/hp/input',{method:'POST',body:JSON.stringify({name:hpSel,events})}).catch(()=>{}); }
+async function hpUi(){ const out=document.getElementById('hpUiOut');
+  try{ const d=await api('/api/hp/uitree',{method:'POST',body:JSON.stringify({name:hpSel})});
+    out.hidden=false;
+    if(d.error){ out.textContent=d.error; return; }
+    out.textContent=(d.nodes||[]).map(n=>('['+n.cls+'] '+(n.text||n.desc||'')+(n.tap?' (bisa diketuk)':'')+' @'+n.x+','+n.y)).join('\n')||'(layar kosong / tidak terbaca)';
+  }catch(e){ out.hidden=false; out.textContent='Gagal: '+e.message; } }
+async function hpShellSend(){ const i=document.getElementById('hpShell'), out=document.getElementById('hpShellOut');
+  if(!i.value.trim()) return; out.hidden=false; out.textContent='menjalankan…';
+  try{ const d=await api('/api/hp/shell',{method:'POST',body:JSON.stringify({name:hpSel,cmd:i.value})});
+    out.textContent=(d.error? 'Gagal: '+d.error : (d.out||'(tanpa keluaran)'));
+  }catch(e){ out.textContent='Gagal: '+e.message; } }
 function hpKey(k){ if(hpSel) hpSend([{t:'key',key:k}]); }
 function hpTypeSend(){ const t=document.getElementById('hpText'); if(t.value){ hpSend([{t:'text',text:t.value}]); t.value=''; } }
 function hpRel(ev){ const r=document.getElementById('hpImg').getBoundingClientRect();
