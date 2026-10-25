@@ -121,8 +121,12 @@ class SecretPathTest(unittest.TestCase):
 
     def test_searching_everything_at_once_is_too_broad(self):
         home = os.path.expanduser("~")
-        for path in (home, "C:\\", os.path.join(home, "AppData", "Local")):
+        for path in (home, os.path.join(home, "AppData", "Local")):
             self.assertTrue(tools.too_broad_to_search(path), path)
+        if sys.platform == "win32":
+            # "C:\\" hanya berarti "seluruh disk" di Windows; di Linux itu nama
+            # folder biasa, jadi premisnya tidak berlaku di runner CI.
+            self.assertTrue(tools.too_broad_to_search("C:\\"))
         for path in (os.path.join(home, "Downloads", "proyek"), os.path.join(home, ".claude", "projects"),
                      self.APP + r"\claude-code-sessions"):
             self.assertFalse(tools.too_broad_to_search(path), path)
