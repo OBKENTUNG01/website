@@ -1265,6 +1265,13 @@ def _single_instance_lock():
     return handle  # tetap terbuka (dan terkunci) selama proses hidup
 
 
+def _stop_listener(listener):
+    """Hentikan listener log sekali saja — stop() dua kali meledak di Python 3.12 (gh-114706)."""
+    if listener:
+        atexit.unregister(listener.stop)
+        listener.stop()
+
+
 def _restart(lock, listener):
     """Nyalakan ulang It's Me dengan kode yang baru dipasang.
 
@@ -1276,8 +1283,7 @@ def _restart(lock, listener):
     if os.name == "nt":
         print("[itsme] Menyala ulang...")
         return
-    if listener:
-        listener.stop()  # atexit tidak dijalankan oleh exec
+    _stop_listener(listener)  # atexit tidak dijalankan oleh exec
     lock.close()
     os.chdir(updater.APP_DIR)
     os.execv(sys.executable, [sys.executable, "-m", "itsme.main"])
