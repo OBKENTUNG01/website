@@ -540,9 +540,10 @@ function Install-ItsMeLauncher([string]$Dir) {
         '    if ((Test-Path $log) -and (Get-Item $log).Length -gt 10MB) { Move-Item $log "$log.old" -Force }',
         '    & ".venv\Scripts\python.exe" -u -m itsme.main *>> $log',
         '    $code = $LASTEXITCODE',
-        '    if ($code -eq 3) { break }      # berhenti disengaja (mis. /lock + stop)',
+        '    if ($code -eq 0) { break }      # berhenti disengaja (mis. /lock + stop)',
         '    if ($code -eq 5) { continue }   # pembaruan terpasang, nyalakan lagi segera',
-        '    Start-Sleep 10',
+        '    if ($code -eq 3) { Start-Sleep 30 }  # It''s Me lain masih jalan: TUNGGU, jangan menyerah',
+        '    else { Start-Sleep 10 }',
         '}'
     )
     [IO.File]::WriteAllText($runPs1, (($runLines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding($false)))
