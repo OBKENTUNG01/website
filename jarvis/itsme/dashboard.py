@@ -489,6 +489,18 @@ _LOCK_AFTER = 5     # mulai memblokir setelah sekian gagal
 _LOCK_MAX = 3600    # blokir paling lama 1 jam
 
 
+_LOCAL_PEERS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _proxy_peer_ok(peer):
+    """Header proxy hanya dipercaya kalau koneksi datang dari tunnel di komputer ini.
+
+    Tanpa cek ini, penyerang cukup mengirim CF-Connecting-IP berbeda tiap percobaan
+    untuk lolos dari jeda anti brute-force (_LOGIN_FAILS).
+    """
+    return (peer or "").split("%")[0].strip().lower() in _LOCAL_PEERS
+
+
 def _login_blocked(ip):
     rec = _LOGIN_FAILS.get(ip)
     return bool(rec and rec[1] > time.time())
@@ -549,7 +561,8 @@ def _make_handler(app, token):
             return ""
 
         def _client_ip(self):
-            if config.DASHBOARD_TRUST_PROXY:
+            # Header proxy hanya dipercaya dari tunnel lokal, bukan dari klien internet.
+            if config.DASHBOARD_TRUST_PROXY and _proxy_peer_ok(self.client_address[0]):
                 cf = self.headers.get("CF-Connecting-IP")
                 if cf:
                     return cf.strip()
@@ -824,7 +837,7 @@ def _make_handler(app, token):
             if path == "/api/brain":
                 ok, msg = _switch_brain(app, data.get("backend", ""))
             elif path == "/api/access":
-                ok, msg = _set_access(bool(data.get("full")))
+                ok, msg = _set_access(data.get("full"))
             elif path == "/api/memory":
                 ok, result = _memory(app, data.get("action", ""), data.get("text", ""))
                 return self._json({"ok": ok, "text": result} if ok else {"ok": False, "error": result}, 200 if ok else 400)

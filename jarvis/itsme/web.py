@@ -151,6 +151,26 @@ def html_to_text(html):
 
 
 # --- ambil halaman ---------------------------------------------------------------
+def _peer_is_public(resp):
+    """True bila koneksi benar-benar menuju alamat internet publik.
+
+    _check_url() memeriksa hasil DNS sekali, lalu httpx me-resolve ulang saat
+    menyambung — domain yang mengubah jawabannya (DNS rebinding) bisa lolos ke
+    127.0.0.1 atau alamat metadata. Jadi IP yang benar-benar tersambung ikut diperiksa.
+    """
+    stream = resp.extensions.get("network_stream")
+    raw = stream.get_extra_info("server_addr") if stream else None
+    if not raw:  # transport tanpa info alamat (mis. di-mock) — jangan gagal
+        return True
+    try:
+        ip = ipaddress.ip_address(str(raw[0]).split("%")[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
 def fetch(url, max_chars=12000):
     url = (url or "").strip()
     with httpx.Client(
@@ -164,6 +184,8 @@ def fetch(url, max_chars=12000):
                 return problem
             try:
                 with client.stream("GET", url) as resp:
+                    if not _peer_is_public(resp):
+                        return "Ditolak: alamat yang tersambung bukan alamat internet publik."
                     if resp.is_redirect:
                         url = urljoin(url, resp.headers.get("location", ""))
                         continue

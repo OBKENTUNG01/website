@@ -900,7 +900,7 @@ class App:
             return None
         if hasattr(self.memory, "replace_from_hub") and data.get("memory") is not None:
             self.memory.replace_from_hub(data["memory"])
-        access.set_full(bool(data.get("full_access")))
+        access.set_full(data.get("full_access"))
         wanted = data.get("brain")
         if wanted and wanted != brain.current_backend():
             try:
