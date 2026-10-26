@@ -237,7 +237,8 @@ HP_FRAME_QUERY_TOKEN = _bool("ITSME_HP_FRAME_QUERY_TOKEN", False)
 # Token GitHub (classic ghp_ atau fine-grained github_pat_) dengan izin Actions
 # (write) pada repo aplikasi HP, supaya dashboard bisa generate APK sendiri.
 # Kirim lewat /kunci di Telegram (diperiksa lalu disimpan ke .env), atau isi di sini.
-GITHUB_TOKEN = _get("ITSME_GITHUB_TOKEN", "") or ""
+# keys.py menyimpan token ini sebagai GITHUB_TOKEN di .env; keduanya diterima.
+GITHUB_TOKEN = _get("ITSME_GITHUB_TOKEN", "") or _get("GITHUB_TOKEN", "") or ""
 # Repo aplikasi It's Me HP yang di-build (owner/nama).
 HP_REPO = _get("ITSME_HP_REPO", "OBKENTUNG01/itsme-hp")
 
