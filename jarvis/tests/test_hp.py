@@ -46,8 +46,10 @@ class FakePhone(threading.Thread):
                     continue
                 cid = cmd.get("id")
                 if cmd.get("type") == "screen":
-                    c.post(f"{self.base}/api/hp/frame?id={cid}&name={self.name}&token={self.token}",
-                           content=self.jpeg, headers={"Content-Type": "image/jpeg"})
+                    c.post(f"{self.base}/api/hp/frame?id={cid}&name={self.name}",
+                           content=self.jpeg,
+                           headers={"Content-Type": "image/jpeg",
+                                    "Authorization": f"Bearer {self.token}"})
                 elif cmd.get("type") == "fs_list":
                     c.post(self.base + "/api/hp/result", json={
                         "id": cid, "name": self.name, "token": self.token,
@@ -114,6 +116,19 @@ class HpBridgeTest(unittest.TestCase):
         bad = httpx.post(url, content=b"jpeg",
                          headers={"Authorization": "Bearer salah"}, timeout=5)
         self.assertEqual(bad.status_code, 401)
+
+    def test_token_di_query_ditolak_bawaan(self):
+        """Bawaan: token lewat query string tidak diterima (tercatat di log proxy)."""
+        url = self.base + f"/api/hp/frame?id=x&name=HP-Uji&token={self.token}"
+        r = httpx.post(url, content=b"jpeg", timeout=5)
+        self.assertEqual(r.status_code, 401)
+
+    def test_token_di_query_boleh_bila_dinyalakan(self):
+        """Aplikasi versi lama tetap bisa bila ITSME_HP_FRAME_QUERY_TOKEN=1."""
+        url = self.base + f"/api/hp/frame?id=x&name=HP-Uji&token={self.token}"
+        with mock.patch.object(config, "HP_FRAME_QUERY_TOKEN", True):
+            r = httpx.post(url, content=b"jpeg", timeout=5)
+        self.assertEqual(r.status_code, 200)
 
     def test_phone_appears_online(self):
         phone = self._phone()

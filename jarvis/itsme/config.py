@@ -228,6 +228,10 @@ DASHBOARD_TRUST_PROXY = _bool("ITSME_DASHBOARD_TRUST_PROXY", True)
 # Token yang dimasukkan sekali di aplikasi HP untuk menyambung ke dashboard ini.
 # Kosong = dibuat otomatis (data/hp_token.txt) dan ditampilkan di tab HP.
 HP_SECRET = _get("ITSME_HP_SECRET", "") or ""
+# Terima token HP lewat query string (/api/hp/frame?token=..) seperti aplikasi lama.
+# Bawaan MATI: token di URL tercatat di log tunnel/proxy. Nyalakan hanya bila masih
+# ada HP yang memakai aplikasi versi lama yang belum mengirim header Authorization.
+HP_FRAME_QUERY_TOKEN = _bool("ITSME_HP_FRAME_QUERY_TOKEN", False)
 
 # --- Pembuat Aplikasi HP (App Builder, nomor 1) ------------------------------
 # Token GitHub (classic ghp_ atau fine-grained github_pat_) dengan izin Actions

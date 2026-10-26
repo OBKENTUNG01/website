@@ -753,6 +753,8 @@ def _make_handler(app, token):
             if path == "/api/hp/frame":  # bingkai layar = bytes mentah (JPEG)
                 q = self._query()
                 bearer = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+                if not bearer and not config.HP_FRAME_QUERY_TOKEN:
+                    q = {}  # token di URL dimatikan: tercatat di log tunnel/proxy
                 if not hp.check_token(bearer or (q.get("token") or [""])[0], self._client_ip()):
                     return self._json({"error": "token HP salah"}, 401)
                 n = int(self.headers.get("Content-Length") or 0)
