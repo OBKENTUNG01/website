@@ -21,14 +21,19 @@ def _file():
 
 
 def full():
+    """True hanya untuk boolean JSON `true`; nilai lain (termasuk "false") = aman."""
     try:
         with open(_file(), encoding="utf-8") as f:
-            return bool(json.load(f).get("full"))
+            return json.load(f).get("full") is True
     except (OSError, ValueError, AttributeError):
         return False
 
 
 def set_full(on):
+    """Simpan mode secara atomik: tulis .tmp lalu ganti, supaya file tak pernah separuh."""
     os.makedirs(config.DATA_DIR, exist_ok=True)
-    with open(_file(), "w", encoding="utf-8") as f:
-        json.dump({"full": bool(on)}, f)
+    path = _file()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"full": on is True}, f)
+    os.replace(tmp, path)
