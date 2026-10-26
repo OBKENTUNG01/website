@@ -105,6 +105,16 @@ class HpBridgeTest(unittest.TestCase):
         r = httpx.post(self.base + "/api/hp/poll", json={"name": "X", "token": "salah", "caps": []}, timeout=5)
         self.assertEqual(r.status_code, 401)
 
+    def test_frame_terima_token_di_header(self):
+        """Token HP boleh lewat header Authorization, bukan hanya query (URL tercatat di log)."""
+        url = self.base + "/api/hp/frame?id=x&name=HP-Uji"
+        ok = httpx.post(url, content=b"jpeg",
+                        headers={"Authorization": f"Bearer {self.token}"}, timeout=5)
+        self.assertEqual(ok.status_code, 200)
+        bad = httpx.post(url, content=b"jpeg",
+                         headers={"Authorization": "Bearer salah"}, timeout=5)
+        self.assertEqual(bad.status_code, 401)
+
     def test_phone_appears_online(self):
         phone = self._phone()
         self.assertTrue(self._wait_online())
