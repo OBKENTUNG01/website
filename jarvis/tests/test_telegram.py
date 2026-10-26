@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from itsme import telegram
 
@@ -83,3 +84,41 @@ class DownloadFileTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeConflictClient:
+    """Selalu menjawab Conflict, seperti dua poller memakai token yang sama."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def get(self, url, params=None):
+        self.calls += 1
+        return FakeResponse({"ok": False, "description": "Conflict: terminated by other getUpdates request"})
+
+    async def aclose(self):
+        pass
+
+
+class ConflictLogTest(unittest.IsolatedAsyncioTestCase):
+    async def test_konflik_dicatat_sekali_per_lima_menit(self):
+        """409 berulang tidak boleh membanjiri log: 700 baris dalam 1,5 jam."""
+        tg = telegram.Telegram("TOKEN", "https://contoh.invalid")
+        tg._client = FakeConflictClient()
+        with mock.patch.object(telegram.log, "warning") as warn, \
+                mock.patch.object(telegram.asyncio, "sleep", return_value=None):
+            for _ in range(5):
+                await tg.get_updates()
+        self.assertEqual(tg._conflicts, 5)
+        self.assertEqual(warn.call_count, 1)  # hanya sekali, lalu diem 5 menit
+        pesan = warn.call_args[0][0] % warn.call_args[0][1:]
+        self.assertIn("kejadian ke-", pesan)
+
+    async def test_poll_tertunda_oleh_kunci(self):
+        """get_updates memakai kunci: ack_updates tidak bisa menabrak long-poll."""
+        tg = telegram.Telegram("TOKEN", "https://contoh.invalid")
+        self.assertTrue(hasattr(tg, "_poll_lock"))
+        tg._client = FakeConflictClient()
+        with mock.patch.object(telegram.asyncio, "sleep", return_value=None):
+            await tg.get_updates()
+        self.assertFalse(tg._poll_lock.locked())  # dilepas setelah selesai

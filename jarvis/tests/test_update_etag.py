@@ -16,13 +16,33 @@ from itsme import config, updater
 
 
 class FakeResp:
-    def __init__(self, status, payload=None, headers=None):
+    def __init__(self, status, payload=None, headers=None, text=""):
         self.status_code = status
         self._payload = payload or {}
         self.headers = headers or {}
+        self.text = text
 
     def json(self):
         return self._payload
+
+
+class ForbiddenDetailTest(unittest.TestCase):
+    def test_403_mencatat_sebabnya(self):
+        """Pesan galat harus memuat isi balasan & sisa kuota, bukan hanya kode."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with mock.patch.object(config, "DATA_DIR", d), mock.patch.object(
+            updater.httpx, "get",
+            return_value=FakeResp(403, headers={"X-RateLimit-Remaining": "0", "Retry-After": "42"},
+                                  text='{"message": "API rate limit exceeded"}\n'),
+        ):
+            with self.assertRaises(updater.UpdateError) as cm:
+                updater._latest_commit()
+        pesan = str(cm.exception)
+        self.assertIn("403", pesan)
+        self.assertIn("rate limit exceeded", pesan)
+        self.assertIn("sisa kuota 0", pesan)
+        self.assertIn("retry-after 42", pesan)
 
 
 class ConditionalRequestTest(unittest.TestCase):

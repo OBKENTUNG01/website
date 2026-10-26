@@ -33,6 +33,11 @@ class Telegram:
         self._file_base = f"{api.rstrip('/')}/file/bot{token}"
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(70.0))
         self._offset = None
+        # Hanya satu permintaan getUpdates boleh berjalan; dua sekaligus membuat
+        # Telegram memutus yang lama ("Conflict: terminated by other getUpdates").
+        self._poll_lock = asyncio.Lock()
+        self._conflict_logged_at = None
+        self._conflicts = 0
 
     async def close(self):
         await self._client.aclose()
@@ -44,16 +49,32 @@ class Telegram:
         }
         if self._offset is not None:
             params["offset"] = self._offset
-        try:
-            r = await self._client.get(f"{self._base}/getUpdates", params=params)
-            data = r.json()
-        except (httpx.HTTPError, ValueError):
-            # jaringan goyah — jeda sebentar lalu coba lagi di loop pemanggil
-            await asyncio.sleep(3)
-            return []
+        async with self._poll_lock:
+            try:
+                r = await self._client.get(f"{self._base}/getUpdates", params=params)
+                data = r.json()
+            except (httpx.HTTPError, ValueError):
+                # jaringan goyah — jeda sebentar lalu coba lagi di loop pemanggil
+                await asyncio.sleep(3)
+                return []
         if not data.get("ok"):
+            desc = str(data.get("description", data))
+            if "Conflict" in desc:
+                # Ada poller lain memakai token ini (perangkat/jendela lain).
+                # Dicatat tiap 5 menit saja supaya log tidak tenggelam.
+                self._conflicts += 1
+                now = time.monotonic()
+                if self._conflict_logged_at is None or now - self._conflict_logged_at >= 300:
+                    self._conflict_logged_at = now
+                    log.warning(
+                        "Telegram menolak: %s (kejadian ke-%d). Token bot ini dipakai "
+                        "proses/perangkat LAIN: tutup It's Me di sana, atau pakai token "
+                        "bot berbeda.", desc, self._conflicts,
+                    )
+                await asyncio.sleep(15)
+                return []
             # mis. token salah — beri jeda supaya tidak membanjiri API
-            log.warning("Telegram menolak: %s", data.get("description", data))
+            log.warning("Telegram menolak: %s", desc)
             await asyncio.sleep(5)
             return []
         updates = data.get("result", [])
@@ -66,13 +87,14 @@ class Telegram:
         mengambil yang baru — yang baru dikirim ulang setelah menyala lagi."""
         if self._offset is None:
             return
-        try:
-            await self._client.get(
-                f"{self._base}/getUpdates",
-                params={"offset": self._offset, "timeout": 0, "limit": 1},
-            )
-        except httpx.HTTPError:
-            pass
+        async with self._poll_lock:  # jangan menabrak long-poll yang sedang jalan
+            try:
+                await self._client.get(
+                    f"{self._base}/getUpdates",
+                    params={"offset": self._offset, "timeout": 0, "limit": 1},
+                )
+            except httpx.HTTPError:
+                pass
 
     async def send(self, chat_id, text, reply_markup=None):
         text = text or "…"
