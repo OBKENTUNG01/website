@@ -140,10 +140,20 @@ def _check_git(root, skip):
     return Update(sha, message, git_root=root, requirements=_changed_requirements(new_reqs))
 
 
+def _github_token():
+    """Token GitHub untuk menaikkan kuota pemeriksaan (kosong = tamu, 60/jam)."""
+    return (getattr(config, "GITHUB_TOKEN", "") or "").strip()
+
+
 def _latest_commit():
     """(sha, baris pertama pesan commit) terbaru di cabang yang diikuti."""
     url = f"{_GITHUB_API}/repos/{config.UPDATE_REPO}/commits/{config.UPDATE_BRANCH}"
     headers = dict(_HEADERS)
+    token = _github_token()
+    if token:
+        # 60 permintaan/jam untuk tamu habis dalam <1 jam (gejala nyata:
+        # "API rate limit exceeded for <ip>", sisa kuota 0). Token = 5000/jam.
+        headers["Authorization"] = f"Bearer {token}"
     etag = _etag_read()
     if etag:
         # Permintaan bersyarat: jawaban 304 TIDAK dihitung ke batas 60/jam GitHub.

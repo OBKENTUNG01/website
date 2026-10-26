@@ -45,6 +45,44 @@ class ForbiddenDetailTest(unittest.TestCase):
         self.assertIn("retry-after 42", pesan)
 
 
+class ConfigTokenTest(unittest.TestCase):
+    """keys.py menyimpan GITHUB_TOKEN; config dulu hanya membaca ITSME_GITHUB_TOKEN."""
+
+    def test_config_menerima_nama_tanpa_prefix(self):
+        import importlib
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_xyz"}, clear=False):
+            os.environ.pop("ITSME_GITHUB_TOKEN", None)
+            cfg = importlib.reload(config)
+            try:
+                self.assertEqual(cfg.GITHUB_TOKEN, "ghp_xyz")
+            finally:
+                importlib.reload(config)
+
+
+class TokenKuotaTest(unittest.TestCase):
+    """Tanpa token, GitHub hanya memberi 60 permintaan/jam -> 403 tiap 2 menit."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+        p = mock.patch.object(config, "DATA_DIR", self.d)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _headers(self, token):
+        resp = FakeResp(200, {"sha": "a" * 40, "commit": {"message": "x"}})
+        with mock.patch.object(config, "GITHUB_TOKEN", token), \
+                mock.patch.object(updater.httpx, "get", return_value=resp) as get:
+            updater._latest_commit()
+        return get.call_args.kwargs["headers"]
+
+    def test_token_dipakai_bila_ada(self):
+        self.assertEqual(self._headers("ghp_abc")["Authorization"], "Bearer ghp_abc")
+
+    def test_tanpa_token_tidak_ada_authorization(self):
+        self.assertNotIn("Authorization", self._headers(""))
+
+
 class ConditionalRequestTest(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
