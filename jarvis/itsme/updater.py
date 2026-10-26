@@ -155,7 +155,14 @@ def _latest_commit():
         return None, ""
     if r.status_code != 200:
         # 403/429 = batas pemeriksaan GitHub per jam habis; 404 = repo/cabang salah.
-        raise UpdateError(f"GitHub menjawab {r.status_code} untuk {url}")
+        # Isi balasan & sisa kuota ikut dicatat: tanpa itu sebab 403 cuma tebakan.
+        detail = " ".join((getattr(r, "text", "") or "").split())[:200]
+        raise UpdateError(
+            f"GitHub menjawab {r.status_code} untuk {url}"
+            f" | sisa kuota {r.headers.get('X-RateLimit-Remaining')}"
+            f" | retry-after {r.headers.get('Retry-After')}"
+            f" | {detail}"
+        )
     _etag_write(r.headers.get("ETag"))
     data = r.json()
     message = ((data.get("commit") or {}).get("message") or "").strip()
