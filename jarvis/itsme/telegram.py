@@ -36,7 +36,7 @@ class Telegram:
         # Hanya satu permintaan getUpdates boleh berjalan; dua sekaligus membuat
         # Telegram memutus yang lama ("Conflict: terminated by other getUpdates").
         self._poll_lock = asyncio.Lock()
-        self._conflict_logged_at = 0.0
+        self._conflict_logged_at = None
         self._conflicts = 0
 
     async def close(self):
@@ -64,7 +64,7 @@ class Telegram:
                 # Dicatat tiap 5 menit saja supaya log tidak tenggelam.
                 self._conflicts += 1
                 now = time.monotonic()
-                if now - self._conflict_logged_at >= 300:
+                if self._conflict_logged_at is None or now - self._conflict_logged_at >= 300:
                     self._conflict_logged_at = now
                     log.warning(
                         "Telegram menolak: %s (kejadian ke-%d). Token bot ini dipakai "
