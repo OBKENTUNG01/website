@@ -752,7 +752,8 @@ def _make_handler(app, token):
                 return self._json({"error": "domain tidak diizinkan"}, 403)
             if path == "/api/hp/frame":  # bingkai layar = bytes mentah (JPEG)
                 q = self._query()
-                if not hp.check_token((q.get("token") or [""])[0], self._client_ip()):
+                bearer = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+                if not hp.check_token(bearer or (q.get("token") or [""])[0], self._client_ip()):
                     return self._json({"error": "token HP salah"}, 401)
                 n = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(n) if n > 0 else b""
