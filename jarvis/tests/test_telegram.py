@@ -122,3 +122,28 @@ class ConflictLogTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(telegram.asyncio, "sleep", return_value=None):
             await tg.get_updates()
         self.assertFalse(tg._poll_lock.locked())  # dilepas setelah selesai
+
+
+class WebhookSecretTest(unittest.TestCase):
+    """Rahasia webhook = turunan token; dipakai di URL dan header Telegram."""
+
+    def test_panjang_dan_stabil(self):
+        from unittest import mock
+        from itsme import config, main as itsme_main
+
+        with mock.patch.object(config, "TELEGRAM_TOKEN", "123:ABC"):
+            a = itsme_main.tg_webhook_secret()
+            b = itsme_main.tg_webhook_secret()
+        self.assertEqual(a, b)
+        self.assertEqual(len(a), 32)
+        self.assertTrue(all(c in "0123456789abcdef" for c in a))
+
+    def test_berbeda_untuk_token_berbeda(self):
+        from unittest import mock
+        from itsme import config, main as itsme_main
+
+        with mock.patch.object(config, "TELEGRAM_TOKEN", "satu"):
+            a = itsme_main.tg_webhook_secret()
+        with mock.patch.object(config, "TELEGRAM_TOKEN", "dua"):
+            b = itsme_main.tg_webhook_secret()
+        self.assertNotEqual(a, b)
