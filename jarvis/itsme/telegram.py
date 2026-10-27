@@ -39,21 +39,31 @@ class Telegram:
         self._conflict_logged_at = None
         self._conflicts = 0
 
-    async def set_webhook(self, base_url, secret):
-        """Minta Telegram mendorong pesan ke {base_url}/tg/{secret}."""
+    async def set_webhook(self, base_url, secret, jeda=(3, 6, 12, 20, 30)):
+        """Minta Telegram mendorong pesan ke {base_url}/tg/{secret}.
+
+        Alamat tunnel Cloudflare baru bisa di-resolve beberapa detik setelah
+        cloudflared mencetaknya, jadi percobaan pertama sering ditolak
+        ("Failed to resolve host"). Dicoba ulang dengan jeda sampai ~70 detik.
+        """
         url = f"{base_url.rstrip('/')}/tg/{secret}"
         payload = {"url": url, "secret_token": secret,
                    "allowed_updates": json.dumps(["message", "callback_query"]),
                    "drop_pending_updates": False}
-        try:
-            r = await self._client.post(f"{self._base}/setWebhook", json=payload)
-            j = r.json()
+        for nomor, tunggu in enumerate((0, *jeda)):
+            if tunggu:
+                await asyncio.sleep(tunggu)
+            try:
+                r = await self._client.post(f"{self._base}/setWebhook", json=payload)
+                j = r.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                log.warning("setWebhook gagal (%s), coba lagi", exc)
+                continue
             if j.get("ok"):
-                log.info("Telegram webhook aktif: %s", url)
+                log.info("Telegram webhook aktif: %s (percobaan %d)", url, nomor + 1)
                 return True
             log.warning("Telegram menolak setWebhook: %s", j.get("description", j))
-        except (httpx.HTTPError, ValueError) as exc:
-            log.warning("setWebhook gagal: %s", exc)
+        log.error("Webhook gagal dipasang setelah %d percobaan: %s", len(jeda) + 1, url)
         return False
 
     async def delete_webhook(self):
