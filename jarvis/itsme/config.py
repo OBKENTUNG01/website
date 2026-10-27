@@ -227,6 +227,10 @@ DASHBOARD_TRUST_PROXY = _bool("ITSME_DASHBOARD_TRUST_PROXY", True)
 # --- Aplikasi It's Me HP (Android) -------------------------------------------
 # Token yang dimasukkan sekali di aplikasi HP untuk menyambung ke dashboard ini.
 # Kosong = dibuat otomatis (data/hp_token.txt) dan ditampilkan di tab HP.
+# Telegram lewat WEBHOOK (bukan long-polling). Dipakai kalau token bot juga dipakai
+# proses lain: dengan webhook, Telegram mendorong pesan ke dashboard kita dan poller
+# lain otomatis ditolak, jadi bot tetap menerima pesan tanpa mengganti token.
+TG_WEBHOOK = _bool("ITSME_TG_WEBHOOK", False)
 HP_SECRET = _get("ITSME_HP_SECRET", "") or ""
 # Terima token HP lewat query string (/api/hp/frame?token=..) seperti aplikasi lama.
 # Bawaan NYALA supaya APK yang sudah terpasang di HP tidak berhenti bekerja; header

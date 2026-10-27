@@ -746,6 +746,26 @@ def _make_handler(app, token):
                 return self._json({"error": "HP tidak menjawab"}, 504)
             return self._json({"error": "not found"}, 404)
 
+        # -- Telegram webhook: pesan didorong Telegram ke sini (bukan kita yang menanyakan).
+        # Dipakai saat token bot juga dipakai proses lain; poller itu otomatis ditolak.
+        def _telegram_webhook(self, path):
+            from . import main as itsme_main
+
+            secret = itsme_main.tg_webhook_secret()
+            if not config.TG_WEBHOOK or path != f"/tg/{secret}":
+                return self._json({"ok": False}, 401)
+            if self.headers.get("X-Telegram-Bot-Api-Secret-Token") != secret:
+                return self._json({"ok": False}, 401)
+            body = self._body()
+            loop = getattr(app, "loop", None)
+            if not isinstance(body, dict) or body.get("update_id") is None or loop is None:
+                return self._json({"ok": True})  # balas cepat; Telegram tidak mengulang
+            try:
+                asyncio.run_coroutine_threadsafe(app._dispatch(body), loop)
+            except RuntimeError:
+                log.warning("webhook: loop belum siap, pesan dilepas")
+            return self._json({"ok": True})
+
         # -- aplikasi HP (long-poll, auth pakai token HP, bukan sesi dashboard) --
         def _hp_ingress(self, path):
             if not self._host_ok():
@@ -808,6 +828,8 @@ def _make_handler(app, token):
         # -- POST --
         def do_POST(self):
             path = urlparse(self.path).path
+            if path.startswith("/tg/"):
+                return self._telegram_webhook(path)
             if path in _HP_INGRESS:
                 return self._hp_ingress(path)
             if path in _NODE_INGRESS:

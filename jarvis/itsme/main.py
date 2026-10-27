@@ -17,6 +17,7 @@ Fitur utama:
 """
 
 import asyncio
+import hashlib
 import atexit
 import base64
 import logging
@@ -1065,6 +1066,11 @@ class App:
     # --- loop utama ---------------------------------------------------------
     async def _poll(self):
         while True:
+            if config.TG_WEBHOOK:
+                # Pesan datang lewat webhook dashboard (/tg/<rahasia>), bukan getUpdates.
+                # Ini juga mematikan poller lain yang memakai token yang sama.
+                await asyncio.sleep(3600)
+                continue
             updates = await self.tg.get_updates()
             for update in updates:
                 self._spawn(self._dispatch(update))
@@ -1243,6 +1249,12 @@ class App:
 
         def announce(url):
             previous = self._remember_public_url(url)
+            if config.TG_WEBHOOK:
+                secret = tg_webhook_secret()
+                try:
+                    asyncio.run_coroutine_threadsafe(self.tg.set_webhook(url, secret), self.loop)
+                except Exception:  # noqa: BLE001 - jangan gagalkan tunnel
+                    log.exception("gagal memasang webhook Telegram")
             msg = (f"🌐 Dashboard It's Me bisa dibuka dari HP / mana saja:\n{url}\n\n"
                    "Login pakai berkas data/dashboard.key. Alamat ini sementara (berubah "
                    "tiap It's Me nyala ulang) — ketik /alamat untuk yang terbaru.")
@@ -1295,6 +1307,11 @@ class App:
         if qt and qt.url:
             return f"🌐 Alamat dashboard sekarang:\n{qt.url}\n\n(sementara; berubah tiap nyala ulang)"
         return "Tunnel sedang disiapkan... coba /alamat lagi beberapa detik lagi."
+
+
+def tg_webhook_secret():
+    """Rahasia webhook: turunan token bot, 32 aksara, dipakai di URL & header Telegram."""
+    return hashlib.sha256(("itsme-tg-webhook:" + (config.TELEGRAM_TOKEN or "")).encode()).hexdigest()[:32]
 
 
 def _disable_quick_edit():

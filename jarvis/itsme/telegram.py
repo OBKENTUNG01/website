@@ -39,6 +39,29 @@ class Telegram:
         self._conflict_logged_at = None
         self._conflicts = 0
 
+    async def set_webhook(self, base_url, secret):
+        """Minta Telegram mendorong pesan ke {base_url}/tg/{secret}."""
+        url = f"{base_url.rstrip('/')}/tg/{secret}"
+        payload = {"url": url, "secret_token": secret,
+                   "allowed_updates": json.dumps(["message", "callback_query"]),
+                   "drop_pending_updates": False}
+        try:
+            r = await self._client.post(f"{self._base}/setWebhook", json=payload)
+            j = r.json()
+            if j.get("ok"):
+                log.info("Telegram webhook aktif: %s", url)
+                return True
+            log.warning("Telegram menolak setWebhook: %s", j.get("description", j))
+        except (httpx.HTTPError, ValueError) as exc:
+            log.warning("setWebhook gagal: %s", exc)
+        return False
+
+    async def delete_webhook(self):
+        try:
+            await self._client.post(f"{self._base}/deleteWebhook")
+        except (httpx.HTTPError, ValueError):
+            pass
+
     async def close(self):
         await self._client.aclose()
 
