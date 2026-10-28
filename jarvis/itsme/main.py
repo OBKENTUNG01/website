@@ -544,7 +544,7 @@ class App:
 
     async def _wa_kirim(self, jid, path):
         """Kirim berkas dari komputer ini ke WhatsApp (hanya pemilik)."""
-        from .tools import is_secret_path
+        from .tools import is_hardlinked, is_secret_path
 
         say = lambda t: asyncio.to_thread(self.wa.send, jid, t)  # noqa: E731
         path = os.path.expanduser((path or "").strip().strip('"').strip("'"))
@@ -553,6 +553,9 @@ class App:
             return
         if is_secret_path(path):
             await say("Ditolak: berkas itu biasanya berisi rahasia (token, password, kunci).")
+            return
+        if is_hardlinked(path):
+            await say("Ditolak: berkas ini hardlink, namanya bisa menyembunyikan berkas rahasia.")
             return
         if not os.path.isfile(path):
             await say(f"Berkas tidak ditemukan: {path}")

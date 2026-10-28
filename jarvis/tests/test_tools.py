@@ -114,6 +114,72 @@ class SecretPathTest(unittest.TestCase):
         ):
             self.assertFalse(tools.is_secret_path(path), path)
 
+    def test_symlink_to_secret_is_still_secret(self):
+        # Nama polos (catatan.txt) tak boleh lolos cuma karena namanya tidak
+        # mencurigakan - tujuan SEBENARNYA (lewat symlink) yang diperiksa.
+        # Sama seperti fix(remote) #7 di itsme-node, bug yang sama persis.
+        with tempfile.TemporaryDirectory() as d:
+            rahasia = os.path.join(d, ".env")
+            with open(rahasia, "w", encoding="utf-8") as f:
+                f.write("TOKEN=rahasia")
+            tautan = os.path.join(d, "catatan.txt")
+            try:
+                os.symlink(rahasia, tautan)
+            except (OSError, NotImplementedError):
+                self.skipTest("perlu hak symlink (Developer Mode / admin di Windows)")
+            self.assertTrue(tools.is_secret_path(tautan), tautan)
+
+    def test_hardlink_to_secret_is_detected(self):
+        # realpath() tidak bisa membedakan hardlink dari berkas aslinya, jadi
+        # ini pemeriksaan TERPISAH dari is_secret_path (lihat is_hardlinked).
+        # Sama seperti fix(remote) #8 di itsme-node, bug yang sama persis.
+        with tempfile.TemporaryDirectory() as d:
+            rahasia = os.path.join(d, ".env")
+            with open(rahasia, "w", encoding="utf-8") as f:
+                f.write("TOKEN=rahasia")
+            tautan = os.path.join(d, "foto.txt")
+            try:
+                os.link(rahasia, tautan)
+            except OSError:
+                self.skipTest("perlu hak hardlink di sistem berkas ini")
+            self.assertFalse(tools.is_secret_path(tautan), tautan)  # namanya sendiri aman
+            self.assertTrue(tools.is_hardlinked(tautan), tautan)  # tapi hardlink -> ditolak terpisah
+            # Berkas BIASA (tanpa hardlink apa pun) tak pernah kena pemeriksaan ini.
+            sendiri = os.path.join(d, "sendirian.txt")
+            with open(sendiri, "w", encoding="utf-8") as f:
+                f.write("biasa saja")
+            self.assertFalse(tools.is_hardlinked(sendiri), sendiri)
+
+    def test_baca_berkas_refuses_symlink_to_secret(self):
+        with tempfile.TemporaryDirectory() as d:
+            rahasia = os.path.join(d, ".env")
+            with open(rahasia, "w", encoding="utf-8") as f:
+                f.write("TOKEN=rahasia")
+            tautan = os.path.join(d, "catatan.txt")
+            try:
+                os.symlink(rahasia, tautan)
+            except (OSError, NotImplementedError):
+                self.skipTest("perlu hak symlink (Developer Mode / admin di Windows)")
+            ctx = FakeCtx(full_access=True)
+            out = tools.handle_tool("baca_berkas", {"path": tautan}, ctx)
+            self.assertIn("Ditolak", out)
+            self.assertNotIn("TOKEN=rahasia", out)  # isi berkas tak boleh ikut bocor
+
+    def test_baca_berkas_refuses_hardlink_to_secret(self):
+        with tempfile.TemporaryDirectory() as d:
+            rahasia = os.path.join(d, ".env")
+            with open(rahasia, "w", encoding="utf-8") as f:
+                f.write("TOKEN=rahasia")
+            tautan = os.path.join(d, "foto.txt")
+            try:
+                os.link(rahasia, tautan)
+            except OSError:
+                self.skipTest("perlu hak hardlink di sistem berkas ini")
+            ctx = FakeCtx(full_access=True)
+            out = tools.handle_tool("baca_berkas", {"path": tautan}, ctx)
+            self.assertIn("Ditolak", out)
+            self.assertNotIn("TOKEN=rahasia", out)
+
     def test_command_naming_a_secret(self):
         self.assertTrue(tools.mentions_secret(r"Get-Content C:\Users\x\ItsMe\.env"))
         self.assertTrue(tools.mentions_secret(f'Get-ChildItem "{self.APP}"'))

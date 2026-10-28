@@ -360,8 +360,18 @@ _CLAUDE_APP_READABLE = {"claude-code-sessions", "local-agent-mode-sessions", "sc
 
 
 def is_secret_path(path):
-    """True untuk berkas yang biasanya berisi token, password, atau kunci."""
-    parts = [p.lower() for p in os.path.normpath(path).replace("\\", "/").split("/") if p]
+    """True untuk berkas yang biasanya berisi token, password, atau kunci.
+
+    Memeriksa tujuan SEBENARNYA (symlink diselesaikan via realpath), bukan nama
+    apa adanya - kalau tidak, tautan bernama polos (mis. catatan.txt -> .env)
+    lolos pemeriksaan padahal isinya tetap berkas rahasia saat dibuka. Berlaku
+    untuk SEMUA pemanggil (baca_berkas, tulis_berkas, dashboard, drive, dst)
+    karena pemeriksaannya di sini, bukan di tiap pemanggil."""
+    try:
+        real = os.path.realpath(os.path.abspath(os.path.expanduser(path or "")))
+    except OSError:
+        real = path or ""
+    parts = [p.lower() for p in os.path.normpath(real).replace("\\", "/").split("/") if p]
     if not parts:
         return False
     name = parts[-1]
@@ -383,6 +393,17 @@ def is_secret_path(path):
         if part == "claude" and i > 0 and parts[i - 1] == "roaming" and parts[i + 1] not in _CLAUDE_APP_READABLE:
             return True
     return False
+
+
+def is_hardlinked(path):
+    """True kalau berkas punya nama lain (hardlink) - nama ini (mis. foto.txt)
+    bisa menyamarkan isi berkas rahasia (mis. .env) yang sama persis di disk,
+    karena realpath() tidak bisa membedakan hardlink dari berkas aslinya (beda
+    dari symlink, yang is_secret_path sudah tangani lewat realpath)."""
+    try:
+        return os.stat(path).st_nlink > 1
+    except OSError:
+        return False
 
 
 def too_broad_to_search(path):
@@ -879,6 +900,8 @@ def handle_tool(name, tool_input, ctx):
             path = _resolve(ctx, tool_input["path"])
             if is_secret_path(path):
                 return "Ditolak: berkas itu biasanya berisi rahasia (token, password, kunci)."
+            if is_hardlinked(path):
+                return "Ditolak: berkas ini hardlink, namanya bisa menyembunyikan berkas rahasia."
             base = ctx.get("website_dir")
             if not (base and _inside(path, base)) and not ctx.get("full_access"):
                 if not ctx["confirm"](f"Baca berkas di luar folder website?\n\n{path}"):
@@ -890,6 +913,8 @@ def handle_tool(name, tool_input, ctx):
             path = _resolve(ctx, tool_input["path"])
             if is_secret_path(path):
                 return "Ditolak: berkas rahasia (.env, kunci) tidak boleh ditulis lewat bot."
+            if is_hardlinked(path):
+                return "Ditolak: berkas ini hardlink, menulisnya bisa menimpa berkas rahasia."
             isi = tool_input.get("isi", "")
             keadaan = "menimpa berkas yang sudah ada" if os.path.exists(path) else "berkas baru"
             teks = (

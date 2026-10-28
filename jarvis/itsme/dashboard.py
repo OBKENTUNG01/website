@@ -242,6 +242,8 @@ def _read_file(path):
         return None, "Berkas tidak ditemukan."
     if tools.is_secret_path(path):
         return None, "Ditolak: berkas ini biasanya berisi rahasia (token, password, kunci)."
+    if tools.is_hardlinked(path):
+        return None, "Ditolak: berkas ini hardlink, namanya bisa menyembunyikan berkas rahasia."
     try:
         size = os.path.getsize(path)
     except OSError as exc:
