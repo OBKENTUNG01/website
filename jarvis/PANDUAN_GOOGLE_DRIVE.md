@@ -114,5 +114,18 @@ Ini supaya Google mengizinkan aplikasimu memakai akunmu.
   **Test user** (Bagian 3, langkah 3).
 - **drive_login bilang kredensial belum ada** → file JSON belum ada di
   `data\drive_credentials.json` atau namanya belum tepat (Bagian 5, langkah 1).
+- **Sudah pernah tersambung, tapi sekarang "Login Google Drive sudah tidak
+  berlaku" / minta login lagi, padahal kemarin baru dicoba** → ini **NORMAL**
+  untuk layar persetujuan status **"Testing"** (Bagian 3): Google otomatis
+  mencabut token tiap **~7 hari**, tanpa pemberitahuan apa pun. Dua pilihan:
+  - **Cepat** (ulang tiap ~7 hari): `cd $HOME\ItsMe; .venv\Scripts\python -m
+    itsme.drive_login` lagi.
+  - **Permanen** (sekali saja, selesai untuk seterusnya): buka
+    **<https://console.cloud.google.com/auth/audience>** → tombol
+    **"PUBLISH APP"** → konfirmasi. Aman untuk aplikasi pribadi (bukan untuk
+    orang lain) — pesan "Google belum memverifikasi aplikasi ini" tetap
+    muncul sekali saat login, itu wajar, lanjutkan seperti Bagian 5 langkah 3.
+    Setelah publish, jalankan `drive_login` **sekali lagi** supaya token baru
+    ikut aturan baru (tidak kedaluwarsa lagi tiap minggu).
 - **Masih bingung** → minta It's Me (lewat Claude) membantu langsung di browser;
   Bagian 1–4 bisa dikerjakan bersama.

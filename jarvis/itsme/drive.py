@@ -46,6 +46,25 @@ def login_hint():
     )
 
 
+def _revoked_hint():
+    # Penyebab paling umum: layar persetujuan OAuth masih status "Testing" di
+    # Google Cloud Console - token login otomatis kedaluwarsa setelah ~7 hari,
+    # TANPA pemberitahuan apa pun, lalu kembali meminta login tiap minggu.
+    return (
+        "Login Google Drive sudah tidak berlaku (Google: \"token kedaluwarsa/dicabut\").\n\n"
+        "Perbaikan cepat (±1 menit, berlaku lagi ~7 hari):\n"
+        "  .venv\\Scripts\\python -m itsme.drive_login\n\n"
+        "Perbaikan PERMANEN (sekali saja, tidak perlu login ulang lagi): layar "
+        "persetujuan OAuth-mu masih berstatus \"Testing\" - Google otomatis "
+        "mencabut token tiap ~7 hari untuk status itu, tanpa pemberitahuan. "
+        "Buka console.cloud.google.com/auth/audience → tombol \"PUBLISH APP\" → "
+        "konfirmasi. (Aman untuk aplikasi pribadi; pesan \"Google belum "
+        "memverifikasi\" tetap muncul sekali saat login, itu normal.) Setelah "
+        "publish, jalankan drive_login SEKALI LAGI supaya token barunya ikut "
+        "aturan baru."
+    )
+
+
 def ready():
     return os.path.exists(config.DRIVE_TOKEN_FILE)
 
@@ -93,11 +112,16 @@ def _service():
     creds = Credentials.from_authorized_user_file(config.DRIVE_TOKEN_FILE, SCOPES)
     if not creds.valid:
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as exc:  # noqa: BLE001 - google.auth.exceptions.RefreshError
+                # Pesan RefreshError Google berupa tuple/dict mentah (tidak enak
+                # dibaca); ganti dengan penjelasan + perbaikan yang jelas.
+                raise DriveError(_revoked_hint()) from exc
             with open(config.DRIVE_TOKEN_FILE, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
         else:
-            raise DriveError("Login Google Drive sudah tidak berlaku. " + login_hint())
+            raise DriveError(_revoked_hint())
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 

@@ -103,6 +103,38 @@ class DriveToolTest(unittest.TestCase):
         self.assertIn("drive_login", out)
 
 
+class DriveTokenRevokedTest(unittest.TestCase):
+    """_service() harus mengubah RefreshError Google (pesan tuple/dict mentah,
+    tak enak dibaca) jadi DriveError yang jelas - bukan menyebar apa adanya
+    (itu yang terjadi sebelum perbaikan ini: 'Google Drive error: RefreshError:
+    (...)' muncul di dashboard/chat tanpa penjelasan apa pun)."""
+
+    def test_refresh_failure_becomes_clear_drive_error(self):
+        fake_creds = mock.Mock(valid=False, expired=True, refresh_token="x")
+        fake_creds.refresh.side_effect = Exception(
+            "invalid_grant: Token has been expired or revoked.")
+        fake_lib = (mock.Mock(from_authorized_user_file=mock.Mock(return_value=fake_creds)),
+                    mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock())
+        with mock.patch.object(drive, "ready", return_value=True), \
+             mock.patch.object(drive, "load_libs", return_value=fake_lib):
+            with self.assertRaises(drive.DriveError) as cm:
+                drive._service()
+        msg = str(cm.exception)
+        self.assertNotIn("RefreshError", msg)  # bukan pesan mentah Google
+        self.assertIn("PUBLISH APP", msg)       # perbaikan permanen disebutkan
+        self.assertIn("drive_login", msg)       # perbaikan cepat disebutkan
+
+    def test_expired_without_refresh_token_also_gets_clear_hint(self):
+        fake_creds = mock.Mock(valid=False, expired=True, refresh_token=None)
+        fake_lib = (mock.Mock(from_authorized_user_file=mock.Mock(return_value=fake_creds)),
+                    mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock())
+        with mock.patch.object(drive, "ready", return_value=True), \
+             mock.patch.object(drive, "load_libs", return_value=fake_lib):
+            with self.assertRaises(drive.DriveError) as cm:
+                drive._service()
+        self.assertIn("PUBLISH APP", str(cm.exception))
+
+
 class DriveLoginTest(unittest.TestCase):
     def test_missing_credentials_explains_steps(self):
         from itsme import drive_login
