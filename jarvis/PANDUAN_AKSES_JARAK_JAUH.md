@@ -186,3 +186,44 @@ yang bisa menghubunginya. Pastikan pemimpin selalu komputer yang bisa menjalanka
 - Cuma kamu yang pakai, dari HP-mu → **Tailscale** (Cara A). Paling simpel & aman.
 - Mau alamat cantik `ai.yantah-rutari.com` → **Cloudflare Tunnel + Access** (Cara B),
   dan tetap dengan login dashboard menyala.
+
+---
+
+## Menyalakan komputer dari jarak jauh (Wake-on-LAN)
+
+Komputer yang terdaftar tapi sedang **mati** bisa dicoba dibangunkan dari dashboard
+(tab 🖥️ Komputer → tombol **⚡ Nyalakan** pada komputer yang tampil "💤 tidur") atau
+lewat bot Telegram: `/nyalakan <nama>`.
+
+**Batas fisik yang perlu dipahami:** sinyal "nyalakan" (paket ajaib Wake-on-LAN) cuma
+bisa disiarkan di jaringan LOKAL — tidak ada cara mengirimnya langsung dari internet
+ke komputer yang benar-benar mati, walau lewat dashboard/web sekalipun. Satu-satunya
+cara nyata: **komputer It's Me LAIN yang masih menyala di jaringan fisik yang SAMA**
+dengan komputer yang mati itu meneruskan sinyalnya. Karena itu:
+
+- Kalau komputer yang mati itu **satu rumah/kantor** dengan Hub (atau komputer It's Me
+  mana pun yang masih menyala), fitur ini jalan otomatis — tombol ⚡ Nyalakan langsung
+  muncul di dashboard begitu node mengenalinya (diingat sejak pernah satu LAN,
+  bertahan walau sudah mati berhari-hari).
+- Kalau komputer itu di **lokasi lain** (tersambung lewat jembatan, bukan satu LAN
+  dengan Hub), harus ADA komputer It's Me lain yang masih menyala di LOKASI YANG SAMA
+  dengannya. Kalau belum muncul tombolnya di dashboard, ketik namanya manual di kotak
+  "Nyalakan komputer lain" — dashboard akan menanyai tiap komputer jembatan yang
+  online di lokasi itu satu per satu.
+- Komputer **sendirian** (tanpa satu pun komputer It's Me lain yang menyala di
+  jaringan fisik yang sama) **tidak bisa** dibangunkan murni lewat web dengan cara
+  apa pun — ini bukan kekurangan It's Me, tapi bagaimana Wake-on-LAN bekerja secara
+  fisik. Satu-satunya jalan lain untuk kasus itu adalah alat tambahan di luar It's Me,
+  misalnya colokan listrik pintar (smart plug) yang bisa dinyalakan dari HP.
+
+**Syarat di komputer TUJUAN** (bukan di komputer yang mengirim sinyal): aktifkan
+"Wake on LAN" di dua tempat —
+1. **BIOS/UEFI**: masuk BIOS saat booting, cari menu Power Management, aktifkan
+   "Wake on LAN" / "Power On By PCI-E" / sejenisnya (nama menu beda-beda per merek).
+2. **Windows**: Device Manager → kartu jaringan (bukan WiFi — WoL hanya lewat kabel
+   LAN di kebanyakan laptop/PC) → klik kanan → Properties → tab Power Management →
+   centang "Allow this device to wake the computer".
+
+Komputer itu juga harus dalam keadaan tidur/mati NORMAL (S3/S4/S5 — kabel listrik
+tetap tersambung), bukan benar-benar dicabut dari listrik atau mati total akibat mati
+lampu.

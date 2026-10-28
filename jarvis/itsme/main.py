@@ -64,6 +64,7 @@ HELP = (
     "/pasang_tetap — sama, tapi SATU tautan dipakai ulang untuk beberapa komputer\n"
     "/komputer — buka layar & berkas komputer yang terhubung (seperti remote desktop)\n"
     "/layar <nama> — kirim foto layar komputer itu ke chat\n"
+    "/nyalakan <nama> — bangunkan komputer itu dari jarak jauh (Wake-on-LAN)\n"
     "/lock — kunci bot; kata sandi diminta lagi sebelum bisa dipakai\n"
     "/id — tampilkan user id Telegram-mu"
 )
@@ -74,7 +75,7 @@ _GUEST_OK = {"", "/start", "/help", "/id", "/lock"}
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/pasang_tetap", "/id",
-    "/lock", "/komputer", "/layar", "/wa",
+    "/lock", "/komputer", "/layar", "/nyalakan", "/wa",
 }
 # Paling lama Hub menunggu jawaban dari perangkat (detik).
 _DEVICE_REPLY_TIMEOUT = 3600
@@ -629,6 +630,9 @@ class App:
         if first == "/layar":
             await self._send_screen(chat_id, text.split(maxsplit=1)[1].strip() if " " in text.strip() else "")
             return
+        if first == "/nyalakan":
+            await self._wake_computer(chat_id, text.split(maxsplit=1)[1].strip() if " " in text.strip() else "")
+            return
         if first == "/pakai":
             await self.tg.send(chat_id, self._use_device(text.split(maxsplit=1)[1] if " " in text.strip() else ""))
             return
@@ -799,11 +803,45 @@ class App:
         lines += [
             "",
             "/layar <nama> — kirim foto layar komputer itu ke sini (mis. /layar Laptop).",
+            "/nyalakan <nama> — komputer itu mati? coba bangunkan dari jarak jauh (Wake-on-LAN).",
             f"Layar langsung + kendali + telusur berkas: buka dashboard It's Me "
             f"(http://localhost:{config.DASHBOARD_PORT}) di komputer ini, lalu tab 🖥️ Komputer "
             "(dari HP lewat Tailscale/Cloudflare — lihat PANDUAN_AKSES_JARAK_JAUH).",
         ]
         return "\n".join(lines)
+
+    async def _wake_computer(self, chat_id, name):
+        """/nyalakan: coba bangunkan komputer yang sedang MATI lewat Wake-on-LAN.
+
+        Cuma bisa kalau ADA komputer It's Me lain yang masih menyala satu jaringan
+        fisik dengan `name` dan pernah melihatnya langsung (lihat node.py:wake,
+        itsme-node inode/wol.py). Batas fisik, bukan batas kode: komputer sendirian
+        tanpa teman sejaringan tidak bisa dibangunkan murni lewat web."""
+        if not name:
+            await self.tg.send(chat_id, "Format: /nyalakan <nama komputer>. /komputer untuk lihat namanya.")
+            return
+        if not node.installed():
+            await self.tg.send(chat_id, "It's Me Node belum terpasang di komputer ini.")
+            return
+        res = await asyncio.to_thread(node.wake, name)
+        if res is None:
+            await self.tg.send(chat_id, "Node di komputer ini belum menjawab (mungkin baru menyala).")
+            return
+        if res.get("ok"):
+            await self.tg.send(
+                chat_id,
+                f"📡 Sinyal nyala terkirim ke {name} (MAC {res.get('mac', '?')}) lewat "
+                f"{res.get('via', 'komputer jembatan')}. Tunggu sebentar lalu cek /komputer — "
+                "siaran WoL tidak punya balasan, jadi ini belum membuktikan komputernya benar-benar menyala.",
+            )
+            return
+        await self.tg.send(
+            chat_id,
+            f"Tidak ada komputer It's Me yang menyala yang pernah melihat “{name}” langsung di "
+            "jaringan fisiknya. Wake-on-LAN cuma bisa lewat komputer It's Me LAIN yang masih "
+            "menyala satu LAN dengan komputer itu — tanpa itu, membangunkannya murni lewat web "
+            "tidak mungkin secara fisik (perlu alat tambahan seperti colokan pintar).",
+        )
 
     async def _send_screen(self, chat_id, name):
         if not node.installed():

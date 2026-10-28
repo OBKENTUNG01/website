@@ -90,6 +90,51 @@ class ComputerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tidak bisa diambil", self.tg.sent[-1][1])
 
 
+class WakeCommandTest(unittest.IsolatedAsyncioTestCase):
+    """/nyalakan: bangunkan komputer lewat Wake-on-LAN (lihat node.py:wake)."""
+
+    asyncSetUp = ComputerTest.asyncSetUp
+    _msg = ComputerTest._msg
+
+    async def test_without_name_asks_for_one(self):
+        with mock.patch.object(node, "installed", return_value=True):
+            await self.app._handle_message(self._msg("/nyalakan"))
+        self.assertIn("Format", self.tg.sent[-1][1])
+
+    async def test_without_node_installed(self):
+        with mock.patch.object(node, "installed", return_value=False):
+            await self.app._handle_message(self._msg("/nyalakan Laptop"))
+        self.assertIn("belum terpasang", self.tg.sent[-1][1])
+
+    async def test_success_reports_mac(self):
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(node, "wake", return_value={"ok": True, "mac": "aabbcc", "via": "PC-Utama"}):
+            await self.app._handle_message(self._msg("/nyalakan Laptop"))
+        out = self.tg.sent[-1][1]
+        self.assertIn("aabbcc", out)
+        self.assertIn("Laptop", out)
+
+    async def test_not_found_explains_physical_limit(self):
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(node, "wake", return_value={"ok": False, "error": "tidak tahu"}):
+            await self.app._handle_message(self._msg("/nyalakan Tablet"))
+        self.assertIn("tidak mungkin secara fisik", self.tg.sent[-1][1])
+
+    async def test_node_unreachable(self):
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(node, "wake", return_value=None):
+            await self.app._handle_message(self._msg("/nyalakan Laptop"))
+        self.assertIn("belum menjawab", self.tg.sent[-1][1])
+
+    async def test_only_owner(self):
+        msg = self._msg("/nyalakan Laptop")
+        msg["from"]["id"] = 99
+        with mock.patch.object(node, "wake") as wake:
+            await self.app._handle_message(msg)
+        wake.assert_not_called()
+        self.assertEqual(self.tg.sent, [])
+
+
 class NodeHelperTest(unittest.TestCase):
     def test_resolve_prefix_and_ambiguous(self):
         with mock.patch.object(node, "computers", return_value=NODES):

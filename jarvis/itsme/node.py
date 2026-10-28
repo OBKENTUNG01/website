@@ -16,7 +16,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from . import config
+from . import config, hp
 
 # Halaman layar & berkas semua komputer (disajikan node, hanya dari komputer ini).
 VIEWER_URL = config.NODE_URL + "/"
@@ -95,6 +95,37 @@ def screenshot(node_id=None, w=1280, timeout=30):
     except OSError:
         pass
     return None
+
+
+def wake(name, timeout=10):
+    """Minta jaringan membangunkan komputer bernama `name` lewat Wake-on-LAN.
+
+    Coba dulu node di komputer ini (yang otomatis juga menanyai tetangga LAN-nya
+    sendiri - lihat itsme-node server.py /wake). Kalau tak ada yang pernah melihat
+    MAC-nya langsung di sana, coba tiap komputer JEMBATAN yang sedang online - salah
+    satunya mungkin satu lokasi fisik dengan `name` (lihat bridge.py, hp.py). Kembalikan
+    dict {"ok":..,...}, atau None kalau node di komputer ini sendiri tidak terpasang."""
+    if not installed():
+        return None
+    body = json.dumps({"name": name}).encode()
+    req = urllib.request.Request(config.NODE_URL + "/wake", data=body,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            res = json.loads(r.read())
+    except (OSError, ValueError):
+        res = {"ok": False, "error": "node di komputer ini tidak menjawab"}
+    if res.get("ok"):
+        return res
+    for p in hp.listing():
+        if p.get("kind") != "computer" or not p.get("online"):
+            continue
+        if (p.get("name") or "").strip().lower() == name.strip().lower():
+            continue  # jangan minta komputer itu sendiri membangunkan dirinya
+        via_bridge = hp.command(p["name"], "wol", {"target": name})
+        if via_bridge and via_bridge.get("ok"):
+            return via_bridge
+    return res
 
 
 class Follower:

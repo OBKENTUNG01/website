@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from . import access, brain, config, hp, tools, updater
+from . import access, brain, config, hp, node, tools, updater
 
 log = logging.getLogger("itsme")
 
@@ -694,6 +694,17 @@ def _make_handler(app, token):
                             "id": "bridge:" + d["name"], "name": d["name"], "addr": "jembatan",
                             "working": False, "model": "", "score": 0, "stats": {}, "bot": False,
                             "leader": False, "via": "bridge"})
+                        names.add(d["name"])
+                # Komputer yang pernah satu LAN langsung dengan node ini tapi SEDANG
+                # TIDUR (tidak ikut gosip sekarang) - ditampilkan dengan tombol
+                # Nyalakan (Wake-on-LAN, lihat /api/node/wake & inode/wol.py).
+                for k in st.get("known", []):
+                    if k.get("name") and k["name"] not in names:
+                        st.setdefault("nodes", []).append({
+                            "id": None, "name": k["name"], "addr": "", "asleep": True,
+                            "working": False, "model": "", "score": 0, "stats": {}, "bot": False,
+                            "leader": False})
+                        names.add(k["name"])
                 return self._json(st)
             if path == "/api/node/screen":
                 q = self._query()
@@ -891,6 +902,14 @@ def _make_handler(app, token):
                 code, body = _node_post("/fs/write",
                                         {"path": data.get("path", ""), "b64": data.get("b64", "")})
                 return self._send(code, body)
+            elif path == "/api/node/wake":
+                name = str(data.get("name") or "").strip()
+                if not name:
+                    return self._json({"ok": False, "error": "nama komputer kosong"}, 400)
+                res = node.wake(name)
+                if res is None:
+                    return self._json({"ok": False, "error": "It's Me Node belum terpasang di komputer ini"}, 400)
+                return self._json(res, 200 if res.get("ok") else 404)
             elif path == "/api/node/input":
                 bn = _bridge_name(data.get("node", ""))
                 if bn is not None:
@@ -1261,6 +1280,14 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
   <div class="card">
     <h2 class="spread">Komputer <button onclick="kompLoad()" style="padding:5px 11px;font-size:.8rem">Muat ulang</button></h2>
     <div id="kompPcs" class="row" style="gap:6px;flex-wrap:wrap"></div>
+    <div class="row" style="gap:6px;margin-top:8px;align-items:center">
+      <input id="kompWakeName" placeholder="Nama komputer lain yang mati (lokasi lain)" style="flex:1;min-width:160px">
+      <button onclick="kompWake(document.getElementById('kompWakeName').value, this)">⚡ Nyalakan</button>
+    </div>
+    <div class="sub">Komputer yang sedang tidur di jaringan lokal node ini muncul otomatis di atas dengan
+      tombol ⚡ Nyalakan. Kalau komputernya di LOKASI LAIN (lewat jembatan) dan belum tampil di sana,
+      ketik namanya persis di kotak ini — berhasil cuma kalau ada komputer It's Me LAIN yang masih
+      menyala satu jaringan fisik dengannya.</div>
     <div class="row" style="gap:6px;margin-top:10px">
       <button id="kompTabScreen" class="primary" onclick="kompShow('screen')">🖥️ Layar</button>
       <button id="kompTabFiles" onclick="kompShow('files')">📁 Berkas</button>
@@ -1748,7 +1775,13 @@ async function kompLoad(){
   try{ const s = await api('/api/node/status'); kompNodes = s.nodes||[]; kompMe = s.me;
     if(!kompSel || !kompNodes.find(n=>n.id===kompSel)) kompSel = (kompNodes.find(n=>n.id===s.me)||kompNodes[0]||{}).id || null;
     const box=document.getElementById('kompPcs'); box.innerHTML='';
-    kompNodes.forEach(n=>{ const btn=document.createElement('button');
+    kompNodes.forEach(n=>{
+      if(n.asleep){ const btn=document.createElement('button');
+        btn.title='Sedang tidur/mati di jaringan lokal node ini — klik untuk coba bangunkan.';
+        btn.textContent='💤 '+n.name+' — ⚡ Nyalakan';
+        btn.onclick=()=>kompWake(n.name, btn);
+        box.appendChild(btn); return; }
+      const btn=document.createElement('button');
       btn.className = n.id===kompSel ? 'primary' : '';
       btn.textContent = (n.leader?'👑 ':'')+n.name + (n.id===kompMe?' (ini)':'');
       btn.onclick=()=>{ kompSel=n.id; kompLoad(); if(kompView==='screen') kompSnap(); else kompBrowse(''); };
@@ -1758,6 +1791,17 @@ async function kompLoad(){
     if(self) h.textContent='Ini komputer yang sedang kamu pakai. Mengendalikan komputer yang sama cenderung bentrok dengan mouse/keyboard aslimu — kendali paling berguna untuk komputer LAIN. Lihat & berkas tetap jalan.';
     if(kompActive && kompView==='screen') kompSnap();
   }catch(e){ document.getElementById('kompPcs').innerHTML='<span class="sub">It\'s Me Node belum menjawab di komputer ini ('+e.message+'). Perlu It\'s Me Node terpasang & versi 0.4.</span>'; }
+}
+async function kompWake(name, btn){
+  name = (name||'').trim();
+  if(!name){ toast('Ketik nama komputernya dulu.'); return; }
+  const old = btn.textContent, prevDisabled = btn.disabled;
+  btn.disabled = true; btn.textContent = 'Mengirim sinyal...';
+  try{
+    const d = await api('/api/node/wake', {method:'POST', body: JSON.stringify({name})});
+    toast('📡 Sinyal nyala terkirim ke '+name+' (MAC '+(d.mac||'?')+'). Tunggu sebentar lalu Muat ulang.');
+  }catch(e){ toast('Gagal: '+e.message); }
+  finally{ btn.disabled = prevDisabled; btn.textContent = old; }
 }
 function kompShow(v){ kompView=v;
   document.getElementById('kompScreen').hidden = v!=='screen';

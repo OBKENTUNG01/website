@@ -157,6 +157,65 @@ class StatusTest(unittest.TestCase):
             self.assertIsNone(node.status(timeout=1))
 
 
+class WakeTest(unittest.TestCase):
+    """node.wake(): Wake-on-LAN lewat node di komputer ini, dengan fallback ke
+    komputer jembatan yang online kalau node di sini sendiri tidak tahu MAC-nya."""
+
+    def _server(self, body_fn):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(n) or b"{}")
+                body = json.dumps(body_fn(payload)).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        return srv
+
+    def test_not_installed_returns_none(self):
+        with mock.patch.object(node, "installed", return_value=False):
+            self.assertIsNone(node.wake("Laptop"))
+
+    def test_local_node_success_skips_bridge_fallback(self):
+        srv = self._server(lambda p: {"ok": True, "mac": "aabbcc", "via": "PC-Utama"})
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(config, "NODE_URL", f"http://127.0.0.1:{srv.server_port}"), \
+             mock.patch.object(node.hp, "listing") as listing:
+            res = node.wake("Laptop")
+        self.assertEqual(res["mac"], "aabbcc")
+        listing.assert_not_called()
+
+    def test_falls_back_to_an_online_bridge_computer(self):
+        srv = self._server(lambda p: {"ok": False, "error": "tidak tahu"})
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(config, "NODE_URL", f"http://127.0.0.1:{srv.server_port}"), \
+             mock.patch.object(node.hp, "listing", return_value=[
+                 {"name": "Printer-Jembatan", "kind": "computer", "online": True},
+                 {"name": "Laptop", "kind": "computer", "online": False},  # dirinya sendiri, diabaikan
+             ]), \
+             mock.patch.object(node.hp, "command", return_value={"ok": True, "mac": "ddeeff"}) as command:
+            res = node.wake("Laptop")
+        self.assertTrue(res["ok"])
+        command.assert_called_once_with("Printer-Jembatan", "wol", {"target": "Laptop"})
+
+    def test_gives_up_with_local_error_when_no_bridge_helps(self):
+        srv = self._server(lambda p: {"ok": False, "error": "tidak tahu"})
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(config, "NODE_URL", f"http://127.0.0.1:{srv.server_port}"), \
+             mock.patch.object(node.hp, "listing", return_value=[]):
+            res = node.wake("Laptop")
+        self.assertFalse(res["ok"])
+
+
 class AppFollowsLeaderTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.dir = tempfile.mkdtemp()

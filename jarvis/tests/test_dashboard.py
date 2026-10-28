@@ -1,6 +1,7 @@
 """Uji dashboard web (nomor 4) lewat HTTP sungguhan ke server tiruan."""
 
 import asyncio
+import json
 import os
 import shutil
 import tempfile
@@ -12,7 +13,7 @@ from unittest import mock
 
 import httpx
 
-from itsme import access, brain, config, dashboard, memory
+from itsme import access, brain, config, dashboard, memory, node
 
 
 class FakeApp:
@@ -229,6 +230,44 @@ class DashboardTest(unittest.TestCase):
 
     def test_drive_upload_needs_guard_header(self):
         self.assertEqual(self.post("/api/drive/upload", {"path_lokal": "x"}, guard=False).status_code, 403)
+
+    # -- Wake-on-LAN (tab Komputer): lihat itsme-node inode/wol.py --------------
+    def test_node_wake_success(self):
+        with mock.patch.object(node, "wake", return_value={"ok": True, "mac": "aabbcc", "via": "PC"}) as wake:
+            r = self.post("/api/node/wake", {"name": "Laptop"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        wake.assert_called_once_with("Laptop")
+
+    def test_node_wake_not_found(self):
+        with mock.patch.object(node, "wake", return_value={"ok": False, "error": "tidak tahu"}):
+            r = self.post("/api/node/wake", {"name": "TidakAda"})
+        self.assertEqual(r.status_code, 404)
+        self.assertFalse(r.json()["ok"])
+
+    def test_node_wake_empty_name_rejected(self):
+        r = self.post("/api/node/wake", {"name": "  "})
+        self.assertEqual(r.status_code, 400)
+
+    def test_node_wake_without_node_installed(self):
+        with mock.patch.object(node, "wake", return_value=None):
+            r = self.post("/api/node/wake", {"name": "Laptop"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_node_status_merges_sleeping_known_computers(self):
+        fake_body = json.dumps({
+            "nodes": [{"name": "PC-Utama", "id": "A"}],
+            "known": [{"name": "PC-Utama", "ts": 1}, {"name": "PC-Tidur", "ts": 2}],
+            "phase": "running", "epoch": 1,
+        }).encode()
+        with mock.patch.object(dashboard, "_node_get",
+                                return_value=(200, "application/json", fake_body, "")), \
+             mock.patch.object(dashboard.hp, "listing", return_value=[]):
+            r = self.get("/api/node/status")
+        by_name = {n["name"]: n for n in r.json()["nodes"]}
+        self.assertIn("PC-Tidur", by_name)
+        self.assertTrue(by_name["PC-Tidur"].get("asleep"))
+        self.assertFalse(by_name["PC-Utama"].get("asleep"))  # sudah hidup, bukan "tidur"
 
 
 class DashboardLoginTest(unittest.TestCase):

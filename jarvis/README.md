@@ -260,6 +260,7 @@ disembunyikan dari pemilik atau antivirus.
 | `/pasang` | Satu baris PowerShell untuk memasang It's Me + node di komputer lain tanpa mengetik token (lihat "Tanpa komputer inti" di bawah) |
 | `/komputer` | Daftar komputer terhubung + cara buka layar & berkasnya (butuh It's Me Node) |
 | `/layar <nama>` | Kirim foto layar komputer itu ke chat (mis. `/layar Laptop`) |
+| `/nyalakan <nama>` | Coba bangunkan komputer itu dari jarak jauh (Wake-on-LAN) — lihat `PANDUAN_AKSES_JARAK_JAUH.md` |
 | `/lock` | Kunci bot; kata sandi diminta lagi sebelum bisa dipakai (kalau diatur) |
 | `/id` | Tampilkan user id Telegram-mu |
 
