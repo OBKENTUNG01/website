@@ -47,7 +47,9 @@ class WhatsApp:
                    WA_OWNER=str(config.WA_OWNER or ""),
                    WA_GUESTS=",".join(config.WA_GUESTS),
                    WA_OPEN="1" if config.WA_OPEN else "0",
-                   WA_AUTH=os.path.join(config.DATA_DIR, "whatsapp"))
+                   WA_AUTH=os.path.join(config.DATA_DIR, "whatsapp"),
+                   WA_FILES=config.WA_FILES_DIR,
+                   WA_MAX_MB=str(config.WA_MAX_MB))
         self._proc = subprocess.Popen(
             [node, "wa.js"], cwd=DIR, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
@@ -73,7 +75,8 @@ class WhatsApp:
                         log.exception("gagal memproses QR WhatsApp")
                 continue
             try:
-                self._on_message(msg.get("jid"), msg.get("text") or "", bool(msg.get("guest")))
+                self._on_message(msg.get("jid"), msg.get("text") or "",
+                                 bool(msg.get("guest")), msg.get("file"))
             except Exception:  # noqa: BLE001 - satu pesan gagal tidak boleh mematikan pembaca
                 log.exception("gagal memproses pesan WhatsApp")
         code = self._proc.poll()
@@ -92,18 +95,28 @@ class WhatsApp:
         time.sleep(3)
         self.start()
 
-    def send(self, jid, text):
+    def _send_obj(self, obj):
         with self._lock:
             if not self._proc or self._proc.poll() is not None:
                 log.warning("WhatsApp tidak tersambung; pesan tidak terkirim.")
                 return False
             try:
-                self._proc.stdin.write(json.dumps({"jid": jid, "text": text}) + "\n")
+                self._proc.stdin.write(json.dumps(obj) + "\n")
                 self._proc.stdin.flush()
                 return True
             except (OSError, ValueError):
                 log.warning("gagal menulis ke jembatan WhatsApp", exc_info=True)
                 return False
+
+    def send(self, jid, text):
+        return self._send_obj({"jid": jid, "text": text})
+
+    def send_file(self, jid, path, name=None, caption=None):
+        """Kirim satu berkas (sebagai dokumen) ke nomor WhatsApp."""
+        obj = {"jid": jid, "file": path, "name": name or os.path.basename(path)}
+        if caption:
+            obj["caption"] = caption
+        return self._send_obj(obj)
 
     def stop(self):
         self._stop = True

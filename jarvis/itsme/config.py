@@ -317,6 +317,10 @@ WA_OWNER = (_get("ITSME_WA_OWNER", "") or "").strip()
 WA_GUESTS = ({x.strip() for x in (_get("ITSME_WA_GUESTS", "") or "").replace(";", ",").split(",")
               if x.strip()})
 WA_OPEN = _bool("ITSME_WA_OPEN", False)
+# Batas ukuran berkas WhatsApp (MB), untuk terima maupun kirim.
+WA_MAX_MB = int(_get("ITSME_WA_MAX_MB", "100"))
+# Berkas yang dikirim ke bot WhatsApp disimpan di sini.
+WA_FILES_DIR = os.path.join(DATA_DIR, "wa_files")
 
 # Nama persona.
 NAME = _get("ITSME_NAME", "It's Me")

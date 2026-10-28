@@ -32,3 +32,5 @@ venv/
 # WhatsApp: dependensi Node & sesi login
 itsme/whatsapp/node_modules/
 data/whatsapp/
+# Berkas yang dikirim orang ke bot WhatsApp (bisa berisi data pribadi).
+data/wa_files/

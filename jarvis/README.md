@@ -496,6 +496,11 @@ Balas pesan dari WhatsApp-mu sendiri, bukan cuma Telegram.
    WhatsApp HP > Perangkat tertaut.
 4. Kirim pesan ke nomornya sendiri (chat "Pesan ke diri sendiri"). Riwayat
    percakapan dipisah dari Telegram.
+5. **Berkas (maks 100 MB).** Kirim gambar/dokumen/audio/video ke bot: berkasnya
+   diunduh ke `data\wa_files` lalu dibahas AI (berkas teks kecil langsung
+   dibacakan isinya). Untuk meminta bot **mengirim** berkas dari komputer ini:
+   `/kirim C:\path\berkas.pdf` — hanya pemilik, dan berkas rahasia (token,
+   password, kunci) ditolak. Batasnya diatur lewat `ITSME_WA_MAX_MB`.
 
 Sesi login disimpan di `data/whatsapp/` (jangan di-commit). Hanya nomor
 `ITSME_WA_OWNER` yang dilayani; grup dan nomor lain diabaikan. Tombol

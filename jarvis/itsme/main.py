@@ -165,6 +165,31 @@ def _with_image(text, image_path):
     ]
 
 
+def _wa_mb(n):
+    n = int(n or 0)
+    return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{max(1, n // 1024)} KB"
+
+
+# Berkas teks kecil ikut dibacakan ke otak supaya bisa langsung dibahas.
+_WA_TEKS = (".txt", ".md", ".csv", ".json", ".log", ".py", ".js", ".html", ".xml",
+            ".ini", ".yml", ".yaml", ".sh", ".ps1", ".kt", ".java", ".sql")
+
+
+def _wa_file_note(file):
+    """Keterangan berkas WhatsApp untuk otak (isi disertakan kalau teks & kecil)."""
+    nama = file.get("name") or "berkas"
+    jalur = file.get("path") or ""
+    nota = (f"[Pengirim melampirkan {file.get('kind') or 'berkas'}: {nama} "
+            f"({_wa_mb(file.get('size'))}), tersimpan di {jalur}]")
+    try:
+        if jalur and os.path.getsize(jalur) <= 40000 and nama.lower().endswith(_WA_TEKS):
+            with open(jalur, encoding="utf-8", errors="replace") as f:
+                return nota + "\nIsi berkas:\n" + f.read(40000)
+    except OSError:
+        pass
+    return nota
+
+
 class App:
     def __init__(self):
         # Mode perangkat (agent): tanpa Telegram, hanya dashboard + daftar ke Hub.
@@ -488,17 +513,27 @@ class App:
             "lalu pindai QR ini."))
 
     # --- WhatsApp -------------------------------------------------------------
-    def _wa_inbox(self, jid, text, guest=False):
+    def _wa_inbox(self, jid, text, guest=False, file=None):
         """Dipanggil dari thread pembaca WhatsApp; serahkan ke event loop."""
-        if text.strip():
-            self.loop.call_soon_threadsafe(self._spawn, self._run_wa(jid, text, guest))
+        if text.strip() or file:
+            self.loop.call_soon_threadsafe(self._spawn, self._run_wa(jid, text, guest, file))
 
-    async def _run_wa(self, jid, text, guest=False):
+    async def _run_wa(self, jid, text, guest=False, file=None):
         # ponytail: riwayat dipisah per nomor WhatsApp, tapi konfirmasi aksi &
         # tugas latar tetap lewat chat Telegram pemilik (tombol).
         if guest and not quota.allow("wa:" + jid):
             await asyncio.to_thread(self.wa.send, jid, "Kuota harian tamu sudah habis. Coba lagi besok.")
             return
+        # /kirim <path>: pemilik minta bot mengirim berkas dari komputer ini.
+        # Tamu tidak boleh (sama seperti alat lain yang ditutup untuk tamu).
+        if text.strip().lower().startswith("/kirim"):
+            if guest:
+                await asyncio.to_thread(self.wa.send, jid, "Mode tamu: perintah itu hanya untuk pemilik.")
+            else:
+                await self._wa_kirim(jid, text.strip()[6:].strip())
+            return
+        if file:
+            text = (text.strip() + "\n\n" if text.strip() else "") + _wa_file_note(file)
         key = "wa:" + jid
         async with self._lock(key):
             history = self.histories.setdefault(key, [])
@@ -506,6 +541,28 @@ class App:
             ctx = self._ctx_for(config.OWNER_ID, guest=guest)
             reply = await self._think(config.OWNER_ID, history, ctx)
         await asyncio.to_thread(self.wa.send, jid, reply)
+
+    async def _wa_kirim(self, jid, path):
+        """Kirim berkas dari komputer ini ke WhatsApp (hanya pemilik)."""
+        from .tools import is_secret_path
+
+        say = lambda t: asyncio.to_thread(self.wa.send, jid, t)  # noqa: E731
+        path = os.path.expanduser((path or "").strip().strip('"').strip("'"))
+        if not path:
+            await say("Pakai: /kirim <path berkas>")
+            return
+        if is_secret_path(path):
+            await say("Ditolak: berkas itu biasanya berisi rahasia (token, password, kunci).")
+            return
+        if not os.path.isfile(path):
+            await say(f"Berkas tidak ditemukan: {path}")
+            return
+        size = os.path.getsize(path)
+        if size > config.WA_MAX_MB * 1024 * 1024:
+            await say(f"Berkas {_wa_mb(size)} melebihi batas {config.WA_MAX_MB} MB.")
+            return
+        if not await asyncio.to_thread(self.wa.send_file, jid, path):
+            await say("Gagal mengirim berkas (WhatsApp tidak tersambung).")
 
     # --- penanganan pesan ---------------------------------------------------
     async def _handle_message(self, message):
