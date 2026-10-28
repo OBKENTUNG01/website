@@ -60,7 +60,8 @@ HELP = (
     "/reset — mulai percakapan baru (lupakan konteks obrolan, memori tetap)\n"
     "/perangkat — daftar komputer lain yang terhubung\n"
     "/pakai <nama> — pesan berikutnya dikerjakan komputer itu (/pakai saja = kembali ke sini)\n"
-    "/pasang — satu baris perintah untuk memasang It's Me di komputer lain\n"
+    "/pasang — satu baris perintah untuk memasang It's Me di komputer lain (sekali pakai)\n"
+    "/pasang_tetap — sama, tapi SATU tautan dipakai ulang untuk beberapa komputer\n"
     "/komputer — buka layar & berkas komputer yang terhubung (seperti remote desktop)\n"
     "/layar <nama> — kirim foto layar komputer itu ke chat\n"
     "/lock — kunci bot; kata sandi diminta lagi sebelum bisa dipakai\n"
@@ -72,7 +73,7 @@ HELP = (
 _GUEST_OK = {"", "/start", "/help", "/id", "/lock"}
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
-    "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/id",
+    "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/pasang_tetap", "/id",
     "/lock", "/komputer", "/layar", "/wa",
 }
 # Paling lama Hub menunggu jawaban dari perangkat (detik).
@@ -619,6 +620,9 @@ class App:
         if first == "/pasang":
             await self._invite(chat_id)
             return
+        if first == "/pasang_tetap":
+            await self._invite(chat_id, reusable=True)
+            return
         if first == "/komputer":
             await self.tg.send(chat_id, await asyncio.to_thread(self._computers_text))
             return
@@ -824,10 +828,14 @@ class App:
         if not await self.tg.send_photo(chat_id, png, "layar.png", f"🖥️ {label}"):
             await self.tg.send(chat_id, f"Foto layar {label} gagal dikirim.")
 
-    async def _invite(self, chat_id):
+    async def _invite(self, chat_id, reusable=False):
         """/pasang: satu baris PowerShell berisi kode undangan sekali pakai. Komputer
         baru menukar kodenya di dashboard Hub (lewat domain/tunnel sendiri), mengambil
-        kode gabung + isi .env bot, lalu menyambung KELUAR ke sini. Tanpa Tailscale."""
+        kode gabung + isi .env bot, lalu menyambung KELUAR ke sini. Tanpa Tailscale.
+
+        reusable=True (/pasang_tetap): satu tautan yang SAMA dipakai untuk beberapa
+        komputer (tidak hangus setelah satu kali), berlaku sampai 30 hari atau sampai
+        /pasang_tetap dikirim lagi (kode lama langsung tak berlaku saat itu)."""
         if not node.installed():
             await self.tg.send(
                 chat_id,
@@ -858,11 +866,13 @@ class App:
             return
         code = node.new_invite_code()
         env = await asyncio.to_thread(node.invite_env, keys.ENV_FILE)
-        if not await asyncio.to_thread(node.create_invite, code, env):
+        ttl = node.REUSABLE_INVITE_TTL if reusable else node.INVITE_TTL
+        ok = await asyncio.to_thread(node.create_invite, code, env, ttl, 5, reusable)
+        if not ok:
             await self.tg.send(
                 chat_id,
-                "Node di komputer ini belum menjawab (mungkin baru menyala atau sedang "
-                "diperbarui). Coba /pasang lagi sebentar lagi.",
+                f"Node di komputer ini belum menjawab (mungkin baru menyala atau sedang "
+                f"diperbarui). Coba {'/pasang_tetap' if reusable else '/pasang'} lagi sebentar lagi.",
             )
             return
         note = (
@@ -871,6 +881,19 @@ class App:
             "undang lagi (/pasang) — atau pakai domain tetap (ITSME_PUBLIC_URL) agar permanen."
             if ephemeral else ""
         )
+        if reusable:
+            hari = node.REUSABLE_INVITE_TTL // 86400
+            pasang_lagi = (
+                f"Tautan ini bisa dipakai BERKALI-KALI untuk komputer mana pun sampai {hari} "
+                "hari, atau sampai kamu kirim /pasang_tetap lagi (tautan lama langsung tak "
+                "berlaku begitu yang baru dibuat — cuma satu tautan tetap yang aktif sekaligus). "
+                "⚠️ Siapa pun yang punya tautan ini bisa ikut gabung ke jaringanmu selama masih "
+                "berlaku — kirim hanya ke komputer yang kamu percaya, atau kirim /pasang_tetap "
+                "lagi kapan saja untuk mencabut yang lama."
+            )
+        else:
+            pasang_lagi = (f"Kode hanya bisa dipakai sekali dan hangus dalam "
+                           f"{node.INVITE_TTL // 60} menit. Untuk komputer berikutnya, kirim /pasang lagi.")
         await self.tg.send(
             chat_id,
             "Pasang di komputer lain (TANPA Tailscale):\n"
@@ -880,8 +903,7 @@ class App:
             "Komputer itu menyambung ke Hub lewat alamat publiknya. Token bot, pemilik, "
             "kunci otak, memori, dan kode jaringan disalin sendiri dari komputer ini. "
             "Tidak ada yang perlu diketik atau login.\n\n"
-            f"Kode hanya bisa dipakai sekali dan hangus dalam {node.INVITE_TTL // 60} menit. "
-            "Untuk komputer berikutnya, kirim /pasang lagi." + note,
+            f"{pasang_lagi}" + note,
         )
         await self.tg.send(chat_id, node.install_command(code, hub_url))
 

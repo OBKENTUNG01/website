@@ -162,6 +162,10 @@ class Follower:
 # --- /pasang: undangan sekali pakai untuk komputer baru ------------------------
 INSTALL_URL = "https://raw.githubusercontent.com/OBKENTUNG01/itsme-node/main/install.ps1"
 INVITE_TTL = 30 * 60
+# /pasang_tetap: satu tautan dipakai ulang untuk beberapa komputer (reusable=True
+# di create_invite), tapi tetap dibatasi waktu - bukan rahasia abadi (cocokkan
+# dengan MAX_REUSABLE_TTL di itsme-node/inode/invites.py).
+REUSABLE_INVITE_TTL = 30 * 24 * 60 * 60
 # Isi .env yang khusus komputer ini (folder, alamat, perangkat keras): tidak ikut
 # disalin ke komputer baru.
 _LOCAL_ONLY = {
@@ -188,9 +192,12 @@ def invite_env(env_file):
             if v and k not in _LOCAL_ONLY and "\n" not in v}
 
 
-def create_invite(code, env, ttl=INVITE_TTL, timeout=5):
-    """Titipkan undangan ke node di komputer ini. True kalau diterima."""
-    body = json.dumps({"code": code, "ttl": ttl, "env": env}).encode()
+def create_invite(code, env, ttl=INVITE_TTL, timeout=5, reusable=False):
+    """Titipkan undangan ke node di komputer ini. True kalau diterima.
+
+    reusable=True: kode TIDAK hangus dipakai (bisa dipakai beberapa komputer
+    dengan tautan yang sama - /pasang_tetap), tapi tetap kedaluwarsa sendiri."""
+    body = json.dumps({"code": code, "ttl": ttl, "env": env, "reusable": bool(reusable)}).encode()
     req = urllib.request.Request(config.NODE_URL + "/invite-new", data=body,
                                  headers={"Content-Type": "application/json"})
     try:

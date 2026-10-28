@@ -106,6 +106,39 @@ class PasangCommandTest(unittest.IsolatedAsyncioTestCase):
         create.assert_not_called()
         self.assertEqual(self.tg.sent, [])
 
+    async def test_pasang_is_one_time_not_reusable(self):
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(node, "hub_public_url", return_value="https://hub.example"), \
+             mock.patch.object(node, "invite_env", return_value={}), \
+             mock.patch.object(node, "create_invite", return_value=True) as create:
+            await self.app._handle_message(self._msg("/pasang"))
+        # (code, env, ttl, timeout, reusable)
+        self.assertEqual(create.call_args[0][2], node.INVITE_TTL)
+        self.assertEqual(create.call_args[0][4], False)
+        self.assertIn("sekali", self.tg.sent[0][1])
+
+    async def test_pasang_tetap_creates_reusable_invite(self):
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(node, "hub_public_url", return_value="https://hub.example"), \
+             mock.patch.object(node, "invite_env", return_value={"TELEGRAM_BOT_TOKEN": "t"}), \
+             mock.patch.object(node, "create_invite", return_value=True) as create:
+            await self.app._handle_message(self._msg("/pasang_tetap"))
+        code, env, ttl, timeout, reusable = create.call_args[0]
+        self.assertEqual(env, {"TELEGRAM_BOT_TOKEN": "t"})
+        self.assertEqual(ttl, node.REUSABLE_INVITE_TTL)
+        self.assertTrue(reusable)
+        self.assertIn("BERKALI-KALI", self.tg.sent[0][1])
+        self.assertIn("Siapa pun yang punya tautan ini", self.tg.sent[0][1])  # peringatan risiko
+        self.assertEqual(self.tg.sent[1][1], node.install_command(code, "https://hub.example"))
+
+    async def test_pasang_tetap_only_owner(self):
+        msg = self._msg("/pasang_tetap")
+        msg["from"]["id"] = 99
+        with mock.patch.object(node, "create_invite") as create:
+            await self.app._handle_message(msg)
+        create.assert_not_called()
+        self.assertEqual(self.tg.sent, [])
+
 
 if __name__ == "__main__":
     unittest.main()
