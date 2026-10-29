@@ -216,6 +216,55 @@ class WakeTest(unittest.TestCase):
         self.assertFalse(res["ok"])
 
 
+class PushSeedTest(unittest.TestCase):
+    """node.push_seed_to_bridges(): komputer yang bergabung SEBELUM perbaikan
+    "seed" di invite()/enroll() tidak punya titik awal gosip sama sekali -
+    dititipi alamat node ini lewat jembatan yang sudah tersambung, tanpa
+    pemiliknya harus /pasang ulang manual (lihat itsme-node bridge.py)."""
+
+    def setUp(self):
+        node._seeded_bridges.clear()
+        self.addCleanup(node._seeded_bridges.clear)
+
+    def _server(self, addr):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"addr": addr}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        return srv
+
+    def test_not_installed_does_nothing(self):
+        with mock.patch.object(node, "installed", return_value=False), \
+             mock.patch.object(node.hp, "listing") as listing:
+            node.push_seed_to_bridges()
+        listing.assert_not_called()
+
+    def test_seeds_online_bridge_computers_once_each(self):
+        srv = self._server("192.168.1.5:7171")
+        with mock.patch.object(node, "installed", return_value=True), \
+             mock.patch.object(config, "NODE_URL", f"http://127.0.0.1:{srv.server_port}"), \
+             mock.patch.object(node.hp, "listing", return_value=[
+                 {"name": "Printer-Jembatan", "kind": "computer", "online": True},
+                 {"name": "HP-Budi", "kind": "hp", "online": True},             # bukan komputer
+                 {"name": "Laptop-Mati", "kind": "computer", "online": False},  # sedang offline
+             ]), \
+             mock.patch.object(node.hp, "command") as command:
+            node.push_seed_to_bridges()
+            node.push_seed_to_bridges()  # dipanggil berkala (lihat main.py): tetap sekali saja
+        command.assert_called_once_with("Printer-Jembatan", "seed", {"addr": "192.168.1.5:7171"}, wait=0)
+
+
 class AppFollowsLeaderTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.dir = tempfile.mkdtemp()

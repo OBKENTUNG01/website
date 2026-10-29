@@ -128,6 +128,34 @@ def wake(name, timeout=10):
     return res
 
 
+# Komputer yang sudah bergabung SEBELUM perbaikan "seed" di invite()/enroll()
+# tidak punya titik awal gosip sama sekali - diam-diam gagal-pindah-pemimpin,
+# sinkron memori/otak/akses, dan pembagian riset tidak pernah jalan di antara
+# mereka. Titipkan alamat LAN node ini lewat jembatan yang SUDAH tersambung
+# (hp.py) supaya ikut diperbaiki otomatis, tanpa harus /pasang ulang manual
+# (lihat itsme-node bridge.py "seed"). nama->sudah pernah dititipi, per proses
+# (aman dititipi ulang; ini cuma supaya tidak berulang-ulang tiap kali dipanggil).
+_seeded_bridges = set()
+
+
+def push_seed_to_bridges():
+    """Titipkan alamat LAN node ini ke tiap komputer jembatan yang online dan
+    belum pernah dititipi di proses ini. Aman dipanggil berkali-kali/berkala."""
+    if not installed():
+        return
+    addr = (status() or {}).get("addr")
+    if not addr:
+        return
+    for p in hp.listing():
+        if p.get("kind") != "computer" or not p.get("online"):
+            continue
+        key = (p.get("name") or "").strip().lower()
+        if not key or key in _seeded_bridges:
+            continue
+        _seeded_bridges.add(key)
+        hp.command(p["name"], "seed", {"addr": addr}, wait=0)
+
+
 class Follower:
     """Memutuskan apakah It's Me di komputer ini boleh memakai Telegram."""
 

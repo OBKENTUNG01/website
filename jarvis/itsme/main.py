@@ -1410,6 +1410,12 @@ class App:
         brain.restore()
         dashboard.start(self)
         self._start_quick_tunnel()
+        if node.installed():
+            # Bukan lewat _spawn: tugas ini TIDAK PERNAH selesai (loop selamanya),
+            # dan _spawn menandainya tugas yang harus ditunggu _wait_idle sebelum
+            # memasang pembaruan - itu akan membuat setiap pembaruan menunggu
+            # sampai _UPDATE_MAX_WAIT habis, setiap kali, sia-sia.
+            self._seed_retrofit_task = asyncio.create_task(self._retrofit_bridge_seeds())
         if config.WHATSAPP:
             self.wa = WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up)
             if not self.wa.start():
@@ -1435,6 +1441,18 @@ class App:
             if getattr(self, "quick_tunnel", None):
                 self.quick_tunnel.stop()
             await self.tg.close()
+
+    async def _retrofit_bridge_seeds(self):
+        """Komputer yang bergabung SEBELUM perbaikan "seed" (lihat node.py) tidak
+        punya titik awal gosip sama sekali, jadi diam-diam tidak ikut gagal-pindah-
+        pemimpin/sinkron memori. Titipkan alamat node ini ke tiap komputer jembatan
+        secara berkala, supaya ikut diperbaiki tanpa pemiliknya harus /pasang ulang."""
+        while True:
+            try:
+                await asyncio.to_thread(node.push_seed_to_bridges)
+            except Exception:  # noqa: BLE001 - latar belakang, jangan ganggu bot utama
+                log.exception("gagal menitipkan seed ke komputer jembatan")
+            await asyncio.sleep(30)
 
     def _start_quick_tunnel(self):
         """Nyalakan Cloudflare Quick Tunnel (alamat publik instan) kalau diminta,
