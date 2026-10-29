@@ -506,12 +506,15 @@ pengeluaran, supaya bisa dicabut kapan saja.
 
 **Mode webhook (`ITSME_TG_WEBHOOK=1`).** Tunnel Cloudflare gratis memberi alamat acak baru
 tiap It's Me menyala, dan Telegram sering belum bisa menemukan alamat baru itu beberapa
-saat pertama ("Failed to resolve host"). Karena itu It's Me: (1) menunggu sampai DNS publik
-mengenal alamat baru, baru memasang webhook; (2) **tidak pernah menyerah** — gagal dicoba
-lagi dengan jeda makin panjang (5 detik → 5 menit); (3) selama webhook belum terpasang,
-tetap mengambil pesan dengan polling, jadi bot tidak tuli; (4) memeriksa tiap 5 menit dan
-memasang ulang kalau webhook hilang, berganti alamat, atau Telegram gagal mengantar. Kirim
-`/diagnosa` untuk melihat keadaannya.
+saat pertama ("Failed to resolve host") — bisa sampai beberapa menit, dan setiap `setWebhook`
+yang gagal malah **menghapus** webhook yang sedang terpasang. Karena itu It's Me: (1) menunggu
+sampai DNS publik mengenal alamat baru, lalu memasang webhook dengan **IP tetap hasil DNS
+publik itu** (parameter `ip_address` milik `setWebhook`), jadi Telegram tidak perlu
+me-resolve apa pun; kalau cara itu gagal baru dicoba lewat DNS Telegram; (2) **tidak pernah
+menyerah** — gagal dicoba lagi dengan jeda makin panjang (5 detik → 5 menit); (3) selama
+webhook belum terpasang, tetap mengambil pesan dengan polling, jadi bot tidak tuli; (4)
+memeriksa tiap 5 menit dan memasang ulang kalau webhook hilang, berganti alamat, atau
+Telegram gagal mengantar. Kirim `/diagnosa` untuk melihat keadaannya.
 
 ## WhatsApp (opsional)
 

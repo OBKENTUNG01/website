@@ -40,6 +40,12 @@ class FakeClient:
             raise self.exc
         return FakeResponse(self.payload)
 
+    async def post(self, url, json=None):
+        self.calls.append((url, json, None))
+        if self.exc:
+            raise self.exc
+        return FakeResponse(self.payload)
+
     async def aclose(self):
         pass
 
@@ -63,6 +69,56 @@ class TelegramClientTest(unittest.IsolatedAsyncioTestCase):
         self.tg._client = FakeClient(exc=httpx.ConnectError("putus"))
         self.assertFalse(await self.tg.host_resolves("x.trycloudflare.com"))
 
+    async def test_resolve_ipv4_returns_only_a_records(self):
+        self.tg._client = FakeClient({"Status": 0, "Answer": [
+            {"name": "x.trycloudflare.com", "type": 5, "data": "y.example."},  # CNAME diabaikan
+            {"type": 1, "data": "104.16.231.132"},
+            {"type": 1, "data": "104.16.230.132"},
+            {"type": 1, "data": "104.16.231.132"},  # duplikat
+            {"type": 28, "data": "2606:4700::6810:e784"},  # AAAA diabaikan
+            {"type": 1, "data": "bukan-ip"},
+        ]})
+        self.assertEqual(await self.tg.resolve_ipv4("x.trycloudflare.com"), ["104.16.231.132", "104.16.230.132"])
+
+    async def test_resolve_ipv4_is_empty_when_unknown_or_unreachable(self):
+        for payload in ({"Status": 3}, {"Status": 0}, {"Answer": None}, ["bukan", "dict"]):
+            self.tg._client = FakeClient(payload)
+            self.assertEqual(await self.tg.resolve_ipv4("x.trycloudflare.com"), [], payload)
+        self.tg._client = FakeClient(exc=httpx.ConnectError("putus"))
+        self.assertEqual(await self.tg.resolve_ipv4("x.trycloudflare.com"), [])
+
+    async def test_set_webhook_sends_the_fixed_ip_only_when_given(self):
+        self.tg._client = FakeClient({"ok": True})
+        self.assertTrue(await self.tg.set_webhook(URL, SECRET, ip_address="104.16.231.132"))
+        sent = self.tg._client.calls[0][1]
+        self.assertEqual(sent["ip_address"], "104.16.231.132")
+        self.assertEqual(sent["url"], f"{URL}/tg/{SECRET}")
+        self.assertEqual(sent["secret_token"], SECRET)
+        self.tg._client = FakeClient({"ok": True})
+        self.assertTrue(await self.tg.set_webhook(URL, SECRET))
+        self.assertNotIn("ip_address", self.tg._client.calls[0][1])
+
+    async def _poll_once(self, description):
+        self.tg._client = FakeClient({"ok": False, "description": description})
+        with mock.patch.object(telegram.asyncio, "sleep", mock.AsyncMock()):
+            return await self.tg.get_updates()
+
+    async def test_conflict_caused_by_a_webhook_is_not_blamed_on_another_device(self):
+        for desc in ("Conflict: terminated by setWebhook request",
+                     "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first"):
+            self.tg._conflict_logged_at = None
+            with self.assertLogs("itsme", level="INFO") as cm:
+                self.assertEqual(await self._poll_once(desc), [])
+            self.assertEqual([r.levelname for r in cm.records], ["INFO"], desc)
+            self.assertNotIn("LAIN", cm.output[0])
+
+    async def test_conflict_from_another_poller_still_warns(self):
+        self.tg._conflict_logged_at = None
+        with self.assertLogs("itsme", level="INFO") as cm:
+            await self._poll_once("Conflict: terminated by other getUpdates request; make sure that only one bot instance is running")
+        self.assertEqual([r.levelname for r in cm.records], ["WARNING"])
+        self.assertIn("LAIN", cm.output[0])
+
     async def test_get_webhook_info(self):
         info = {"url": URL + "/tg/abc", "pending_update_count": 2}
         self.tg._client = FakeClient({"ok": True, "result": info})
@@ -76,8 +132,9 @@ class TelegramClientTest(unittest.IsolatedAsyncioTestCase):
 class FakeTg:
     """Telegram tiruan yang jawabannya bisa diatur; yang terakhir diulang terus."""
 
-    def __init__(self, dns=(True,), sets=(True,), infos=(None,)):
-        self.dns, self.sets, self.infos, self.calls = list(dns), list(sets), list(infos), []
+    def __init__(self, dns=(True,), sets=(True,), infos=(None,), ips=()):
+        self.dns, self.sets, self.infos, self.ips = list(dns), list(sets), list(infos), list(ips)
+        self.calls = []
 
     @staticmethod
     def _next(q):
@@ -87,8 +144,12 @@ class FakeTg:
         self.calls.append(("dns", host))
         return self._next(self.dns)
 
-    async def set_webhook(self, url, secret, jeda=None):
-        self.calls.append(("set", url))
+    async def resolve_ipv4(self, host):
+        self.calls.append(("ipv4", host))
+        return list(self.ips)
+
+    async def set_webhook(self, url, secret, jeda=None, ip_address=None):
+        self.calls.append(("set", url, ip_address))
         return self._next(self.sets)
 
     async def get_webhook_info(self):
@@ -146,8 +207,27 @@ class KeepWebhookTest(unittest.IsolatedAsyncioTestCase):
         tg = FakeTg(dns=[False, False, True])
         await self._run_keeper(tg)
         self.assertTrue(await self._until(lambda: self.app._webhook_ok))
-        kinds = [c[0] for c in tg.calls]
+        kinds = [c[0] for c in tg.calls if c[0] != "ipv4"]
         self.assertEqual(kinds[:4], ["dns", "dns", "dns", "set"])  # baru memasang setelah DNS dikenal
+
+    async def test_installs_with_the_fixed_ip_from_public_dns(self):
+        tg = FakeTg(ips=["104.16.231.132", "104.16.230.132"])
+        await self._run_keeper(tg)
+        self.assertTrue(await self._until(lambda: self.app._webhook_ok))
+        # sekali pasang, langsung dengan IP pertama: tak bergantung resolver Telegram
+        self.assertEqual([c for c in tg.calls if c[0] == "set"], [("set", URL, "104.16.231.132")])
+
+    async def test_falls_back_to_telegram_dns_when_the_fixed_ip_attempt_fails(self):
+        tg = FakeTg(ips=["104.16.231.132"], sets=[False, True])
+        await self._run_keeper(tg)
+        self.assertTrue(await self._until(lambda: self.app._webhook_ok))
+        self.assertEqual([c[2] for c in tg.calls if c[0] == "set"], ["104.16.231.132", None])
+
+    async def test_without_a_public_ip_it_lets_telegram_resolve(self):
+        tg = FakeTg(ips=[])
+        await self._run_keeper(tg)
+        self.assertTrue(await self._until(lambda: self.app._webhook_ok))
+        self.assertEqual([c[2] for c in tg.calls if c[0] == "set"], [None])
 
     async def test_keeps_retrying_instead_of_giving_up(self):
         tg = FakeTg(sets=[False, False, False, True])

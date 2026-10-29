@@ -5,6 +5,7 @@ kalau panjang), tombol konfirmasi inline, dan menjawab callback.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -39,17 +40,25 @@ class Telegram:
         self._conflict_logged_at = None
         self._conflicts = 0
 
-    async def set_webhook(self, base_url, secret, jeda=(3, 6, 12, 20, 30)):
+    async def set_webhook(self, base_url, secret, jeda=(3, 6, 12, 20, 30), ip_address=None):
         """Minta Telegram mendorong pesan ke {base_url}/tg/{secret}.
 
         Alamat tunnel Cloudflare baru bisa di-resolve beberapa detik setelah
         cloudflared mencetaknya, jadi percobaan pertama sering ditolak
         ("Failed to resolve host"). Dicoba ulang dengan jeda sampai ~70 detik.
+
+        ip_address: IP tetap yang dipakai Telegram untuk menghubungi webhook, MENGGANTIKAN
+        hasil DNS Telegram sendiri. Dipakai karena resolver Telegram sering belum mengenal
+        alamat tunnel baru sampai beberapa menit padahal DNS publik sudah (29 Okt 2026: 6
+        dari 9 restart gagal total) - dan setWebhook yang gagal malah MENGHAPUS webhook yang
+        sedang terpasang. Dengan IP dari DNS publik kita, Telegram tak perlu me-resolve apa pun.
         """
         url = f"{base_url.rstrip('/')}/tg/{secret}"
         payload = {"url": url, "secret_token": secret,
                    "allowed_updates": json.dumps(["message", "callback_query"]),
                    "drop_pending_updates": False}
+        if ip_address:
+            payload["ip_address"] = ip_address
         for nomor, tunggu in enumerate((0, *jeda)):
             if tunggu:
                 await asyncio.sleep(tunggu)
@@ -80,6 +89,17 @@ class Telegram:
             return None
         return j.get("result") if j.get("ok") else None
 
+    async def _doh(self, host):
+        """Jawaban DNS-over-HTTPS (JSON) Cloudflare untuk A record `host`; {} bila gagal."""
+        try:
+            r = await self._client.get("https://1.1.1.1/dns-query",
+                                       params={"name": host, "type": "A"},
+                                       headers={"accept": "application/dns-json"}, timeout=5)
+            j = r.json()
+        except (httpx.HTTPError, ValueError):
+            return {}
+        return j if isinstance(j, dict) else {}
+
     async def host_resolves(self, host):
         """Apakah DNS PUBLIK sudah mengenal `host`? (DNS-over-HTTPS Cloudflare.)
 
@@ -87,14 +107,23 @@ class Telegram:
         setWebhook dipanggil terlalu dini, resolver Telegram bisa menyimpan jawaban
         'tidak ada' dan semua percobaan berikutnya ikut gagal - bot jadi tuli
         sampai nyala ulang berikutnya."""
-        try:
-            r = await self._client.get("https://1.1.1.1/dns-query",
-                                       params={"name": host, "type": "A"},
-                                       headers={"accept": "application/dns-json"}, timeout=5)
-            j = r.json()
-        except (httpx.HTTPError, ValueError):
-            return False
+        j = await self._doh(host)
         return j.get("Status") == 0 and bool(j.get("Answer"))
+
+    async def resolve_ipv4(self, host):
+        """Alamat IPv4 (A record) `host` menurut DNS PUBLIK; [] kalau belum ada / gagal.
+        Dipakai sebagai `ip_address` setWebhook (lihat set_webhook)."""
+        found = []
+        for ans in (await self._doh(host)).get("Answer") or []:
+            if not isinstance(ans, dict) or ans.get("type", 1) != 1:  # 1 = A; abaikan CNAME/AAAA
+                continue
+            try:
+                ip = ipaddress.ip_address(str(ans.get("data")))
+            except ValueError:
+                continue
+            if ip.version == 4 and str(ip) not in found:
+                found.append(str(ip))
+        return found
 
     async def close(self):
         await self._client.aclose()
@@ -117,17 +146,23 @@ class Telegram:
         if not data.get("ok"):
             desc = str(data.get("description", data))
             if "Conflict" in desc:
-                # Ada poller lain memakai token ini (perangkat/jendela lain).
+                # Biasanya ada poller lain memakai token ini (perangkat/jendela lain).
                 # Dicatat tiap 5 menit saja supaya log tidak tenggelam.
                 self._conflicts += 1
                 now = time.monotonic()
                 if self._conflict_logged_at is None or now - self._conflict_logged_at >= 300:
                     self._conflict_logged_at = now
-                    log.warning(
-                        "Telegram menolak: %s (kejadian ke-%d). Token bot ini dipakai "
-                        "proses/perangkat LAIN: tutup It's Me di sana, atau pakai token "
-                        "bot berbeda.", desc, self._conflicts,
-                    )
+                    if "webhook" in desc.lower():
+                        # Bukan poller lain: webhook yang aktif / baru dipasang menghentikan
+                        # getUpdates (normal di mode webhook), jangan dituduh perangkat lain.
+                        log.info("Telegram: webhook sedang aktif atau baru dipasang, jadi polling "
+                                 "(getUpdates) berhenti dulu (%s).", desc)
+                    else:
+                        log.warning(
+                            "Telegram menolak: %s (kejadian ke-%d). Token bot ini dipakai "
+                            "proses/perangkat LAIN: tutup It's Me di sana, atau pakai token "
+                            "bot berbeda.", desc, self._conflicts,
+                        )
                 await asyncio.sleep(15)
                 return []
             # mis. token salah — beri jeda supaya tidak membanjiri API

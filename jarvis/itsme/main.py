@@ -1332,12 +1332,14 @@ class App:
     async def _keep_webhook(self, url):
         """Pasang webhook Telegram ke `url` (alamat tunnel) dan JAGA tetap terpasang.
 
-        1. Tunggu DNS publik mengenal hostname baru: setWebhook yang terlalu dini
-           membuat resolver Telegram menyimpan 'tidak ada' dan semua percobaan ikut
-           gagal (3 dari 4 restart pada 29 Okt 2026).
-        2. Gagal pun jangan menyerah: coba lagi dengan jeda makin panjang. Selama belum
+        1. Tunggu DNS publik mengenal hostname baru.
+        2. Pasang dengan IP tetap hasil DNS publik itu (_install_webhook): resolver
+           Telegram sering belum mengenal alamat tunnel baru sampai beberapa menit padahal
+           DNS publik sudah, dan setWebhook yang gagal malah MENGHAPUS webhook yang ada
+           (29 Okt 2026: 6 dari 9 restart gagal total, bot tuli lebih dari 10 jam).
+        3. Gagal pun jangan menyerah: coba lagi dengan jeda makin panjang. Selama belum
            terpasang, _poll memakai getUpdates, jadi bot tetap mendengar.
-        3. Setelah terpasang, periksa berkala; pasang ulang kalau hilang/berganti atau
+        4. Setelah terpasang, periksa berkala; pasang ulang kalau hilang/berganti atau
            Telegram gagal mengantar."""
         secret = tg_webhook_secret()
         self._webhook_ok = False
@@ -1345,7 +1347,7 @@ class App:
         jeda = (5, 10, 20, 30, 60, 120, 300)
         gagal = 0
         while True:
-            if await self.tg.set_webhook(url, secret):
+            if await self._install_webhook(url, secret):
                 self._webhook_ok = True
                 await self._watch_webhook(url, secret)
                 self._webhook_ok = False
@@ -1353,6 +1355,17 @@ class App:
                 continue
             await asyncio.sleep(jeda[min(gagal, len(jeda) - 1)])
             gagal += 1
+
+    async def _install_webhook(self, url, secret):
+        """Satu putaran pemasangan webhook; True kalau Telegram menerima.
+
+        Utamakan IP tetap dari DNS publik kita sendiri (setWebhook ip_address), sehingga
+        keberhasilannya tak tergantung resolver Telegram. Kalau itu gagal, atau DNS publik
+        belum punya alamatnya, baru biarkan Telegram me-resolve sendiri (cara lama)."""
+        ips = await self.tg.resolve_ipv4(urlparse(url).hostname)
+        if ips and await self.tg.set_webhook(url, secret, jeda=(3, 6), ip_address=ips[0]):
+            return True
+        return await self.tg.set_webhook(url, secret)
 
     async def _wait_dns_visible(self, url, limit=90.0):
         host = urlparse(url).hostname
