@@ -171,5 +171,86 @@ class WaAppIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("berhenti total" in t for _, t, _ in self.app.tg.sent))
 
 
+class WaCommandParityTest(unittest.IsolatedAsyncioTestCase):
+    """/komputer, /nyalakan, /reset, /otak, /memori, /hapus_memori lewat WhatsApp
+    (lihat _WA_OWNER_COMMANDS & _run_wa di main.py)."""
+
+    async def asyncSetUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        for p in (
+            mock.patch.object(config, "OWNER_ID", 42),
+            mock.patch.object(config, "MEMORY_FILE", os.path.join(self.dir, "memory.md")),
+            mock.patch.object(config, "DATA_DIR", self.dir),
+            mock.patch.object(config, "LOG_FILE", os.path.join(self.dir, "itsme.log")),
+            mock.patch.object(config, "AGENT_MODE", False),
+            mock.patch.object(itsme_main, "Telegram", FakeTelegram),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        logging.getLogger("itsme").disabled = True
+        self.addCleanup(setattr, logging.getLogger("itsme"), "disabled", False)
+        self.app = itsme_main.App()
+        self.app.loop = asyncio.get_running_loop()
+        self.sent = []
+        self.app.wa = type("FakeWa", (), {
+            "send": staticmethod(lambda jid, text: self.sent.append((jid, text)) or True),
+        })()
+        self.jid = "62811@s.whatsapp.net"
+
+    async def test_komputer_blocked_for_guest(self):
+        await self.app._run_wa(self.jid, "/komputer", guest=True)
+        self.assertIn("hanya untuk pemilik", self.sent[-1][1])
+
+    async def test_komputer_lists_connected_computers(self):
+        with mock.patch.object(itsme_main.node, "installed", return_value=False):
+            await self.app._run_wa(self.jid, "/komputer")
+        self.assertIn("belum terpasang", self.sent[-1][1])
+
+    async def test_nyalakan_without_name_shows_format(self):
+        await self.app._run_wa(self.jid, "/nyalakan")
+        self.assertIn("Format: /nyalakan", self.sent[-1][1])
+
+    async def test_nyalakan_success_uses_wake_computer(self):
+        with mock.patch.object(itsme_main.node, "installed", return_value=True), \
+             mock.patch.object(itsme_main.node, "wake",
+                                return_value={"ok": True, "mac": "aabbcc", "via": "PC"}):
+            await self.app._run_wa(self.jid, "/nyalakan Laptop")
+        self.assertIn("Sinyal nyala terkirim", self.sent[-1][1])
+
+    async def test_reset_clears_wa_history_only(self):
+        self.app.histories["wa:" + self.jid] = [{"role": "user", "content": "lama"}]
+        await self.app._run_wa(self.jid, "/reset")
+        self.assertNotIn("wa:" + self.jid, self.app.histories)
+        self.assertIn("direset", self.sent[-1][1])
+
+    async def test_otak_reports_status(self):
+        await self.app._run_wa(self.jid, "/otak")
+        self.assertIn("Otak sekarang", self.sent[-1][1])
+
+    async def test_memori_shows_contents_and_hint(self):
+        self.app.memory.add("suka kopi")
+        await self.app._run_wa(self.jid, "/memori")
+        self.assertIn("suka kopi", self.sent[-1][1])
+        self.assertIn("/hapus_memori", self.sent[-1][1])
+
+    async def test_hapus_memori_confirmed_via_telegram_then_clears(self):
+        self.app.memory.add("suka kopi")
+        with mock.patch.object(self.app, "_ask_confirm", return_value=True) as ask:
+            await self.app._run_wa(self.jid, "/hapus_memori")
+        self.assertEqual(ask.call_args[0][0], config.OWNER_ID)
+        self.assertNotIn("suka kopi", self.app.memory.text())
+        texts = [t for _, t in self.sent]
+        self.assertTrue(any("Telegram dulu" in t for t in texts))
+        self.assertTrue(any("sudah dikosongkan" in t for t in texts))
+
+    async def test_hapus_memori_declined_keeps_memory(self):
+        self.app.memory.add("suka kopi")
+        with mock.patch.object(self.app, "_ask_confirm", return_value=False):
+            await self.app._run_wa(self.jid, "/hapus_memori")
+        self.assertIn("suka kopi", self.app.memory.text())
+        self.assertIn("tidak dihapus", self.sent[-1][1])
+
+
 if __name__ == "__main__":
     unittest.main()

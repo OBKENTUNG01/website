@@ -77,6 +77,9 @@ _HUB_ONLY = {
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/pasang_tetap", "/id",
     "/lock", "/komputer", "/layar", "/nyalakan", "/wa", "/alamat",
 }
+# Perintah ini juga dilayani lewat WhatsApp (lihat _run_wa), tapi tetap khusus
+# pemilik — bukan tamu — sama seperti di Telegram.
+_WA_OWNER_COMMANDS = {"/kirim", "/komputer", "/nyalakan", "/reset", "/otak", "/memori", "/hapus_memori"}
 # Paling lama Hub menunggu jawaban dari perangkat (detik).
 _DEVICE_REPLY_TIMEOUT = 3600
 
@@ -539,13 +542,48 @@ class App:
         if guest and not quota.allow("wa:" + jid):
             await asyncio.to_thread(self.wa.send, jid, "Kuota harian tamu sudah habis. Coba lagi besok.")
             return
-        # /kirim <path>: pemilik minta bot mengirim berkas dari komputer ini.
-        # Tamu tidak boleh (sama seperti alat lain yang ditutup untuk tamu).
-        if text.strip().lower().startswith("/kirim"):
+        first = text.strip().split(maxsplit=1)[0].lower() if text.strip().startswith("/") else ""
+        if first in _WA_OWNER_COMMANDS:
+            # Sama seperti di Telegram: perintah ini khusus pemilik, bukan tamu.
             if guest:
                 await asyncio.to_thread(self.wa.send, jid, "Mode tamu: perintah itu hanya untuk pemilik.")
+                return
+            if first == "/kirim":
+                await self._wa_kirim(jid, text.strip()[len("/kirim"):].strip())
+                return
+            if first == "/komputer":
+                await asyncio.to_thread(self.wa.send, jid, await asyncio.to_thread(self._computers_text))
+                return
+            if first == "/nyalakan":
+                name = text.strip().split(maxsplit=1)[1].strip() if " " in text.strip() else ""
+                await self._wake_computer(lambda t: asyncio.to_thread(self.wa.send, jid, t), name)
+                return
+            if first == "/reset":
+                self.histories.pop("wa:" + jid, None)
+                await asyncio.to_thread(self.wa.send, jid, "Oke, konteks obrolan direset. Memori tetap.")
+                return
+            if first == "/otak":
+                await asyncio.to_thread(self.wa.send, jid, await asyncio.to_thread(self._brain_status))
+                return
+            if first == "/memori":
+                isi = self.memory.text() or "(memori masih kosong)"
+                if len(isi) > 3800:
+                    isi = "…" + isi[-3800:]
+                await asyncio.to_thread(self.wa.send, jid, f"{isi}\n\n/hapus_memori — kosongkan memori")
+                return
+            # first == "/hapus_memori": konfirmasi tetap lewat tombol Telegram
+            # pemilik (tak ada tombol di WA) — WA dikabari dulu supaya tak diam.
+            await asyncio.to_thread(
+                self.wa.send, jid,
+                "Menghapus seluruh memori jangka panjang perlu konfirmasi pemilik — kutanya lewat Telegram dulu.",
+            )
+            if await self._ask_confirm(
+                config.OWNER_ID, "Kosongkan seluruh memori jangka panjang? (diminta lewat WhatsApp)"
+            ):
+                self.memory.clear()
+                await asyncio.to_thread(self.wa.send, jid, "Memori sudah dikosongkan.")
             else:
-                await self._wa_kirim(jid, text.strip()[6:].strip())
+                await asyncio.to_thread(self.wa.send, jid, "Oke, memori tidak dihapus.")
             return
         if file:
             text = (text.strip() + "\n\n" if text.strip() else "") + _wa_file_note(file)
@@ -671,7 +709,8 @@ class App:
             await self._send_screen(chat_id, text.split(maxsplit=1)[1].strip() if " " in text.strip() else "")
             return
         if first == "/nyalakan":
-            await self._wake_computer(chat_id, text.split(maxsplit=1)[1].strip() if " " in text.strip() else "")
+            name = text.split(maxsplit=1)[1].strip() if " " in text.strip() else ""
+            await self._wake_computer(lambda t: self.tg.send(chat_id, t), name)
             return
         if first == "/pakai":
             await self.tg.send(chat_id, self._use_device(text.split(maxsplit=1)[1] if " " in text.strip() else ""))
@@ -850,37 +889,35 @@ class App:
         ]
         return "\n".join(lines)
 
-    async def _wake_computer(self, chat_id, name):
-        """/nyalakan: coba bangunkan komputer yang sedang MATI lewat Wake-on-LAN.
-
-        Cuma bisa kalau ADA komputer It's Me lain yang masih menyala satu jaringan
-        fisik dengan `name` dan pernah melihatnya langsung (lihat node.py:wake,
-        itsme-node inode/wol.py). Batas fisik, bukan batas kode: komputer sendirian
-        tanpa teman sejaringan tidak bisa dibangunkan murni lewat web."""
+    async def _wake_computer(self, send, name):
+        # /nyalakan: coba bangunkan komputer yang sedang MATI lewat Wake-on-LAN.
+        # Cuma bisa kalau ADA komputer It's Me lain yang masih menyala satu jaringan
+        # fisik dengan name dan pernah melihatnya langsung (lihat node.py:wake,
+        # itsme-node inode/wol.py). Batas fisik, bukan batas kode: komputer sendirian
+        # tanpa teman sejaringan tidak bisa dibangunkan murni lewat web. send mengirim
+        # satu baris balasan - Telegram atau WhatsApp, siapa pun yang memanggil.
         if not name:
-            await self.tg.send(chat_id, "Format: /nyalakan <nama komputer>. /komputer untuk lihat namanya.")
+            await send("Format: /nyalakan <nama komputer>. /komputer untuk lihat namanya.")
             return
         if not node.installed():
-            await self.tg.send(chat_id, "It's Me Node belum terpasang di komputer ini.")
+            await send("It's Me Node belum terpasang di komputer ini.")
             return
         res = await asyncio.to_thread(node.wake, name)
         if res is None:
-            await self.tg.send(chat_id, "Node di komputer ini belum menjawab (mungkin baru menyala).")
+            await send("Node di komputer ini belum menjawab (mungkin baru menyala).")
             return
         if res.get("ok"):
-            await self.tg.send(
-                chat_id,
+            await send(
                 f"📡 Sinyal nyala terkirim ke {name} (MAC {res.get('mac', '?')}) lewat "
                 f"{res.get('via', 'komputer jembatan')}. Tunggu sebentar lalu cek /komputer — "
-                "siaran WoL tidak punya balasan, jadi ini belum membuktikan komputernya benar-benar menyala.",
+                "siaran WoL tidak punya balasan, jadi ini belum membuktikan komputernya benar-benar menyala."
             )
             return
-        await self.tg.send(
-            chat_id,
-            f"Tidak ada komputer It's Me yang menyala yang pernah melihat “{name}” langsung di "
+        await send(
+            f"Tidak ada komputer It's Me yang menyala yang pernah melihat {name!r} langsung di "
             "jaringan fisiknya. Wake-on-LAN cuma bisa lewat komputer It's Me LAIN yang masih "
             "menyala satu LAN dengan komputer itu — tanpa itu, membangunkannya murni lewat web "
-            "tidak mungkin secara fisik (perlu alat tambahan seperti colokan pintar).",
+            "tidak mungkin secara fisik (perlu alat tambahan seperti colokan pintar)."
         )
 
     async def _send_screen(self, chat_id, name):

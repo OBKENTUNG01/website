@@ -502,6 +502,12 @@ Balas pesan dari WhatsApp-mu sendiri, bukan cuma Telegram.
    dibacakan isinya). Untuk meminta bot **mengirim** berkas dari komputer ini:
    `/kirim C:\path\berkas.pdf` — hanya pemilik, dan berkas rahasia (token,
    password, kunci) ditolak. Batasnya diatur lewat `ITSME_WA_MAX_MB`.
+6. **Perintah yang juga jalan di WhatsApp** (selain chat biasa & `/kirim`,
+   semua hanya untuk pemilik): `/komputer` (daftar komputer terhubung),
+   `/nyalakan <nama>` (Wake-on-LAN), `/reset` (lupakan konteks obrolan WA),
+   `/otak` (otak yang sedang dipakai), `/memori` & `/hapus_memori` (lihat/
+   kosongkan memori jangka panjang — menghapus tetap minta konfirmasi lewat
+   Telegram, karena WhatsApp tidak punya tombol Ya/Tidak).
 
 Sesi login disimpan di `data/whatsapp/` (jangan di-commit). Hanya nomor
 `ITSME_WA_OWNER` yang dilayani; grup dan nomor lain diabaikan. Tombol
