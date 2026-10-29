@@ -22,6 +22,12 @@ DIR = os.path.join(os.path.dirname(__file__), "whatsapp")
 _RETRY_WINDOW = 60
 _RETRY_MAX = 5
 
+def prerequisites():
+    """(lokasi node.exe atau "", apakah 'npm install' sudah dijalankan) - dipakai
+    start() dan perintah /diagnosa."""
+    return shutil.which("node") or "", os.path.isdir(os.path.join(DIR, "node_modules"))
+
+
 class WhatsApp:
     def __init__(self, on_message, on_qr=None, on_giveup=None):
         self._on_message = on_message
@@ -34,14 +40,17 @@ class WhatsApp:
         self._last = 0.0
 
     def start(self):
-        """Nyalakan node. False kalau tidak bisa (lihat log)."""
-        node = shutil.which("node")
+        """Nyalakan node. (False, alasan) kalau tidak bisa - alasan "node" (Node.js
+        tidak ada di PATH) atau "npm" (belum 'npm install'), supaya pemanggil bisa
+        kasih pesan yang tepat, bukan cuma "pastikan ini-itu" yang tidak jelas mana
+        yang sebenarnya bermasalah."""
+        node, has_modules = prerequisites()
         if not node:
             log.warning("WhatsApp diminta tapi Node.js tidak ada di PATH (pasang dari nodejs.org).")
-            return False
-        if not os.path.isdir(os.path.join(DIR, "node_modules")):
+            return False, "node"
+        if not has_modules:
             log.warning("WhatsApp: jalankan dulu 'npm install' di %s", DIR)
-            return False
+            return False, "npm"
         self._stop = False
         _kill_orphans()
         env = dict(os.environ,
@@ -57,7 +66,7 @@ class WhatsApp:
             encoding="utf-8", errors="replace", bufsize=1,
         )
         threading.Thread(target=self._read, daemon=True).start()
-        return True
+        return True, ""
 
     def _read(self):
         for line in self._proc.stdout:

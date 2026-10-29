@@ -261,6 +261,7 @@ disembunyikan dari pemilik atau antivirus.
 | `/komputer` | Daftar komputer terhubung + cara buka layar & berkasnya (butuh It's Me Node) |
 | `/layar <nama>` | Kirim foto layar komputer itu ke chat (mis. `/layar Laptop`) |
 | `/nyalakan <nama>` | Coba bangunkan komputer itu dari jarak jauh (Wake-on-LAN) — lihat `PANDUAN_AKSES_JARAK_JAUH.md` |
+| `/diagnosa` | Laporan kesehatan **komputer yang membalas ini**: nama komputer, versi, mode Telegram (webhook/polling), komputer lain yang terlihat, status Node.js & `npm install` untuk WhatsApp, dan peringatan terakhir di log ([lihat di bawah](#kalau-jawabannya-terasa-janggal-diagnosa)) |
 | `/lock` | Kunci bot; kata sandi diminta lagi sebelum bisa dipakai (kalau diatur) |
 | `/id` | Tampilkan user id Telegram-mu |
 
@@ -322,6 +323,23 @@ Yang tetap diurus per komputer: login otak (mis. `/claudepc` perlu
 `itsme.claude_login` di komputer itu) dan Ollama kalau memakai otak lokal.
 Riwayat obrolan mulai baru setelah bot pindah; memori tetap. Tanpa node,
 It's Me jalan seperti biasa. Matikan perilaku ini dengan `ITSME_FOLLOW_NODE=0`.
+
+Komputer yang sudah punya kode gabung yang sama **saling menemukan sendiri** di LAN yang
+sama (node menyapu jaringannya; tidak perlu diundang ulang), dan **Hub** (komputer pertama)
+selalu diutamakan sebagai pemimpin — rincian di
+[README It's Me Node](https://github.com/OBKENTUNG01/itsme-node#saling-menemukan--keamanan-antar-komputer).
+Jadi pada keadaan normal hanya Hub yang memegang bot Telegram/WhatsApp; komputer lain siaga.
+
+### Kalau jawabannya terasa janggal: `/diagnosa`
+
+Kalau bot memakai token yang sama di beberapa komputer, jawabannya datang dari komputer
+mana pun yang sedang memegang bot — belum tentu komputer yang kamu kira. Kirim
+**`/diagnosa`** ke bot: balasannya selalu menyebut **nama komputer yang membalas**,
+versi It's Me di sana, mode Telegram (webhook atau polling; di mode webhook juga alamat
+tunnel yang terdaftar di Telegram dan jumlah pesan yang antre — rahasia webhook tidak
+ditampilkan), berapa komputer yang terlihat dan siapa pemimpinnya, apakah Node.js ada dan
+`npm install` WhatsApp sudah dijalankan, serta peringatan/galat terakhir di log. Hanya
+untuk pemilik (juga jalan lewat WhatsApp).
 
 ### Lihat & kendalikan layar, telusuri berkas komputer lain
 
@@ -478,12 +496,22 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_FOLLOW_NODE` | `1` | Kalau It's Me Node terpasang, bot hanya aktif di komputer pemimpin (`0` = abaikan node) |
 | `ITSME_NODE_URL` | `http://127.0.0.1:7171` | Alamat API node di komputer ini |
 | `ITSME_PUBLIC_URL` | — | Alamat publik dashboard ini (mis. `https://domainku.com`), dipakai `/pasang` agar komputer baru menyambung keluar ke sini **tanpa Tailscale**. Kosong = diambil dari domain pertama `ITSME_DASHBOARD_DOMAINS` |
+| `ITSME_TG_WEBHOOK` | `0` | `1` = pesan Telegram diterima lewat webhook ke alamat tunnel dashboard (bukan polling); lihat catatan di bawah tabel |
 | `ITSME_PASSPHRASE` | — | Kata sandi lapisan kedua sebelum bot bisa dipakai; salah selalu dibalas "minimal 20 karakter" (pengecoh). Kosong = mati |
 | `ITSME_LOCK_TTL` | `0` | Menit tanpa dipakai sebelum terkunci otomatis lagi (`0` = tetap terbuka sampai `/lock`) |
 | `ITSME_DASHBOARD_PUBLIC` | `0` | Mode publik (lewat domain/tunnel): wajib login berkas kunci, perketat keamanan, tanpa jalan pintas localhost |
 | `ITSME_DASHBOARD_KEY_LOGIN` | `0` | Wajib login dengan berkas `data/dashboard.key` (otomatis `1` saat mode publik) |
 | `ITSME_DASHBOARD_DOMAINS` | — | Batasi domain yang boleh (Host), dipisah koma. Kosong = bebas ganti domain |
 | `ITSME_DASHBOARD_TRUST_PROXY` | `1` | Pakai IP asli dari Cloudflare/tunnel untuk anti brute-force |
+
+**Mode webhook (`ITSME_TG_WEBHOOK=1`).** Tunnel Cloudflare gratis memberi alamat acak baru
+tiap It's Me menyala, dan Telegram sering belum bisa menemukan alamat baru itu beberapa
+saat pertama ("Failed to resolve host"). Karena itu It's Me: (1) menunggu sampai DNS publik
+mengenal alamat baru, baru memasang webhook; (2) **tidak pernah menyerah** — gagal dicoba
+lagi dengan jeda makin panjang (5 detik → 5 menit); (3) selama webhook belum terpasang,
+tetap mengambil pesan dengan polling, jadi bot tidak tuli; (4) memeriksa tiap 5 menit dan
+memasang ulang kalau webhook hilang, berganti alamat, atau Telegram gagal mengantar. Kirim
+`/diagnosa` untuk melihat keadaannya.
 
 ## WhatsApp (opsional)
 
@@ -507,7 +535,15 @@ Balas pesan dari WhatsApp-mu sendiri, bukan cuma Telegram.
    `/nyalakan <nama>` (Wake-on-LAN), `/reset` (lupakan konteks obrolan WA),
    `/otak` (otak yang sedang dipakai), `/memori` & `/hapus_memori` (lihat/
    kosongkan memori jangka panjang — menghapus tetap minta konfirmasi lewat
-   Telegram, karena WhatsApp tidak punya tombol Ya/Tidak).
+   Telegram, karena WhatsApp tidak punya tombol Ya/Tidak), dan `/diagnosa`.
+7. **Kalau WhatsApp tidak mau menyala.** Pesan galatnya (di Telegram setelah `/wa <nomor>`,
+   atau satu kali sehari saat It's Me menyala) selalu menyebut **nama komputer** yang
+   bermasalah dan **tepat satu sebab**: *Node.js belum terpasang* (pasang dari nodejs.org
+   versi LTS) **atau** *`npm install` belum dijalankan* (perintah lengkap dengan folder yang
+   benar ikut ditampilkan). Ingat: WhatsApp berjalan di komputer yang **memegang bot**
+   (Hub); komputer lain yang bergabung lewat `/pasang` tidak otomatis punya Node.js/npm,
+   dan itu tidak masalah selama mereka siaga. `/diagnosa` menunjukkan keadaan Node.js
+   dan `npm install` di komputer yang membalas.
 
 Sesi login disimpan di `data/whatsapp/` (jangan di-commit). Hanya nomor
 `ITSME_WA_OWNER` yang dilayani; grup dan nomor lain diabaikan. Tombol

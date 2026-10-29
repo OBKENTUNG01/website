@@ -30,6 +30,9 @@ class FakeTelegram:
         self.sent.append((chat_id, text, reply_markup))
         return {"ok": True, "result": {"message_id": len(self.sent)}}
 
+    async def get_webhook_info(self):
+        return getattr(self, "webhook_info", None)
+
     async def send_chat_action(self, chat_id, action="typing"):
         self.actions += 1
 
@@ -78,6 +81,7 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(config, "DATA_DIR", self.dir),
             mock.patch.object(config, "LOG_FILE", os.path.join(self.dir, "itsme.log")),
             mock.patch.object(config, "FOLLOW_NODE", False),  # It's Me Node di komputer penguji diabaikan
+            mock.patch.object(config, "WHATSAPP", False),  # tes lain tak peduli WA tak boleh ikut mengirim pesan
             mock.patch.object(main, "Telegram", FakeTelegram),
         ):
             patch.start()
@@ -435,6 +439,171 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
             update = await asyncio.wait_for(self.app._watch_updates(), 5)
         self.assertEqual(update.sha, FakeUpdate.sha)
         self.assertEqual(self.tg.sent, [])
+
+    # -- /wa <nomor>: pesan harus bilang PASTI mana yang kurang (lihat whatsapp.py
+    # start()'s "node"/"npm" dan main.py _wa_start_problem), bukan "pastikan ini-itu"
+    # yang tidak jelas mana sebabnya yang sebenarnya.
+    def _wa_owner_patches(self, start_result):
+        # /wa menulis ITSME_WA_OWNER ke .env sungguhan & mengubah config.WA_OWNER:
+        # kedua efek samping itu harus dimatikan di uji supaya tidak bocor ke berkas
+        # .env di folder kerja atau ke uji lain.
+        return (mock.patch.object(main.keys, "_set_env"),
+                mock.patch.object(config, "WA_OWNER", ""),
+                mock.patch.object(main.WhatsApp, "start", return_value=start_result))
+
+    async def test_wa_set_owner_node_missing_gives_specific_reason(self):
+        a, b, c = self._wa_owner_patches((False, "node"))
+        with a, b, c:
+            await self.app._handle_message(self._msg("/wa 6283125645146"))
+        self.assertIn("Node.js", self.tg.sent[-1][1])
+        self.assertNotIn("npm install", self.tg.sent[-1][1])  # bukan sebabnya, jangan disebut
+        self.assertIsNone(self.app.wa)
+
+    async def test_wa_set_owner_npm_missing_gives_specific_reason(self):
+        a, b, c = self._wa_owner_patches((False, "npm"))
+        with a, b, c:
+            await self.app._handle_message(self._msg("/wa 6283125645146"))
+        self.assertIn("npm install", self.tg.sent[-1][1])
+        self.assertIsNone(self.app.wa)
+
+    async def test_wa_set_owner_success(self):
+        a, b, c = self._wa_owner_patches((True, ""))
+        with a, b, c:
+            await self.app._handle_message(self._msg("/wa 6283125645146"))
+        self.assertIsNotNone(self.app.wa)
+        self.assertIn("disimpan", self.tg.sent[-1][1])
+
+    async def test_wa_failure_names_the_computer_that_replied(self):
+        # Bisa ada beberapa komputer yang menjalankan It's Me dengan token bot yang sama;
+        # pemilik harus tahu KOMPUTER MANA yang perlu dibenahi.
+        a, b, c = self._wa_owner_patches((False, "node"))
+        with a, b, c, mock.patch.object(config, "DEVICE_NAME", "PC-KANTOR"):
+            await self.app._handle_message(self._msg("/wa 6283125645146"))
+        self.assertIn("PC-KANTOR", self.tg.sent[-1][1])
+
+    # -- /diagnosa: kesehatan komputer yang MEMBALAS ---------------------------------
+    def _diag_patches(self, nodes=1, installed=True, wa=("C:/node.exe", True)):
+        st = {"me": "a", "leader": "a", "phase": "running",
+              "nodes": [{"id": "a", "name": "PC-UJI", "addr": "192.168.1.3:7171", "leader": True}]
+                       + [{"id": f"x{i}", "name": f"PC-{i}", "addr": f"192.168.1.{i}:7171"} for i in range(nodes - 1)]}
+        return (mock.patch.object(config, "DEVICE_NAME", "PC-UJI"),
+                mock.patch.object(main.node, "installed", return_value=installed),
+                mock.patch.object(main.node, "status", return_value=st),
+                mock.patch.object(main, "wa_prerequisites", return_value=wa),
+                mock.patch.object(main.updater, "installed_version", return_value="abcdef1234567"),
+                mock.patch.object(main.dashboard, "_logs", return_value=(
+                    "2026-10-29 10:00:00,000 WARNING Telegram menolak setWebhook: gagal\n"
+                    "2026-10-29 10:00:01,000 INFO semuanya baik")))
+
+    async def test_diagnosa_reports_the_answering_computer(self):
+        p = self._diag_patches()
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            await self.app._handle_message(self._msg("/diagnosa"))
+        out = self.tg.sent[-1][1]
+        self.assertIn("komputer: PC-UJI", out)
+        self.assertIn("abcdef1", out)
+        self.assertIn("1 komputer hidup; pemimpin: PC-UJI (INI)", out)
+        self.assertIn("belum saling kenal", out)               # hanya 1 komputer terlihat
+        self.assertIn("Node.js: C:/node.exe", out)
+        self.assertIn("setWebhook", out)                       # peringatan log ikut tampil
+        self.assertNotIn("semuanya baik", out)                  # baris INFO tidak
+
+    async def test_diagnosa_flags_missing_whatsapp_prerequisites_and_a_healthy_mesh(self):
+        p = self._diag_patches(nodes=3, wa=("", False))
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            await self.app._handle_message(self._msg("/diagnosa"))
+        out = self.tg.sent[-1][1]
+        self.assertIn("3 komputer hidup", out)
+        self.assertNotIn("belum saling kenal", out)
+        self.assertIn("Node.js: TIDAK ditemukan", out)
+        self.assertIn("(npm install): BELUM", out)
+
+    async def test_diagnosa_webhook_mode_shows_telegram_side(self):
+        p = self._diag_patches()
+        self.tg.webhook_info = {"url": "https://abc.trycloudflare.com/tg/rahasia", "pending_update_count": 3,
+                                "last_error_message": "Connection refused"}
+        self.app._webhook_ok = True
+        with p[0], p[1], p[2], p[3], p[4], p[5], mock.patch.object(config, "TG_WEBHOOK", True):
+            await self.app._handle_message(self._msg("/diagnosa"))
+        out = self.tg.sent[-1][1]
+        self.assertIn("webhook AKTIF", out)
+        self.assertIn("abc.trycloudflare.com, antrean 3", out)
+        self.assertNotIn("rahasia", out)                        # path webhook (rahasia) tak ikut tampil
+        self.assertIn("Connection refused", out)
+
+    async def test_diagnosa_without_node_installed(self):
+        p = self._diag_patches(installed=False)
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            await self.app._handle_message(self._msg("/diagnosa"))
+        self.assertIn("belum terpasang", self.tg.sent[-1][1])
+
+    async def test_diagnosa_is_owner_only(self):
+        with mock.patch.object(config, "GUEST_IDS", {99}):
+            msg = {"chat": {"id": 8}, "from": {"id": 99}, "text": "/diagnosa"}
+            await self.app._handle_message(msg)
+        self.assertIn("hanya untuk pemilik", self.tg.sent[-1][1])
+
+
+class WaStartProblemTest(unittest.TestCase):
+    """Teks 'WhatsApp belum bisa menyala': PASTI mana yang kurang, dan di KOMPUTER mana."""
+
+    def test_every_message_names_the_computer(self):
+        with mock.patch.object(config, "DEVICE_NAME", "PC-KANTOR"):
+            for why in ("node", "npm", "aneh"):
+                self.assertTrue(main._wa_start_problem(why).startswith("Komputer yang membalas ini: PC-KANTOR\n"), why)
+
+    def test_node_reason_mentions_only_nodejs(self):
+        msg = main._wa_start_problem("node")
+        self.assertIn("nodejs.org", msg)
+        self.assertNotIn("npm install", msg)
+
+    def test_npm_reason_gives_the_runnable_commands_with_the_real_folder(self):
+        msg = main._wa_start_problem("npm")
+        self.assertIn("npm install --allow-git=all", msg)
+        self.assertIn(os.path.join(os.path.dirname(main.__file__), "whatsapp"), msg)
+        self.assertNotIn("nodejs.org", msg)
+
+    def test_unknown_reason_points_to_the_log(self):
+        self.assertIn("itsme.log", main._wa_start_problem("aneh"))
+
+
+class WaNoticeDueTest(unittest.TestCase):
+    """Pemberitahuan startup 'WhatsApp gagal menyala': sekali sehari per alasan, jangan
+    jadi spam tiap pembaruan otomatis (bot memperbarui diri tiap beberapa menit)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        patch = mock.patch.object(config, "DATA_DIR", self.dir)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.state = os.path.join(self.dir, "wa_warned.json")
+
+    def test_due_once_then_quiet_for_the_rest_of_the_day(self):
+        self.assertTrue(main._wa_notice_due("node"))
+        self.assertFalse(main._wa_notice_due("node"))
+        self.assertFalse(main._wa_notice_due("node"))
+
+    def test_a_changed_reason_is_reported_at_once(self):
+        self.assertTrue(main._wa_notice_due("node"))
+        self.assertTrue(main._wa_notice_due("npm"))  # masalahnya berganti: pemilik perlu tahu
+        self.assertFalse(main._wa_notice_due("npm"))
+
+    def test_due_again_on_a_later_day(self):
+        with open(self.state, "w", encoding="utf-8") as f:
+            f.write('{"why": "node", "day": "2000-01-01"}')
+        self.assertTrue(main._wa_notice_due("node"))
+
+    def test_corrupt_state_file_is_treated_as_never_warned(self):
+        with open(self.state, "w", encoding="utf-8") as f:
+            f.write("{rusak")
+        self.assertTrue(main._wa_notice_due("npm"))
+        self.assertFalse(main._wa_notice_due("npm"))  # dan berkasnya ditulis ulang dengan benar
+
+    def test_unwritable_state_still_reports_rather_than_staying_silent(self):
+        with mock.patch.object(main.os, "makedirs", side_effect=OSError("tidak boleh")):
+            self.assertTrue(main._wa_notice_due("node"))
+            self.assertTrue(main._wa_notice_due("node"))  # tak bisa mengingat -> lebih baik cerewet daripada diam
 
 
 class ConsoleTest(unittest.TestCase):

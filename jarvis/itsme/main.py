@@ -20,20 +20,24 @@ import asyncio
 import hashlib
 import atexit
 import base64
+import json
 import logging
 import os
 import queue
 import re
 import sys
+import time
 import uuid
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
+from urllib.parse import urlparse
 
 from . import access, brain, config, dashboard, devices, keys, launch, lock, node, quota, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
 from .whatsapp import WhatsApp
+from .whatsapp import prerequisites as wa_prerequisites
 
 log = logging.getLogger("itsme")
 
@@ -65,6 +69,7 @@ HELP = (
     "/komputer — buka layar & berkas komputer yang terhubung (seperti remote desktop)\n"
     "/layar <nama> — kirim foto layar komputer itu ke chat\n"
     "/nyalakan <nama> — bangunkan komputer itu dari jarak jauh (Wake-on-LAN)\n"
+    "/diagnosa — kesehatan komputer yang membalas ini (Telegram, jaringan, WhatsApp, log)\n"
     "/lock — kunci bot; kata sandi diminta lagi sebelum bisa dipakai\n"
     "/id — tampilkan user id Telegram-mu"
 )
@@ -75,11 +80,12 @@ _GUEST_OK = {"", "/start", "/help", "/id", "/lock"}
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/pasang_tetap", "/id",
-    "/lock", "/komputer", "/layar", "/nyalakan", "/wa", "/alamat",
+    "/lock", "/komputer", "/layar", "/nyalakan", "/wa", "/alamat", "/diagnosa",
 }
 # Perintah ini juga dilayani lewat WhatsApp (lihat _run_wa), tapi tetap khusus
 # pemilik — bukan tamu — sama seperti di Telegram.
-_WA_OWNER_COMMANDS = {"/kirim", "/komputer", "/nyalakan", "/reset", "/otak", "/memori", "/hapus_memori"}
+_WA_OWNER_COMMANDS = {"/kirim", "/komputer", "/nyalakan", "/reset", "/otak", "/memori", "/hapus_memori",
+                      "/diagnosa"}
 # Paling lama Hub menunggu jawaban dari perangkat (detik).
 _DEVICE_REPLY_TIMEOUT = 3600
 
@@ -175,6 +181,47 @@ def _wa_mb(n):
     return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{max(1, n // 1024)} KB"
 
 
+def _wa_start_problem(why):
+    """Pesan persis sesuai alasan WhatsApp.start() gagal ("node"/"npm", lihat
+    whatsapp.py) - supaya pemiliknya tahu PASTI mana yang kurang, bukan disuruh
+    mengecek dua kemungkinan sekaligus tanpa tahu mana yang sebenarnya salah."""
+    whatsapp_dir = os.path.join(os.path.dirname(__file__), "whatsapp")
+    # Nama komputer selalu disebut: bisa ada beberapa komputer yang menjalankan It's Me
+    # dengan token bot yang sama, dan pemilik harus tahu KOMPUTER MANA yang perlu dibenahi.
+    host = f"Komputer yang membalas ini: {config.DEVICE_NAME}\n"
+    if why == "node":
+        return host + ("Sebabnya: Node.js belum terpasang / tidak ketemu di PATH. Pasang dari "
+                       "https://nodejs.org (pilih versi LTS), lalu nyalakan ulang It's Me dan kirim /wa lagi.")
+    if why == "npm":
+        return host + ("Sebabnya: Node.js sudah ada, tapi paket WhatsApp-nya belum dipasang. "
+                       "Jalankan sekali di PowerShell:\n"
+                       f'cd "{whatsapp_dir}"\n'
+                       "npm install --allow-git=all\n\n"
+                       "Lalu kirim /wa lagi.")
+    return host + "Sebabnya tidak dikenal - lihat logs\\itsme.log di komputer itu."
+
+
+def _wa_notice_due(why):
+    """Sekali sehari per alasan: pemberitahuan 'WhatsApp gagal menyala' saat It's Me
+    baru menyala tidak boleh jadi spam tiap pembaruan otomatis."""
+    path = os.path.join(config.DATA_DIR, "wa_warned.json")
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        with open(path, encoding="utf-8") as f:
+            last = json.load(f)
+    except (OSError, ValueError):
+        last = {}
+    if last.get("why") == why and last.get("day") == today:
+        return False
+    try:
+        os.makedirs(config.DATA_DIR, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"why": why, "day": today}, f)
+    except OSError:
+        pass
+    return True
+
+
 # Berkas teks kecil ikut dibacakan ke otak supaya bisa langsung dibahas.
 _WA_TEKS = (".txt", ".md", ".csv", ".json", ".log", ".py", ".js", ".html", ".xml",
             ".ini", ".yml", ".yaml", ".sh", ".ps1", ".kt", ".java", ".sql")
@@ -217,6 +264,10 @@ class App:
         self.started = None  # waktu It's Me menyala (diisi di run())
         self._qr_at = 0.0  # kapan QR WhatsApp terakhir dikirim
         self.wa = None  # jembatan WhatsApp (itsme/whatsapp.py)
+        # Webhook Telegram sedang terpasang & sehat (diurus _keep_webhook). Selama False,
+        # _poll memakai getUpdates supaya bot tidak tuli.
+        self._webhook_ok = False
+        self._webhook_task = None
 
     # --- util ---------------------------------------------------------------
     def _spawn(self, coro):
@@ -492,14 +543,11 @@ class App:
         if self.wa:
             self.wa.stop()
         self.wa = WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up)
-        if not self.wa.start():
+        ok, why = self.wa.start()
+        if not ok:
             self.wa = None
-            await self.tg.send(
-                chat_id,
-                f"Nomor {nomor} disimpan, tapi bot WhatsApp belum bisa menyala. Pastikan "
-                "Node.js terpasang dan 'npm install' sudah jalan di itsme\\whatsapp "
-                "(alasannya tertulis di jendela It's Me).",
-            )
+            await self.tg.send(chat_id, f"Nomor {nomor} disimpan, tapi bot WhatsApp belum bisa menyala.\n\n"
+                                        + _wa_start_problem(why))
             return
         await self.tg.send(
             chat_id,
@@ -553,6 +601,9 @@ class App:
                 return
             if first == "/komputer":
                 await asyncio.to_thread(self.wa.send, jid, await asyncio.to_thread(self._computers_text))
+                return
+            if first == "/diagnosa":
+                await asyncio.to_thread(self.wa.send, jid, await self._diagnosa())
                 return
             if first == "/nyalakan":
                 name = text.strip().split(maxsplit=1)[1].strip() if " " in text.strip() else ""
@@ -704,6 +755,9 @@ class App:
             return
         if first == "/komputer":
             await self.tg.send(chat_id, await asyncio.to_thread(self._computers_text))
+            return
+        if first == "/diagnosa":
+            await self.tg.send(chat_id, await self._diagnosa())
             return
         if first == "/layar":
             await self._send_screen(chat_id, text.split(maxsplit=1)[1].strip() if " " in text.strip() else "")
@@ -1263,14 +1317,71 @@ class App:
     # --- loop utama ---------------------------------------------------------
     async def _poll(self):
         while True:
-            if config.TG_WEBHOOK:
+            if config.TG_WEBHOOK and self._webhook_ok:
                 # Pesan datang lewat webhook dashboard (/tg/<rahasia>), bukan getUpdates.
                 # Ini juga mematikan poller lain yang memakai token yang sama.
-                await asyncio.sleep(3600)
+                await asyncio.sleep(10)
                 continue
+            # Mode polling biasa - atau mode webhook yang BELUM/tidak terpasang: dulu bot
+            # di sini tidur selamanya dan tuli sampai nyala ulang; sekarang tetap
+            # mengambil pesan sampai _keep_webhook berhasil memasang webhooknya.
             updates = await self.tg.get_updates()
             for update in updates:
                 self._spawn(self._dispatch(update))
+
+    async def _keep_webhook(self, url):
+        """Pasang webhook Telegram ke `url` (alamat tunnel) dan JAGA tetap terpasang.
+
+        1. Tunggu DNS publik mengenal hostname baru: setWebhook yang terlalu dini
+           membuat resolver Telegram menyimpan 'tidak ada' dan semua percobaan ikut
+           gagal (3 dari 4 restart pada 29 Okt 2026).
+        2. Gagal pun jangan menyerah: coba lagi dengan jeda makin panjang. Selama belum
+           terpasang, _poll memakai getUpdates, jadi bot tetap mendengar.
+        3. Setelah terpasang, periksa berkala; pasang ulang kalau hilang/berganti atau
+           Telegram gagal mengantar."""
+        secret = tg_webhook_secret()
+        self._webhook_ok = False
+        await self._wait_dns_visible(url)
+        jeda = (5, 10, 20, 30, 60, 120, 300)
+        gagal = 0
+        while True:
+            if await self.tg.set_webhook(url, secret):
+                self._webhook_ok = True
+                await self._watch_webhook(url, secret)
+                self._webhook_ok = False
+                gagal = 0
+                continue
+            await asyncio.sleep(jeda[min(gagal, len(jeda) - 1)])
+            gagal += 1
+
+    async def _wait_dns_visible(self, url, limit=90.0):
+        host = urlparse(url).hostname
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
+            if await self.tg.host_resolves(host):
+                return True
+            await asyncio.sleep(3)
+        log.warning("DNS publik belum mengenal %s setelah %ds; webhook tetap dicoba", host, limit)
+        return False
+
+    async def _watch_webhook(self, url, secret, every=300):
+        """Selesai (artinya: pasang ulang) kalau webhook hilang, berganti alamat, atau
+        Telegram baru-baru ini gagal mengantar pesan ke alamat kita."""
+        want = f"{url.rstrip('/')}/tg/{secret}"
+        while True:
+            await asyncio.sleep(every)
+            info = await self.tg.get_webhook_info()
+            if info is None:
+                continue  # jaringan goyah; periksa lagi nanti
+            if info.get("url") != want:
+                log.warning("Webhook Telegram hilang/berganti (sekarang: %s); dipasang ulang",
+                            urlparse(info.get("url") or "").hostname or "kosong")
+                return
+            err_at = info.get("last_error_date")
+            if err_at and time.time() - err_at < 2 * every:
+                log.warning("Telegram gagal mengantar ke webhook (%s); dipasang ulang",
+                            info.get("last_error_message"))
+                return
 
     async def _watch_leader(self, follower):
         """Selesai kalau It's Me Node memilih komputer lain sebagai pemimpin."""
@@ -1418,8 +1529,13 @@ class App:
             self._seed_retrofit_task = asyncio.create_task(self._retrofit_bridge_seeds())
         if config.WHATSAPP:
             self.wa = WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up)
-            if not self.wa.start():
+            ok, why = self.wa.start()
+            if not ok:
                 self.wa = None
+                if _wa_notice_due(why):  # sekali sehari per alasan, bukan tiap pembaruan
+                    await self.tg.send(config.OWNER_ID,
+                                       "⚠️ Bot WhatsApp diminta nyala (ITSME_WHATSAPP=1) tapi belum bisa "
+                                       "menyala saat It's Me baru dinyalakan.\n\n" + _wa_start_problem(why))
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())
         try:
             notice = updater.pop_notice()
@@ -1441,6 +1557,63 @@ class App:
             if getattr(self, "quick_tunnel", None):
                 self.quick_tunnel.stop()
             await self.tg.close()
+
+    async def _diagnosa(self):
+        """/diagnosa: laporan kesehatan KOMPUTER YANG MEMBALAS ini (bisa ada beberapa
+        komputer yang menjalankan It's Me dengan token bot yang sama, jadi nama
+        komputernya selalu disebut) - siapa, versi, mode Telegram, jaringan komputer,
+        WhatsApp, dan peringatan terakhir di log (token disamarkan)."""
+        lines = [f"🩺 Diagnosa - komputer: {config.DEVICE_NAME}"]
+        sha = updater.installed_version()
+        up = ""
+        if self.started:
+            menit = int((datetime.now() - self.started).total_seconds() // 60)
+            up = f", menyala {menit // 60} jam {menit % 60} menit"
+        lines.append(f"Versi It's Me: {sha[:7] if sha else '(tidak diketahui)'}{up}")
+        lines.append(f"Otak: {brain.describe()}")
+
+        lines += ["", "Telegram:"]
+        if config.TG_WEBHOOK:
+            lines.append("- Mode: webhook AKTIF" if self._webhook_ok else
+                         "- Mode: webhook BELUM terpasang (sementara memakai polling)")
+            info = await self.tg.get_webhook_info()
+            if info is not None:
+                host = urlparse(info.get("url") or "").hostname or "(kosong)"
+                lines.append(f"- Webhook di Telegram: {host}, antrean {info.get('pending_update_count', 0)}")
+                if info.get("last_error_message"):
+                    lines.append(f"- Galat pengantaran terakhir: {info['last_error_message']}")
+        else:
+            lines.append("- Mode: polling (getUpdates)")
+
+        lines += ["", "Jaringan komputer (It's Me Node):"]
+        if not node.installed():
+            lines.append("- belum terpasang")
+        else:
+            st = await asyncio.to_thread(node.status)
+            if st is None:
+                lines.append("- node tidak menjawab (mungkin baru menyala)")
+            else:
+                nodes = st.get("nodes") or []
+                itu_saya = st.get("leader") == st.get("me")
+                lines.append(f"- {len(nodes)} komputer hidup; pemimpin: {node.leader_name(st) or '?'}"
+                             f"{' (INI)' if itu_saya else ''}")
+                for n in nodes:
+                    lines.append(f"  - {n.get('name')} @ {n.get('addr')}{' [pemimpin]' if n.get('leader') else ''}")
+                if len(nodes) <= 1:
+                    lines.append("  Hanya komputer ini yang terlihat. Kalau ada komputer lain yang "
+                                 "menjalankan It's Me, mereka belum saling kenal.")
+
+        lines += ["", "WhatsApp:"]
+        node_path, has_modules = wa_prerequisites()
+        lines.append("- Bot: menyala" if self.wa else
+                     ("- Bot: GAGAL menyala" if config.WHATSAPP else "- Bot: dimatikan (/wa <nomor> untuk menyalakan)"))
+        lines.append(f"- Node.js: {node_path or 'TIDAK ditemukan'}")
+        lines.append(f"- Paket WhatsApp (npm install): {'terpasang' if has_modules else 'BELUM'}")
+
+        warns = [x for x in dashboard._logs(400).splitlines() if " WARNING " in x or " ERROR " in x]
+        lines += ["", "Peringatan/galat terakhir di log:"]
+        lines += [f"- {x[:170]}" for x in warns[-5:]] or ["- (tidak ada)"]
+        return "\n".join(lines)
 
     async def _retrofit_bridge_seeds(self):
         """Komputer yang bergabung SEBELUM perbaikan "seed" (lihat node.py) tidak
@@ -1465,9 +1638,15 @@ class App:
         def announce(url):
             previous = self._remember_public_url(url)
             if config.TG_WEBHOOK:
-                secret = tg_webhook_secret()
+                def keep():
+                    # Bukan lewat _spawn: tugas ini tak pernah selesai (menjaga webhook
+                    # selamanya) dan _wait_idle menunggu self._tasks kosong sebelum pembaruan.
+                    if self._webhook_task:
+                        self._webhook_task.cancel()
+                    self._webhook_task = asyncio.ensure_future(self._keep_webhook(url))
+
                 try:
-                    asyncio.run_coroutine_threadsafe(self.tg.set_webhook(url, secret), self.loop)
+                    self.loop.call_soon_threadsafe(keep)
                 except Exception:  # noqa: BLE001 - jangan gagalkan tunnel
                     log.exception("gagal memasang webhook Telegram")
             msg = (f"🌐 Dashboard It's Me bisa dibuka dari HP / mana saja:\n{url}\n\n"

@@ -72,6 +72,30 @@ class Telegram:
         except (httpx.HTTPError, ValueError):
             pass
 
+    async def get_webhook_info(self):
+        """Keadaan webhook menurut Telegram (dict), atau None kalau tak terjangkau."""
+        try:
+            j = (await self._client.get(f"{self._base}/getWebhookInfo", timeout=15)).json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        return j.get("result") if j.get("ok") else None
+
+    async def host_resolves(self, host):
+        """Apakah DNS PUBLIK sudah mengenal `host`? (DNS-over-HTTPS Cloudflare.)
+
+        Hostname trycloudflare baru butuh beberapa detik sampai dikenal. Kalau
+        setWebhook dipanggil terlalu dini, resolver Telegram bisa menyimpan jawaban
+        'tidak ada' dan semua percobaan berikutnya ikut gagal - bot jadi tuli
+        sampai nyala ulang berikutnya."""
+        try:
+            r = await self._client.get("https://1.1.1.1/dns-query",
+                                       params={"name": host, "type": "A"},
+                                       headers={"accept": "application/dns-json"}, timeout=5)
+            j = r.json()
+        except (httpx.HTTPError, ValueError):
+            return False
+        return j.get("Status") == 0 and bool(j.get("Answer"))
+
     async def close(self):
         await self._client.aclose()
 
