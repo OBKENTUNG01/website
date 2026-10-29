@@ -119,6 +119,12 @@ class GateTest(unittest.IsolatedAsyncioTestCase):
             await self.app._handle_message(self._msg("/help"))
         self.assertIn("It's Me siap", self.texts()[-1])
 
+    async def test_lock_without_passphrase_explains_instead_of_asking_ai(self):
+        with mock.patch.object(config, "PASSPHRASE", ""), \
+             mock.patch.object(main, "run_agent", side_effect=AssertionError("otak tak boleh dipanggil")):
+            await self.app._handle_message(self._msg("/lock"))
+        self.assertIn("belum diatur", self.texts()[-1])
+
     async def test_stranger_never_sees_gate(self):
         msg = self._msg("halo"); msg["from"] = {"id": 999}
         await self.app._handle_message(msg)

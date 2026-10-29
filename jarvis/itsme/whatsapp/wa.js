@@ -175,4 +175,7 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
   }
 });
 
-start();
+start().catch((e) => {
+  process.stderr.write('WhatsApp: gagal menyala: ' + e.message + '\n');
+  process.exit(1);
+});

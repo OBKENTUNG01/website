@@ -23,9 +23,10 @@ _RETRY_WINDOW = 60
 _RETRY_MAX = 5
 
 class WhatsApp:
-    def __init__(self, on_message, on_qr=None):
+    def __init__(self, on_message, on_qr=None, on_giveup=None):
         self._on_message = on_message
         self._on_qr = on_qr
+        self._on_giveup = on_giveup
         self._proc = None
         self._lock = threading.Lock()
         self._stop = False
@@ -91,6 +92,11 @@ class WhatsApp:
         self._last = now
         if self._tries > _RETRY_MAX:
             log.error("WhatsApp: gagal menyambung %dx; bot WA dimatikan.", _RETRY_MAX)
+            if self._on_giveup:
+                try:
+                    self._on_giveup()
+                except Exception:  # noqa: BLE001 - pemberitahuan gagal tidak boleh merusak thread pembaca
+                    log.exception("gagal memberitahu bahwa jembatan WhatsApp menyerah")
             return
         time.sleep(3)
         self.start()

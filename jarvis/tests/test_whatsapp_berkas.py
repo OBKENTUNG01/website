@@ -5,14 +5,22 @@ murni logika — keterangan berkas untuk otak, baris JSON ke jembatan, dan
 penerusan berkas dari jembatan ke penangan pesan.
 """
 
+import asyncio
 import io
 import json
+import logging
 import os
+import shutil
 import tempfile
+import time
 import unittest
+from unittest import mock
 
+from itsme import config
 from itsme import main as itsme_main
+from itsme import whatsapp as wa_module
 from itsme.whatsapp import WhatsApp
+from test_main import FakeTelegram
 
 
 class FakeProc:
@@ -104,6 +112,63 @@ class ReadDispatchTest(unittest.TestCase):
         wa._read()
         self.assertEqual(len(got), 1)
         self.assertIsNone(got[0][3])
+
+
+class GiveUpTest(unittest.TestCase):
+    """_RETRY_MAX kali gagal berturut-turut dalam _RETRY_WINDOW detik harus
+    memanggil on_giveup, supaya pemiliknya diberi tahu (lihat App._wa_gave_up
+    di main.py) — bukan cuma diam di log."""
+
+    def test_on_giveup_called_after_max_retries(self):
+        calls = []
+        wa = WhatsApp(lambda *a, **k: None, on_giveup=lambda: calls.append(1))
+        wa._proc = FakeProc(running=False)
+        wa._tries = wa_module._RETRY_MAX
+        wa._last = time.time()
+        wa._read()
+        self.assertEqual(calls, [1])
+
+
+class WaAppIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        for p in (
+            mock.patch.object(config, "OWNER_ID", 42),
+            mock.patch.object(config, "MEMORY_FILE", os.path.join(self.dir, "memory.md")),
+            mock.patch.object(config, "DATA_DIR", self.dir),
+            mock.patch.object(config, "LOG_FILE", os.path.join(self.dir, "itsme.log")),
+            mock.patch.object(config, "AGENT_MODE", False),
+            mock.patch.object(itsme_main, "Telegram", FakeTelegram),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        logging.getLogger("itsme").disabled = True
+        self.addCleanup(setattr, logging.getLogger("itsme"), "disabled", False)
+        self.app = itsme_main.App()
+        self.app.loop = asyncio.get_running_loop()
+
+    async def test_wa_confirm_sends_heads_up_before_telegram_prompt(self):
+        sent_wa = []
+        self.app.wa = type("FakeWa", (), {
+            "send": staticmethod(lambda jid, text: sent_wa.append((jid, text)) or True),
+        })()
+        with mock.patch.object(self.app, "_confirm_blocking", return_value=True) as inner:
+            result = await asyncio.to_thread(
+                self.app._confirm_blocking_wa, "62811@s.whatsapp.net", "Lanjutkan?")
+        self.assertTrue(result)
+        inner.assert_called_once_with(config.OWNER_ID, "Lanjutkan?")
+        self.assertEqual(len(sent_wa), 1)
+        jid, text = sent_wa[0]
+        self.assertEqual(jid, "62811@s.whatsapp.net")
+        self.assertIn("konfirmasi", text)
+
+    async def test_gave_up_clears_wa_and_notifies_owner(self):
+        self.app.wa = WhatsApp(lambda *a, **k: None)  # jembatan "menyala" sebelumnya
+        self.app._wa_gave_up()
+        await asyncio.sleep(0.05)  # biar task dari call_soon_threadsafe jalan
+        self.assertIsNone(self.app.wa)
+        self.assertTrue(any("berhenti total" in t for _, t, _ in self.app.tg.sent))
 
 
 if __name__ == "__main__":

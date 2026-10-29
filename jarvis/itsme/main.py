@@ -75,7 +75,7 @@ _GUEST_OK = {"", "/start", "/help", "/id", "/lock"}
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/pasang_tetap", "/id",
-    "/lock", "/komputer", "/layar", "/nyalakan", "/wa",
+    "/lock", "/komputer", "/layar", "/nyalakan", "/wa", "/alamat",
 }
 # Paling lama Hub menunggu jawaban dari perangkat (detik).
 _DEVICE_REPLY_TIMEOUT = 3600
@@ -488,7 +488,7 @@ class App:
         config.WA_OWNER, config.WHATSAPP = nomor, True
         if self.wa:
             self.wa.stop()
-        self.wa = WhatsApp(self._wa_inbox, self._wa_qr)
+        self.wa = WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up)
         if not self.wa.start():
             self.wa = None
             await self.tg.send(
@@ -513,6 +513,19 @@ class App:
             config.OWNER_ID, png, "whatsapp-qr.png",
             "WhatsApp: buka WhatsApp HP > Perangkat tertaut > Tautkan perangkat, "
             "lalu pindai QR ini."))
+
+    def _wa_gave_up(self):
+        """Dipanggil dari thread jembatan WhatsApp kalau sudah menyerah (gagal
+        menyambung berkali-kali) — tanpa ini, status /wa terus bilang "menyala"
+        dan pemiliknya tidak pernah tahu WA berhenti selain membaca log mentah."""
+        self.wa = None
+        if self.tg is None:
+            return
+        self.loop.call_soon_threadsafe(self._spawn, self.tg.send(
+            config.OWNER_ID,
+            "⚠️ Bot WhatsApp berhenti total setelah gagal menyambung berkali-kali. "
+            "Kirim /wa untuk melihat statusnya, atau /wa <nomor> untuk menyalakannya lagi.",
+        ))
 
     # --- WhatsApp -------------------------------------------------------------
     def _wa_inbox(self, jid, text, guest=False, file=None):
@@ -541,8 +554,27 @@ class App:
             history = self.histories.setdefault(key, [])
             history.append({"role": "user", "content": _stamped(text)})
             ctx = self._ctx_for(config.OWNER_ID, guest=guest)
+            ctx["confirm"] = lambda t: self._confirm_blocking_wa(jid, t)
             reply = await self._think(config.OWNER_ID, history, ctx)
         await asyncio.to_thread(self.wa.send, jid, reply)
+
+    def _confirm_blocking_wa(self, jid, text):
+        """Sama seperti _confirm_blocking (tombol Ya/Tidak tetap lewat Telegram
+        pemilik), tapi chat WhatsApp diberi kabar dulu — supaya tidak kelihatan
+        diam sampai 5 menit sementara pemiliknya belum buka Telegram."""
+        fut = asyncio.run_coroutine_threadsafe(
+            asyncio.to_thread(
+                self.wa.send, jid,
+                "⏳ Ada aksi yang perlu dikonfirmasi pemilik dulu — kutanya lewat "
+                "Telegram, tunggu sebentar ya.",
+            ),
+            self.loop,
+        )
+        try:
+            fut.result(timeout=10)
+        except Exception:  # noqa: BLE001 - kabar gagal tidak boleh menghentikan konfirmasi
+            log.exception("kabar tunggu konfirmasi WhatsApp gagal dikirim")
+        return self._confirm_blocking(config.OWNER_ID, text)
 
     async def _wa_kirim(self, jid, path):
         """Kirim berkas dari komputer ini ke WhatsApp (hanya pemilik)."""
@@ -598,6 +630,14 @@ class App:
         if lock.active() and text.strip().split("@")[0].lower() == "/lock":
             lock.lock(chat_id)
             await self.tg.send(chat_id, lock.LOCKED_NOTE)
+            return
+        if text.strip().split("@")[0].lower() == "/lock":
+            # Sampai sini berarti lock.active() salah: belum ada kata sandi diatur.
+            await self.tg.send(
+                chat_id,
+                "Kunci belum diatur, jadi belum bisa dipakai. Pemilik: isi "
+                "ITSME_PASSPHRASE di .env lalu nyalakan ulang It's Me.",
+            )
             return
 
         first = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
@@ -1334,7 +1374,7 @@ class App:
         dashboard.start(self)
         self._start_quick_tunnel()
         if config.WHATSAPP:
-            self.wa = WhatsApp(self._wa_inbox, self._wa_qr)
+            self.wa = WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up)
             if not self.wa.start():
                 self.wa = None
         log.info("%s jalan. Otak: %s", config.NAME, brain.describe())

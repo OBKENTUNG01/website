@@ -269,6 +269,16 @@ class DashboardTest(unittest.TestCase):
         self.assertTrue(by_name["PC-Tidur"].get("asleep"))
         self.assertFalse(by_name["PC-Utama"].get("asleep"))  # sudah hidup, bukan "tidur"
 
+    def test_node_fs_write_forwards_target_node(self):
+        # Tanpa "node" diteruskan, unggahan ke komputer LAIN diam-diam malah
+        # mendarat di komputer tempat dashboard ini sendiri berjalan.
+        with mock.patch.object(dashboard, "_node_post", return_value=(200, b'{"ok": true}')) as post:
+            r = self.post("/api/node/fs/write", {"node": "PC-LAIN", "path": "C:/x.txt", "b64": "aGk="})
+        self.assertEqual(r.status_code, 200)
+        sent_path, sent_body = post.call_args[0]
+        self.assertEqual(sent_path, "/fs/write")
+        self.assertEqual(sent_body.get("node"), "PC-LAIN")
+
 
 class DashboardLoginTest(unittest.TestCase):
     """Login user+password saat ITSME_DASHBOARD_PASSWORD diisi."""

@@ -900,7 +900,7 @@ def _make_handler(app, token):
                 if bn is not None:
                     return self._json({"error": "komputer lewat jembatan belum mendukung unggah"}, 400)
                 code, body = _node_post("/fs/write",
-                                        {"path": data.get("path", ""), "b64": data.get("b64", "")})
+                                        {"node": data.get("node", ""), "path": data.get("path", ""), "b64": data.get("b64", "")})
                 return self._send(code, body)
             elif path == "/api/node/wake":
                 name = str(data.get("name") or "").strip()

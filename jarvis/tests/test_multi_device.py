@@ -235,6 +235,15 @@ class HubTelegramTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(devices.take("Laptop", wait=0))
         self.assertIn("Memori", self.tg.sent[-1][1])
 
+    async def test_alamat_stays_local_even_with_device_target(self):
+        devices.register("Laptop", "u")
+        devices.set_target("Laptop")
+        with mock.patch.object(config, "QUICK_TUNNEL", False), \
+             mock.patch.object(config, "PUBLIC_URL", ""):
+            await self.app._handle_message(self._msg("/alamat"))
+        self.assertIsNone(devices.take("Laptop", wait=0))  # tidak diteruskan ke Laptop
+        self.assertIn("quick-tunnel.ps1", self.tg.sent[-1][1])  # dijawab Hub sendiri
+
     async def test_attachment_not_forwarded(self):
         devices.register("Laptop", "u")
         devices.set_target("Laptop")
