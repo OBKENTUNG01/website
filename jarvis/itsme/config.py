@@ -308,8 +308,10 @@ DRIVE_DOWNLOAD_DIR = _get("ITSME_DRIVE_DOWNLOAD_DIR", os.path.join(os.path.expan
 
 # --- WhatsApp (opsional, lewat jembatan Node: itsme/whatsapp/wa.js) -----------
 # Nyalakan dengan ITSME_WHATSAPP=1 setelah "npm install" sekali di folder
-# itsme/whatsapp. Login pertama: QR muncul di jendela It's Me, pindai dari
-# WhatsApp HP (Perangkat tertaut). Hanya nomor WA_OWNER yang dilayani.
+# itsme/whatsapp. Akun yang BELUM tertaut: QR dikirim ke Telegram (dan tampil di jendela
+# It's Me), pindai dari WhatsApp HP (Perangkat tertaut). Akun yang SUDAH tertaut (sesi di
+# data/whatsapp) langsung tersambung tanpa QR; /wa_ulang meminta QR baru. Hanya nomor
+# WA_OWNER yang dilayani.
 WHATSAPP = _bool("ITSME_WHATSAPP", False)
 WA_OWNER = (_get("ITSME_WA_OWNER", "") or "").strip()
 # Nomor WA lain yang dilayani (dipisah koma). WA_OPEN=1 melayani semua nomor.

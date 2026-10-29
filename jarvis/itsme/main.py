@@ -49,7 +49,8 @@ HELP = (
     "/help — bantuan ini\n"
     "/otak — lihat otak yang sedang dipakai\n"
     "/alamat — alamat dashboard untuk dibuka dari HP/internet (lewat tunnel)\n"
-    "/wa <nomor> — atur nomor WhatsApp pemilik (bot WA langsung dinyalakan)\n"
+    "/wa <nomor> — atur nomor WhatsApp pemilik, nyalakan bot WA, dan laporkan statusnya (QR hanya dikirim kalau belum tertaut)\n"
+    "/wa_ulang — tautkan ulang WhatsApp: minta QR baru (sesi lama disimpan, bukan dihapus)\n"
     "/cloud — pakai otak cloud (OpenRouter, lebih pintar)\n"
     "/deepseek — pakai otak DeepSeek (murah & pintar); /deepseek <key> untuk simpan key-nya\n"
     "/claudepc — pakai Claude di komputer (akun Claude-mu, tanpa API key)\n"
@@ -80,8 +81,12 @@ _GUEST_OK = {"", "/start", "/help", "/id", "/lock"}
 _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/pasang_tetap", "/id",
-    "/lock", "/komputer", "/layar", "/nyalakan", "/wa", "/alamat", "/diagnosa",
+    "/lock", "/komputer", "/layar", "/nyalakan", "/wa", "/wa_ulang", "/alamat", "/diagnosa",
 }
+# Paling banyak sekian QR WhatsApp dikirim per permintaan (/wa, /wa_ulang); WhatsApp terus
+# membuat QR baru tiap ~20 detik selama belum dipindai, dan chat tak boleh dibanjiri.
+_WA_QR_MAX = 3
+_WA_QR_GAP = 45  # detik minimal antar-QR
 # Perintah ini juga dilayani lewat WhatsApp (lihat _run_wa), tapi tetap khusus
 # pemilik — bukan tamu — sama seperti di Telegram.
 _WA_OWNER_COMMANDS = {"/kirim", "/komputer", "/nyalakan", "/reset", "/otak", "/memori", "/hapus_memori",
@@ -262,7 +267,10 @@ class App:
         self._env_changed = False  # .env dari Hub berubah -> perlu nyala ulang
         self._update_warning = None  # masalah pembaruan yang sudah dilaporkan
         self.started = None  # waktu It's Me menyala (diisi di run())
-        self._qr_at = 0.0  # kapan QR WhatsApp terakhir dikirim
+        self._qr_at = None  # kapan QR WhatsApp terakhir dikirim (None = belum)
+        self._qr_sent = 0  # berapa QR yang sudah dikirim sejak /wa atau /wa_ulang terakhir
+        self._wa_relinking = False  # /wa_ulang sedang jalan: "keluar" bukan kejutan bagi pemilik
+        self._wa_last_in = None  # kapan pesan WhatsApp terakhir masuk (bukti jalur pesan hidup)
         self.wa = None  # jembatan WhatsApp (itsme/whatsapp.py)
         # Webhook Telegram sedang terpasang & sehat (diurus _keep_webhook). Selama False,
         # _poll memakai getUpdates supaya bot tidak tuli.
@@ -521,15 +529,49 @@ class App:
             f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa, disimpan, dan langsung aktif. {usage}" + note,
         )
 
+    def _new_wa(self):
+        return WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up, on_state=self._wa_state)
+
+    def _wa_status_text(self):
+        nyala = "menyala" if self.wa else ("mati" if not config.WHATSAPP else "gagal menyala")
+        baris = [f"Nomor WhatsApp pemilik: {config.WA_OWNER or '(belum diisi)'}", f"Bot WhatsApp: {nyala}"]
+        if self.wa:
+            baris.append(f"Sambungan: {self.wa.status_text()}")
+        baris += ["", "Ubah nomor: /wa 6281234567890",
+                  "Tautkan ulang / minta QR baru: /wa_ulang"]
+        return "\n".join(baris)
+
+    def _wa_link_report(self, nomor, state):
+        """Laporan JUJUR hasil /wa dan /wa_ulang. QR hanya ada untuk akun yang BELUM tertaut;
+        kalau sesi tersimpan masih berlaku, WhatsApp langsung tersambung dan tidak membuat QR -
+        jadi jangan pernah berjanji 'QR kukirim' sebelum jembatan benar-benar melapor 'qr'."""
+        me = self.wa.me if self.wa else ""
+        if state == "tersambung":
+            if me and me != nomor:
+                return (f"⚠️ WhatsApp tersambung, tetapi ke akun {me}, bukan {nomor}.\n"
+                        f"Bot melayani chat dari {nomor} dan chat \"Pesan ke diri sendiri\" milik akun {me}.\n"
+                        f"Untuk menautkan akun {nomor}: kirim /wa_ulang lalu pindai QR-nya.")
+            return (f"✅ WhatsApp sudah TERSAMBUNG ke nomor {me or nomor} memakai sesi yang tersimpan, "
+                    "jadi memang tidak ada QR yang perlu dipindai (QR hanya muncul untuk akun yang "
+                    "belum ditautkan).\n\n"
+                    "Coba sekarang: di WhatsApp HP buka chat \"Pesan ke diri sendiri\", lalu kirim \"halo\".\n"
+                    "Mau menautkan ulang atau ganti akun? Kirim /wa_ulang.")
+        if state == "qr":
+            return ("📷 WhatsApp belum tertaut, jadi QR sudah kukirim ke chat ini (berupa foto). Buka "
+                    "WhatsApp HP > Perangkat tertaut > Tautkan perangkat, lalu pindai QR itu. QR berlaku "
+                    "±1 menit; kalau habis, kirim /wa_ulang untuk QR baru.\n"
+                    "Catatan: kalau Telegram ini dibuka di HP yang sama dengan WhatsApp-nya, buka dulu "
+                    "Telegram di komputer atau tablet — QR tidak bisa dipindai dari layar HP yang sama.")
+        if state == "keluar":
+            return ("⚠️ WhatsApp keluar dari Perangkat tertaut. Sesi lama kusimpan dan QR baru sedang "
+                    "disiapkan; akan kukirim ke chat ini.")
+        return ("Bot WhatsApp sudah menyala, tetapi belum ada kabar dari WhatsApp dalam beberapa detik "
+                "(internet lambat?). Kalau QR diperlukan, akan kukirim otomatis ke chat ini. Cek juga /diagnosa.")
+
     async def _set_wa_owner(self, chat_id, arg):
         """Atur nomor WhatsApp pemilik dari Telegram (/wa 62812…); tanpa arg = status."""
         if not arg:
-            nyala = "menyala" if self.wa else ("mati" if not config.WHATSAPP else "gagal menyala")
-            await self.tg.send(
-                chat_id,
-                f"Nomor WhatsApp pemilik: {config.WA_OWNER or '(belum diisi)'}\n"
-                f"Bot WhatsApp: {nyala}\n\nUbah: /wa 6281234567890",
-            )
+            await self.tg.send(chat_id, self._wa_status_text())
             return
         nomor = re.sub(r"\D", "", arg)
         if nomor.startswith("0"):
@@ -537,33 +579,100 @@ class App:
         if not 8 <= len(nomor) <= 15:
             await self.tg.send(chat_id, "Nomor tidak valid. Contoh: /wa 6281234567890")
             return
+        # Nomor sama & jembatan sudah tersambung: tak perlu memutus-nyambung lagi, cukup lapor.
+        sama = bool(self.wa) and config.WA_OWNER == nomor and self.wa.state == "tersambung"
         keys._set_env(keys.ENV_FILE, "ITSME_WA_OWNER", nomor)
         keys._set_env(keys.ENV_FILE, "ITSME_WHATSAPP", "1")
         config.WA_OWNER, config.WHATSAPP = nomor, True
+        if sama:
+            await self.tg.send(chat_id, f"Nomor WhatsApp pemilik: {nomor} (tidak berubah).\n\n"
+                                        + self._wa_link_report(nomor, "tersambung"))
+            return
         if self.wa:
             self.wa.stop()
-        self.wa = WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up)
+        self._qr_at, self._qr_sent = None, 0
+        self.wa = self._new_wa()
         ok, why = self.wa.start()
         if not ok:
             self.wa = None
             await self.tg.send(chat_id, f"Nomor {nomor} disimpan, tapi bot WhatsApp belum bisa menyala.\n\n"
                                         + _wa_start_problem(why))
             return
-        await self.tg.send(
-            chat_id,
-            f"Nomor WhatsApp pemilik disimpan: {nomor}\n"
-            "Bot WA menyala — QR-nya kukirim ke chat ini; pindai dari WhatsApp HP > "
-            "Perangkat tertaut.",
-        )
-    def _wa_qr(self, png):
-        """QR login dari thread node: kirim sebagai foto ke Telegram (maks. 1x/45 dtk)."""
-        if self.loop.time() - self._qr_at < 45:
+        await self.tg.send(chat_id, f"Nomor WhatsApp pemilik disimpan: {nomor}\n"
+                                    "Menyalakan bot WhatsApp… (paling lama 20 detik)")
+        state = await asyncio.to_thread(self.wa.wait_state, 20)
+        await self.tg.send(chat_id, self._wa_link_report(nomor, state))
+
+    async def _wa_relink(self, chat_id, arg=""):
+        """/wa_ulang: tautkan ulang WhatsApp (QR baru). Sesi lama DISIMPAN, bukan dihapus. Kalau
+        sekarang sedang tersambung, minta konfirmasi dulu: ini melepas akun yang bekerja."""
+        if not config.WA_OWNER:
+            await self.tg.send(chat_id, "Isi nomornya dulu: /wa 6281234567890")
             return
-        self._qr_at = self.loop.time()
+        if self.wa and self.wa.state == "tersambung" and arg.strip().lower() not in ("ya", "y", "ok"):
+            await self.tg.send(chat_id, f"WhatsApp sekarang TERSAMBUNG ke akun {self.wa.me or config.WA_OWNER}. "
+                                        "Menautkan ulang akan melepasnya dari \"Perangkat tertaut\" dan "
+                                        "menggantinya dengan QR baru yang harus kamu pindai.\n\n"
+                                        "Kalau yakin, kirim: /wa_ulang ya")
+            return
+        await self.tg.send(chat_id, "Menautkan ulang WhatsApp… sesi lama kusimpan (tidak dihapus). "
+                                    "QR baru menyusul, paling lama 30 detik.")
+        self._qr_at, self._qr_sent = None, 0
+        self._wa_relinking = True
+        try:
+            if self.wa is None:
+                config.WHATSAPP = True
+                self.wa = self._new_wa()
+                ok, why = await asyncio.to_thread(self.wa.start)
+            else:
+                ok, why = await asyncio.to_thread(self.wa.relink)
+            if not ok:
+                self.wa = None
+                pesan = ("Sesi WhatsApp yang lama tidak bisa dipindahkan (mungkin masih dipakai proses lain). "
+                         "Coba lagi beberapa menit lagi." if why == "sesi" else _wa_start_problem(why))
+                await self.tg.send(chat_id, "Gagal menautkan ulang WhatsApp.\n\n" + pesan)
+                return
+            state = await asyncio.to_thread(self.wa.wait_state, 30, ("qr", "tersambung"))
+        finally:
+            self._wa_relinking = False
+        await self.tg.send(chat_id, self._wa_link_report(config.WA_OWNER, state))
+
+    def _wa_qr(self, png):
+        """QR login dari thread node: kirim sebagai foto ke Telegram. Jarak antar-QR minimal
+        _WA_QR_GAP detik dan paling banyak _WA_QR_MAX per permintaan (WhatsApp terus membuat QR baru
+        selama belum dipindai - jangan membanjiri chat)."""
+        now = self.loop.time()
+        if self._qr_at is not None and now - self._qr_at < _WA_QR_GAP:
+            return
+        if self._qr_sent >= _WA_QR_MAX:
+            return
+        self._qr_at, self._qr_sent = now, self._qr_sent + 1
         self.loop.call_soon_threadsafe(self._spawn, self.tg.send_photo(
             config.OWNER_ID, png, "whatsapp-qr.png",
-            "WhatsApp: buka WhatsApp HP > Perangkat tertaut > Tautkan perangkat, "
-            "lalu pindai QR ini."))
+            "WhatsApp: buka WhatsApp HP > Perangkat tertaut > Tautkan perangkat, lalu pindai QR ini "
+            "(berlaku ±1 menit; kalau habis kirim /wa_ulang). Kalau Telegram ini dibuka di HP yang sama "
+            "dengan WhatsApp-nya, buka dulu di komputer atau tablet."))
+
+    def _wa_state(self, state, me):
+        """Dari thread jembatan: keadaan sambungan WhatsApp berubah. Pemilik hanya dikabari untuk
+        yang penting: dicabut dari HP (QR baru menyusul) dan 'QR sudah dipindai, tersambung'."""
+        # Jejak di log (nomor disamarkan): bukti keadaan sambungan tanpa perlu menebak.
+        log.info("WhatsApp: keadaan sambungan -> %s%s", state, f" (akun ...{me[-4:]})" if me else "")
+        if self.tg is None or self.loop is None:
+            return
+        if state == "keluar":
+            self._qr_at, self._qr_sent = None, 0  # QR baru akan datang: boleh dikirim lagi
+            if self._wa_relinking:
+                return  # pemilik sendiri yang memintanya lewat /wa_ulang
+            pesan = ("⚠️ WhatsApp keluar dari \"Perangkat tertaut\" (dicabut dari HP atau diputus WhatsApp). "
+                     "Sesi lama kusimpan dan QR baru kukirim ke sini.")
+        elif state == "tersambung" and self._qr_sent > 0:
+            self._qr_sent = 0
+            pesan = (f"✅ QR terpindai: WhatsApp tersambung ke nomor {me}. "
+                     "Coba kirim \"halo\" ke chat \"Pesan ke diri sendiri\".")
+        else:
+            return
+        self.loop.call_soon_threadsafe(self._spawn, self.tg.send(config.OWNER_ID, pesan))
 
     def _wa_gave_up(self):
         """Dipanggil dari thread jembatan WhatsApp kalau sudah menyerah (gagal
@@ -582,6 +691,11 @@ class App:
     def _wa_inbox(self, jid, text, guest=False, file=None):
         """Dipanggil dari thread pembaca WhatsApp; serahkan ke event loop."""
         if text.strip() or file:
+            # Hanya jejak "ada pesan masuk" (tanpa isi & tanpa nomor): bukti jalur pesan hidup,
+            # dipakai /diagnosa.
+            self._wa_last_in = datetime.now()
+            log.info("WhatsApp: pesan masuk (%s, %d karakter%s).", "tamu" if guest else "pemilik",
+                     len(text), ", + berkas" if file else "")
             self.loop.call_soon_threadsafe(self._spawn, self._run_wa(jid, text, guest, file))
 
     async def _run_wa(self, jid, text, guest=False, file=None):
@@ -857,6 +971,9 @@ class App:
         if command == "/wa":
             # Nomor WA pemilik diatur dari sini supaya .env tak perlu disunting manual.
             await self._set_wa_owner(chat_id, text.partition(" ")[2].strip())
+            return
+        if command == "/wa_ulang":
+            await self._wa_relink(chat_id, text.partition(" ")[2].strip())
             return
         if text.startswith("/alamat"):
             await self.tg.send(chat_id, self._tunnel_address())
@@ -1541,7 +1658,7 @@ class App:
             # sampai _UPDATE_MAX_WAIT habis, setiap kali, sia-sia.
             self._seed_retrofit_task = asyncio.create_task(self._retrofit_bridge_seeds())
         if config.WHATSAPP:
-            self.wa = WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up)
+            self.wa = self._new_wa()
             ok, why = self.wa.start()
             if not ok:
                 self.wa = None
@@ -1618,8 +1735,15 @@ class App:
 
         lines += ["", "WhatsApp:"]
         node_path, has_modules = wa_prerequisites()
-        lines.append("- Bot: menyala" if self.wa else
+        lines.append(f"- Bot: menyala - {self.wa.status_text()}" if self.wa else
                      ("- Bot: GAGAL menyala" if config.WHATSAPP else "- Bot: dimatikan (/wa <nomor> untuk menyalakan)"))
+        if self.wa:
+            if self._wa_last_in:
+                menit = int((datetime.now() - self._wa_last_in).total_seconds() // 60)
+                lines.append(f"- Pesan WhatsApp terakhir masuk: {self._wa_last_in:%H:%M} ({menit} menit lalu)")
+            else:
+                lines.append("- Pesan WhatsApp masuk: belum ada sejak It's Me menyala "
+                             "(tes: kirim \"halo\" ke chat \"Pesan ke diri sendiri\")")
         lines.append(f"- Node.js: {node_path or 'TIDAK ditemukan'}")
         lines.append(f"- Paket WhatsApp (npm install): {'terpasang' if has_modules else 'BELUM'}")
 

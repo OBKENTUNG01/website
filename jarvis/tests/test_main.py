@@ -443,41 +443,43 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
     # -- /wa <nomor>: pesan harus bilang PASTI mana yang kurang (lihat whatsapp.py
     # start()'s "node"/"npm" dan main.py _wa_start_problem), bukan "pastikan ini-itu"
     # yang tidak jelas mana sebabnya yang sebenarnya.
-    def _wa_owner_patches(self, start_result):
+    def _wa_owner_patches(self, start_result, state="tersambung"):
         # /wa menulis ITSME_WA_OWNER ke .env sungguhan & mengubah config.WA_OWNER:
         # kedua efek samping itu harus dimatikan di uji supaya tidak bocor ke berkas
-        # .env di folder kerja atau ke uji lain.
+        # .env di folder kerja atau ke uji lain. wait_state ditiru: tanpa itu /wa
+        # menunggu laporan jembatan sungguhan sampai 20 detik.
         return (mock.patch.object(main.keys, "_set_env"),
                 mock.patch.object(config, "WA_OWNER", ""),
-                mock.patch.object(main.WhatsApp, "start", return_value=start_result))
+                mock.patch.object(main.WhatsApp, "start", return_value=start_result),
+                mock.patch.object(main.WhatsApp, "wait_state", return_value=state))
 
     async def test_wa_set_owner_node_missing_gives_specific_reason(self):
-        a, b, c = self._wa_owner_patches((False, "node"))
-        with a, b, c:
+        a, b, c, d = self._wa_owner_patches((False, "node"))
+        with a, b, c, d:
             await self.app._handle_message(self._msg("/wa 6283125645146"))
         self.assertIn("Node.js", self.tg.sent[-1][1])
         self.assertNotIn("npm install", self.tg.sent[-1][1])  # bukan sebabnya, jangan disebut
         self.assertIsNone(self.app.wa)
 
     async def test_wa_set_owner_npm_missing_gives_specific_reason(self):
-        a, b, c = self._wa_owner_patches((False, "npm"))
-        with a, b, c:
+        a, b, c, d = self._wa_owner_patches((False, "npm"))
+        with a, b, c, d:
             await self.app._handle_message(self._msg("/wa 6283125645146"))
         self.assertIn("npm install", self.tg.sent[-1][1])
         self.assertIsNone(self.app.wa)
 
     async def test_wa_set_owner_success(self):
-        a, b, c = self._wa_owner_patches((True, ""))
-        with a, b, c:
+        a, b, c, d = self._wa_owner_patches((True, ""))
+        with a, b, c, d:
             await self.app._handle_message(self._msg("/wa 6283125645146"))
         self.assertIsNotNone(self.app.wa)
-        self.assertIn("disimpan", self.tg.sent[-1][1])
+        self.assertTrue(any("disimpan" in m[1] for m in self.tg.sent))
 
     async def test_wa_failure_names_the_computer_that_replied(self):
         # Bisa ada beberapa komputer yang menjalankan It's Me dengan token bot yang sama;
         # pemilik harus tahu KOMPUTER MANA yang perlu dibenahi.
-        a, b, c = self._wa_owner_patches((False, "node"))
-        with a, b, c, mock.patch.object(config, "DEVICE_NAME", "PC-KANTOR"):
+        a, b, c, d = self._wa_owner_patches((False, "node"))
+        with a, b, c, d, mock.patch.object(config, "DEVICE_NAME", "PC-KANTOR"):
             await self.app._handle_message(self._msg("/wa 6283125645146"))
         self.assertIn("PC-KANTOR", self.tg.sent[-1][1])
 

@@ -524,10 +524,29 @@ Balas pesan dari WhatsApp-mu sendiri, bukan cuma Telegram.
    `cd itsme\whatsapp` lalu `npm install --allow-git=all`
    (npm 12 memblokir paket git; Baileys butuh satu.)
 2. Di `.env`: `ITSME_WHATSAPP=1` dan `ITSME_WA_OWNER=62812xxxxxxx` (tanpa +).
-3. Nyalakan It's Me. QR muncul di jendelanya — pindai dari
-   WhatsApp HP > Perangkat tertaut.
+3. Kirim `/wa <nomor>` ke bot Telegram (atau nyalakan It's Me). Bot melaporkan keadaan
+   yang **sebenarnya**, tidak berjanji apa-apa:
+   - **"sudah TERSAMBUNG"** — sesi yang tersimpan di `data\whatsapp` masih berlaku. Dalam
+     keadaan ini **memang tidak ada QR**: WhatsApp hanya membuat QR untuk akun yang *belum*
+     tertaut. Tinggal tes dengan langkah 4.
+   - **"QR sudah kukirim"** — akun belum tertaut; QR dikirim sebagai foto ke Telegram
+     (maks. 3 per permintaan, jarak ≥ 45 detik). Pindai dari WhatsApp HP > Perangkat tertaut >
+     Tautkan perangkat. QR tidak bisa dipindai dari layar HP yang *sama*: kalau Telegram
+     dibuka di HP itu, buka dulu di komputer atau tablet. Setelah terpindai bot mengabari
+     "WhatsApp tersambung".
+   - **"tersambung ke akun lain"** — nomor yang tertaut berbeda dari yang kamu ketik; bot
+     bilang akun mana dan cara menggantinya.
+   - **"belum ada kabar"** — WhatsApp tidak menjawab dalam 20 detik (internet lambat?).
+   `/wa` saja menampilkan status sambungan.
+   **`/wa_ulang`** menautkan ulang / mengganti akun: akun yang sekarang dilepas dari
+   "Perangkat tertaut", sesi lama **disimpan** di `data\whatsapp.lama-<waktu>` (tidak
+   dihapus), lalu QR baru dikirim. Kalau WhatsApp sedang tersambung, bot minta konfirmasi
+   dulu: `/wa_ulang ya`. Kalau akunmu dicabut dari HP, bot menyiapkan QR baru sendiri dan
+   memberi tahu (dulu jembatan keluar dan menyerah tanpa pernah mengirim QR).
 4. Kirim pesan ke nomornya sendiri (chat "Pesan ke diri sendiri"). Riwayat
-   percakapan dipisah dari Telegram.
+   percakapan dipisah dari Telegram. Buktinya jalur pesan hidup: `/diagnosa` menampilkan
+   "Pesan WhatsApp terakhir masuk: HH:MM" (hanya jam; isi pesan dan nomor pengirim tidak
+   pernah dicatat).
 5. **Berkas (maks 100 MB).** Kirim gambar/dokumen/audio/video ke bot: berkasnya
    diunduh ke `data\wa_files` lalu dibahas AI (berkas teks kecil langsung
    dibacakan isinya). Untuk meminta bot **mengirim** berkas dari komputer ini:
