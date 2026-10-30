@@ -13,6 +13,9 @@ data/update_notice.txt
 data/claude/
 data/access.json
 data/brain.json
+data/keypool.json
+data/keypool.json.tmp
+data/wa_info.txt
 data/dashboard_token.txt
 data/drive_token.json
 data/drive_credentials.json

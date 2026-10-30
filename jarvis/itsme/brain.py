@@ -17,7 +17,7 @@ perlengkapan otak lainnya.
 import json
 import os
 
-from . import config, keys
+from . import config, keypool, keys
 from .agentutil import text_only
 
 BACKENDS = ("ollama", "openrouter", "deepseek", "claude", "claude_code")
@@ -56,10 +56,11 @@ def set_backend(name, remember=True):
             "Belum ada API key OpenRouter. Kirim /kunci <key OpenRouter> "
             "(pesannya langsung kuhapus), atau jalankan perintah setup lagi."
         )
-    if name == "deepseek" and not config.DEEPSEEK_API_KEY:
+    if name == "deepseek" and not keypool.has_keys():
         raise ValueError(
             "Belum ada API key DeepSeek. Kirim /deepseek <key> (pesannya langsung "
-            "kuhapus). Key dari NusaGate diawali nsk-; key DeepSeek resmi diawali sk-."
+            "kuhapus). Key dari NusaGate diawali nsk_; key DeepSeek resmi diawali sk-. "
+            "Boleh banyak key sekaligus (semuanya dipakai bergiliran)."
         )
     if name == "claude" and not config.ANTHROPIC_API_KEY:
         raise ValueError(
@@ -97,8 +98,13 @@ def describe(name=None):
         extra = f", cadangan {', '.join(fallbacks)}" if fallbacks else ""
         return f"cloud {config.OPENROUTER_MODEL} (OpenRouter{extra})"
     if name == "deepseek":
-        prov = "NusaGate" if "nusagate" in config.deepseek_url() else "DeepSeek resmi"
-        return f"DeepSeek {config.deepseek_model()} ({prov})"
+        first = (config.deepseek_keys() or [None])[0]
+        prov = "NusaGate" if "nusagate" in config.deepseek_url(first) else "DeepSeek resmi"
+        count = len(config.deepseek_keys())
+        extra = f", {count} key dipakai bergiliran" if count > 1 else ""
+        models = config.NUSAGATE_MODELS
+        shown = f"{len(models)} model bergantian" if len(models) > 1 else config.deepseek_model(first)
+        return f"DeepSeek {shown} ({prov}{extra})"
     if name == "claude":
         return f"Claude {config.MODEL} (effort {config.EFFORT})"
     if name == "claude_code":
@@ -108,6 +114,12 @@ def describe(name=None):
 
 
 def run_agent(messages, ctx):
+    if ctx.get("guest"):
+        # Tamu (kontak WhatsApp, tamu Telegram) TIDAK PERNAH memakai otak pilihan pemilik: otak
+        # "Claude di komputer" punya alat sendiri (shell, berkas) yang tidak dijaga ctx["guest"].
+        from .brain_guest import reply
+
+        return reply(messages, ctx)
     backend = current_backend()
     if backend == "claude":
         from .brain_claude import run_agent as run

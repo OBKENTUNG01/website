@@ -209,6 +209,24 @@ def _ask(messages, memory_text):
     return message, error
 
 
+def guest_chat(system_text, messages):
+    """Jawaban tanya-jawab untuk TAMU: tanpa alat, tanpa memori pemilik (lihat brain_guest.py).
+    Melempar LocalUnavailable kalau Ollama tidak bisa dipakai."""
+    body = {
+        "model": config.OLLAMA_MODEL,
+        "messages": [{"role": "system", "content": system_text}] + list(messages),
+        "stream": False,
+        "keep_alive": config.OLLAMA_KEEP_ALIVE,
+        "options": _options(),
+    }
+    if config.OLLAMA_THINK is not None:
+        body["think"] = config.OLLAMA_THINK
+    message, error, _ = _call_ollama(body)
+    if error:
+        raise LocalUnavailable(error)
+    return clean_reply(message.get("content")) or "(tidak ada jawaban)"
+
+
 def run_agent(messages, ctx, raise_errors=False):
     """Jalankan loop agen sampai selesai. Mengubah `messages` di tempat.
 

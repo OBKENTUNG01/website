@@ -1,10 +1,14 @@
 // Jembatan WhatsApp untuk It's Me (Baileys).
 // Masuk (stdin, satu JSON per baris): {"jid","text"} / {"jid","file",...} untuk dikirim;
-//   {"cmd":"logout"} = lepas akun dari "Perangkat tertaut", simpan sesi lama, minta QR baru.
-// Keluar (stdout, satu JSON per baris): {"jid","text","guest","file"} = pesan masuk;
+//   {"cmd":"logout"} = lepas akun dari "Perangkat tertaut", simpan sesi lama, minta QR baru;
+//   {"cmd":"set","open":bool,"block":[nomor],"guests":[nomor]} = ubah siapa yang dilayani, langsung
+//   (tanpa memutus sambungan WhatsApp).
+// Keluar (stdout, satu JSON per baris): {"jid","text","guest","file","media"} = pesan masuk
+//   ("media" = lampiran tamu yang tidak dibaca: gambar/video/audio/dokumen);
 //   {"qr":"<PNG base64>"} = QR login; {"state":"open"|"qr"|"close"|"logged_out","me":"62.."}
 //   = keadaan sambungan (dibaca whatsapp.py supaya /wa bisa bilang yang sebenarnya).
 // QR juga dicetak ke stderr, jadi muncul di jendela It's Me.
+// Siapa yang dilayani diputuskan di wa_core.js (classify): pemilik, tamu, atau diabaikan.
 const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
@@ -12,13 +16,19 @@ const qrcode = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const { default: makeWASocket, useMultiFileAuthState, downloadMediaMessage } =
   require('@whiskeysockets/baileys');
-const { setAsideAuth, onConnectionUpdate } = require('./wa_core');
+const {
+  setAsideAuth, onConnectionUpdate, classify, parseSettings, applySettings, bodyOf, mediaKind, unwrap,
+  isStale, makeSeen,
+} = require('./wa_core');
 
 const owner = (process.env.WA_OWNER || '').replace(/\D/g, '');
-// Tamu: nomor lain yang boleh chat. WA_OPEN=1 -> semua nomor dilayani.
-const guests = new Set((process.env.WA_GUESTS || '').split(/[,\s]+/)
-  .map((s) => s.replace(/\D/g, '')).filter(Boolean));
-const open = process.env.WA_OPEN === '1';
+// Siapa yang dilayani selain pemilik: tamu terdaftar, atau semua nomor (open), minus daftar blokir.
+// Bisa diubah saat jalan lewat perintah {"cmd":"set"}.
+let settings = parseSettings(process.env);
+// Pesan tamu yang lebih tua dari ini (terkirim saat It's Me mati) tidak dibalas: terlambat berjam-jam
+// lebih membingungkan daripada tidak dibalas.
+const GUEST_MAX_AGE_S = 600;
+const seenGuest = makeSeen(500);
 const authDir = process.env.WA_AUTH || './auth';
 // Berkas masuk disimpan di sini; batas ukuran berlaku untuk terima & kirim.
 const filesDir = process.env.WA_FILES || './wa_files';
@@ -43,24 +53,16 @@ function selfNums() {
   return [sock?.user?.id, sock?.user?.lid].map(numOf).filter(Boolean);
 }
 
-function bodyOf(m) {
-  const msg = m.message || {};
-  return (msg.conversation
-    || msg.extendedTextMessage?.text
-    || msg.imageMessage?.caption
-    || msg.documentMessage?.caption
-    || '').trim();
-}
-
 // Satu jalur kirim untuk teks & berkas, termasuk siasat @lid (JID @lid kadang
-// ditolak server, jadi dicoba ulang ke nomor sendiri).
+// ditolak server, jadi dicoba ulang ke nomor sendiri). Siasat ini HANYA untuk chat ke diri sendiri:
+// balasan untuk tamu tidak boleh dialihkan ke chat pemilik kalau JID tamunya ditolak.
 async function sendBody(jid, body) {
   let r;
   try {
     r = await sock.sendMessage(jid, body);
   } catch (e) {
     const own = selfNums()[0];
-    if (!own || !jid.endsWith('@lid')) throw e;
+    if (!own || !jid.endsWith('@lid') || !selfNums().includes(numOf(jid))) throw e;
     r = await sock.sendMessage(own + '@s.whatsapp.net', body);
   }
   if (r?.key?.id) {
@@ -75,7 +77,7 @@ const sendText = (jid, text) => sendBody(jid, { text: String(text).slice(0, 6000
 // Berkas masuk (gambar/video/audio/dokumen) diunduh ke filesDir kalau <= maxBytes.
 // Mengembalikan keterangan berkas untuk Python, atau null kalau tidak ada/ditolak.
 async function saveMedia(m, jid) {
-  const msg = m.message || {};
+  const msg = unwrap(m.message);
   const mm = msg.imageMessage || msg.videoMessage || msg.audioMessage || msg.documentMessage;
   if (!mm) return null;
   const kind = msg.imageMessage ? 'gambar' : msg.videoMessage ? 'video'
@@ -174,29 +176,29 @@ async function start() {
     for (const m of messages) {
       const jid = m.key?.remoteJid || '';
       if (!jid) continue;
-      const nums = numsOf(m);
-      let guest;
-      if (m.key?.fromMe) {
-        // Pesan keluar dari HP pemilik: layani HANYA chat ke diri sendiri.
-        // (dulu dibandingkan ke nomor pemilik saja, jadi gagal saat JID-nya @lid)
-        if (!nums.some((n) => self.includes(n))) continue;
-        if (sent.has(m.key.id)) continue; // jangan balas balasan sendiri
-        guest = false;
-      } else if (nums.includes(owner)) {
-        guest = false;
-      } else if (open || nums.some((n) => guests.has(n))) {
-        guest = true;
-      } else {
-        continue; // nomor tak dikenal: diam (sama seperti bot Telegram)
-      }
-      const text = bodyOf(m);
+      // Pemilik / tamu / diabaikan (grup, siaran, status, saluran, nomor diblokir atau tak dikenal).
+      // Pesan pemilik ke ORANG LAIN dari HP-nya (fromMe) juga diabaikan - hanya chat ke diri sendiri.
+      const role = classify({ jid, fromMe: !!m.key?.fromMe, nums: numsOf(m) }, { self, owner, ...settings });
+      if (role === 'ignore') continue;
+      if (m.key?.fromMe && sent.has(m.key.id)) continue; // jangan balas balasan sendiri
+      const guest = role === 'guest';
       let file = null;
-      try {
-        file = await saveMedia(m, jid);
-      } catch (e) {
-        process.stderr.write('gagal unduh media WhatsApp: ' + e.message + '\n');
+      let media = null;
+      if (guest) {
+        // Tamu: pesan basi (terkirim saat It's Me mati) dan pesan ganda dilewati. Lampiran dari orang
+        // asing TIDAK diunduh (bisa memenuhi disk dan tidak dibaca AI); hanya dicatat jenisnya.
+        if (isStale(m.messageTimestamp, Date.now() / 1000, GUEST_MAX_AGE_S)) continue;
+        if (seenGuest(m.key?.id)) continue;
+        media = mediaKind(m.message);
+      } else {
+        try {
+          file = await saveMedia(m, jid);
+        } catch (e) {
+          process.stderr.write('gagal unduh media WhatsApp: ' + e.message + '\n');
+        }
       }
-      if (text || file) process.stdout.write(JSON.stringify({ jid, text, guest, file }) + '\n');
+      const text = bodyOf(m.message);
+      if (text || file || media) emit({ jid, text, guest, file, media });
     }
   });
 }
@@ -205,6 +207,11 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
   let out;
   try { out = JSON.parse(line); } catch { return; }
   if (out.cmd === 'logout') { if (sock) logoutAndRelink(); return; }
+  if (out.cmd === 'set') {
+    settings = applySettings(settings, out);
+    process.stderr.write(`pengaturan tamu diperbarui: terbuka=${settings.open}, diblokir=${settings.block.size}, tamu=${settings.guests.size}\n`);
+    return;
+  }
   if (!sock || !out.jid) return;
   try {
     if (out.file) {

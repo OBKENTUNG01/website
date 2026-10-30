@@ -127,12 +127,170 @@ def verify(kind, key):
     r.raise_for_status()
 
 
+def gateway_models(key):
+    """ID model yang ditawarkan gateway untuk `key` (GET /models, gratis). Melempar KeyRejected
+    kalau key ditolak; error jaringan/HTTP lain dilempar apa adanya."""
+    r = httpx.get(
+        f"{config.deepseek_url(key)}/models",
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=20,
+    )
+    if r.status_code in (401, 403):
+        raise KeyRejected("Penyedia menolak key ini (salah, dicabut, atau tanpa izin).")
+    r.raise_for_status()
+    return _model_ids(r.json())
+
+
+def _model_ids(data):
+    """Nama model dari jawaban GET /models. Bentuk standar OpenAI ({"data": [{"id": ...}]}); bentuk lain yang
+    wajar (daftar langsung, "models", nama saja) juga dibaca, karena NusaGate tidak mendokumentasikan bentuknya."""
+    items = data
+    if isinstance(data, dict):
+        items = data.get("data") if data.get("data") is not None else data.get("models")
+    names = set()
+    for item in items if isinstance(items, list) else []:
+        name = item if isinstance(item, str) else (
+            next((item[k] for k in ("id", "model", "name") if isinstance(item.get(k), str)), None)
+            if isinstance(item, dict) else None)
+        if name and name.strip():
+            names.add(name.strip())
+    return sorted(names)
+
+
 def save(kind, key):
-    """Simpan key ke .env dan langsung pakai."""
+    """Simpan key ke .env dan langsung pakai. Key DeepSeek/NusaGate DITAMBAHKAN ke kumpulan
+    (semua key dipakai bergiliran, lihat keypool.py); jenis lain menggantikan key lama."""
+    if kind == "deepseek":
+        pool_add(key)
+        return
     name = KINDS[kind][1]
     _set_env(ENV_FILE, name, key)
     setattr(config, name, key)
     log.info("API key %s diganti lewat Telegram.", label(kind))
+
+
+def pool_add(key):
+    """Tambahkan key ke kumpulan DeepSeek/NusaGate tanpa menghapus yang lama. True kalau key-nya baru."""
+    added, _ = pool_add_many([key])
+    return bool(added)
+
+
+def pool_add_many(new_keys):
+    """Tambahkan banyak key sekaligus (satu kali tulis .env). Kembalikan (baru, sudah_ada)."""
+    have = set(config.deepseek_keys())
+    added, existing = [], []
+    for key in new_keys:
+        (existing if key in have or key in added else added).append(key)
+    if added:
+        stored = list(config.DEEPSEEK_API_KEYS) + added
+        _set_env(ENV_FILE, "DEEPSEEK_API_KEYS", ",".join(stored))
+        config.DEEPSEEK_API_KEYS = stored
+        log.info("API key DeepSeek/NusaGate ditambahkan ke kumpulan (+%d, sekarang %d key).",
+                 len(added), len(config.deepseek_keys()))
+    return added, existing
+
+
+def pool_remove(key):
+    """Keluarkan satu key dari kumpulan (dari DEEPSEEK_API_KEYS dan/atau DEEPSEEK_API_KEY lama)."""
+    from . import keypool
+
+    removed = False
+    if key in config.DEEPSEEK_API_KEYS:
+        stored = [k for k in config.DEEPSEEK_API_KEYS if k != key]
+        _set_env(ENV_FILE, "DEEPSEEK_API_KEYS", ",".join(stored))
+        config.DEEPSEEK_API_KEYS = stored
+        removed = True
+    if config.DEEPSEEK_API_KEY == key:
+        _set_env(ENV_FILE, "DEEPSEEK_API_KEY", "")
+        config.DEEPSEEK_API_KEY = None
+        removed = True
+    if removed:
+        keypool.forget(key)
+        log.info("API key DeepSeek/NusaGate dikeluarkan dari kumpulan (sisa %d key).", len(config.deepseek_keys()))
+    return removed
+
+
+def set_models(names):
+    """Simpan daftar model NusaGate yang diputar bergantian (kosong = model bawaan)."""
+    names = list(dict.fromkeys(names))
+    _set_env(ENV_FILE, "ITSME_NUSAGATE_MODELS", ",".join(names))
+    config.NUSAGATE_MODELS = names
+
+
+# --- rahasia tidak boleh lewat WhatsApp ----------------------------------------------------
+# Awalan key yang dikenal. Sengaja berbasis awalan (bukan "teks acak panjang") supaya pesan
+# biasa tidak ikut terblokir.
+_SECRET_RES = [
+    re.compile(r"\bnsk[_-][A-Za-z0-9_-]{16,}"),  # NusaGate
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}"),  # Anthropic, juga token akun sk-ant-oat
+    re.compile(r"\bsk-or-[A-Za-z0-9_-]{16,}"),  # OpenRouter
+    re.compile(r"\bsk-[A-Za-z0-9_-]{24,}"),  # OpenAI / DeepSeek resmi
+    re.compile(r"\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{20,}"),  # GitHub
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),  # Google
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),  # Slack
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),  # AWS
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+]
+# Perintah yang MEMASANG key (/kunci <key>, /deepseek <key>): bagian setelah kata perintahnya adalah key.
+# (/cloud, /claude, /claudepc hanya mengganti otak dan tidak menerima key.)
+_KEY_COMMAND = re.compile(r"^\s*/(?:kunci|deepseek|key)(?:@\w+)?\s+\S", re.IGNORECASE)
+_PLACEHOLDER = "[kunci disembunyikan]"
+
+
+def contains_secret(text):
+    """Teks ini kelihatan berisi API key / token / kunci rahasia (atau mencoba memasangnya)?
+    Dipakai WhatsApp: key TIDAK BOLEH lewat WhatsApp (bisa bocor dan terbaca AI), hanya Telegram."""
+    text = text or ""
+    if _KEY_COMMAND.match(text):
+        return True
+    if any(rx.search(text) for rx in _SECRET_RES):
+        return True
+    whole = text.strip()
+    # Seluruh pesan = satu deret acak panjang bercampur huruf besar, kecil, dan angka: key tanpa
+    # awalan yang dikenal. (Nomor resi huruf besar+angka atau hash heksadesimal tidak ikut terjaring.)
+    return (looks_like_key(whole) and len(whole) >= 32
+            and any(c.isdigit() for c in whole)
+            and any(c.islower() for c in whole) and any(c.isupper() for c in whole))
+
+
+def scrub(text):
+    """Ganti apa pun yang mirip key/token rahasia dengan penanda. Untuk teks dari luar (pesan galat
+    penyedia) sebelum ditampilkan atau dicatat: penyedia kadang mengulang key dalam pesan galatnya."""
+    out = str(text or "")
+    for rx in _SECRET_RES:
+        out = rx.sub(_PLACEHOLDER, out)
+    return out
+
+
+_TOKEN_SPLIT = re.compile(r"[\s,;]+")
+_TOKEN_EDGES = "`'\"()[]<>{}"
+
+
+def parse_tokens(text):
+    """Calon key dalam sebuah pesan: dipisah spasi, baris baru, koma, atau titik koma. Kata perintah di
+    depan (/kunci) dibuang; tanda kutip/kurung dan awalan "NAMA=" ikut dibuang. Urutan tetap, tanpa
+    duplikat. Hasilnya BELUM tentu key - periksa dengan detect() / looks_like_key()."""
+    tokens = [t for t in _TOKEN_SPLIT.split(text or "") if t]
+    if tokens and tokens[0].startswith("/"):
+        tokens = tokens[1:]
+    out = []
+    for token in tokens:
+        token = token.strip(_TOKEN_EDGES)
+        if "=" in token:
+            token = token.rsplit("=", 1)[1].strip(_TOKEN_EDGES)
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def only_keys(text):
+    """Pesan ini isinya HANYA key (satu atau banyak, tanpa kata lain), dengan atau tanpa kata perintah di
+    depannya? Key yang ditempel tanpa /kunci - atau dengan perintah yang salah ketik (/kunc, /kunci-) -
+    tetap tidak boleh sampai ke otak AI atau tersimpan di riwayat obrolan."""
+    tokens = parse_tokens(text)
+    return (bool(tokens) and all(looks_like_key(t) for t in tokens)
+            and any(detect(t) or contains_secret(t) for t in tokens))
 
 
 def refresh_from_env(name):

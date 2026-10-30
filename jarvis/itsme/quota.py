@@ -42,9 +42,10 @@ def _save(data):
         pass
 
 
-def allow(key):
-    """True kalau tamu `key` masih boleh bertanya hari ini (dan catat pemakaiannya)."""
-    limit = config.GUEST_DAILY_MAX
+def allow(key, limit=None):
+    """True kalau tamu `key` masih boleh bertanya hari ini (dan catat pemakaiannya). `limit` menggantikan
+    batas per tamu (mis. batas gabungan semua tamu); 0 atau kurang = tanpa batas."""
+    limit = config.GUEST_DAILY_MAX if limit is None else limit
     if limit <= 0:
         return True
     today = date.today().isoformat()

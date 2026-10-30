@@ -41,6 +41,20 @@ class QuotaTest(Dasar):
                 self.assertTrue(quota.allow("wa:628"))
             self.assertEqual(quota.remaining("wa:628"), -1)
 
+    def test_an_explicit_limit_replaces_the_per_guest_limit(self):
+        with mock.patch.object(config, "GUEST_DAILY_MAX", 1):
+            self.assertTrue(quota.allow("wa-total", 3))
+            self.assertTrue(quota.allow("wa-total", 3))
+            self.assertTrue(quota.allow("wa-total", 3))
+            self.assertFalse(quota.allow("wa-total", 3))
+            self.assertTrue(quota.allow("wa:1"))  # tamu biasa tetap memakai batas per tamu
+            self.assertFalse(quota.allow("wa:1"))
+
+    def test_an_explicit_limit_of_zero_is_unlimited(self):
+        with mock.patch.object(config, "GUEST_DAILY_MAX", 1):
+            for _ in range(20):
+                self.assertTrue(quota.allow("wa-total", 0))
+
     def test_counter_is_per_day(self):
         with mock.patch.object(config, "GUEST_DAILY_MAX", 1):
             self.assertTrue(quota.allow("tg:9"))

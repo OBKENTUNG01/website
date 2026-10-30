@@ -1,7 +1,8 @@
 """Bot WhatsApp lewat jembatan Node (itsme/whatsapp/wa.js).
 
-Masuk: tiap pesan pemilik dibaca dari stdout node, lalu dipanggil handler(jid, text)
-di thread pembaca. Keluar: send(jid, text) menulis satu baris JSON ke stdin node.
+Masuk: tiap pesan yang dilayani (pemilik, dan tamu kalau mode terbuka menyala) dibaca dari stdout
+node, lalu dipanggil handler(jid, text, guest, file[, media=...]) di thread pembaca. Siapa yang
+dilayani diputuskan di wa_core.js. Keluar: send(jid, text) menulis satu baris JSON ke stdin node.
 Login pertama: QR muncul di jendela It's Me; sesi disimpan di data/whatsapp/.
 
 Keadaan sambungan dilaporkan jembatan sebagai baris {"state": ...} (lihat wa.js), supaya
@@ -104,7 +105,8 @@ class WhatsApp:
         _kill_orphans()
         env = dict(os.environ,
                    WA_OWNER=str(config.WA_OWNER or ""),
-                   WA_GUESTS=",".join(config.WA_GUESTS),
+                   WA_GUESTS=",".join(sorted(config.WA_GUESTS)),
+                   WA_BLOCK=",".join(sorted(config.WA_BLOCK)),
                    WA_OPEN="1" if config.WA_OPEN else "0",
                    WA_AUTH=os.path.join(config.DATA_DIR, "whatsapp"),
                    WA_FILES=config.WA_FILES_DIR,
@@ -169,8 +171,11 @@ class WhatsApp:
                         log.exception("gagal memproses QR WhatsApp")
                 continue
             try:
+                # "media" (lampiran tamu yang tidak dibaca) hanya disertakan kalau ada, supaya
+                # penerima yang tidak mengenalnya tetap bekerja.
+                extra = {"media": msg["media"]} if msg.get("media") else {}
                 self._on_message(msg.get("jid"), msg.get("text") or "",
-                                 bool(msg.get("guest")), msg.get("file"))
+                                 bool(msg.get("guest")), msg.get("file"), **extra)
             except Exception:  # noqa: BLE001 - satu pesan gagal tidak boleh mematikan pembaca
                 log.exception("gagal memproses pesan WhatsApp")
         code = proc.poll()
@@ -210,6 +215,13 @@ class WhatsApp:
 
     def send(self, jid, text):
         return self._send_obj({"jid": jid, "text": text})
+
+    def update_settings(self):
+        """Kirim pengaturan tamu terbaru (mode terbuka, daftar blokir, tamu terdaftar) ke jembatan yang
+        SEDANG jalan, tanpa memutus sambungan WhatsApp. Kalau jembatan baru menyala ulang, pengaturan
+        yang sama dibaca dari lingkungan prosesnya (lihat start)."""
+        return self._send_obj({"cmd": "set", "open": bool(config.WA_OPEN),
+                               "block": sorted(config.WA_BLOCK), "guests": sorted(config.WA_GUESTS)})
 
     def send_file(self, jid, path, name=None, caption=None):
         """Kirim satu berkas (sebagai dokumen) ke nomor WhatsApp."""

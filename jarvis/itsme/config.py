@@ -97,12 +97,39 @@ FALLBACK_LOCAL = (_get("ITSME_FALLBACK_LOCAL", "1") or "1").strip().lower() not 
 # OpenAI-compatible); key diawali sk- = dari DeepSeek resmi. Alamat API & model
 # dipilih OTOMATIS dari awalan key, atau dipaksa lewat env di bawah.
 DEEPSEEK_API_KEY = _get("DEEPSEEK_API_KEY")
+# Banyak key sekaligus (dipisah koma): semuanya dipakai bergiliran dan merata, lihat
+# keypool.py. Dikirim lewat Telegram (/kunci), TIDAK PERNAH lewat WhatsApp. NusaGate
+# membatasi 60 permintaan/menit PER KEY, jadi makin banyak key makin lega.
+def _csv(value):
+    return [x for x in re.split(r"[,;\s]+", value or "") if x]
+
+
+DEEPSEEK_API_KEYS = _csv(_get("DEEPSEEK_API_KEYS"))
+# Model NusaGate yang diputar bergantian (dipisah koma), mis. "deepseek-v4.1-flash,glm-5.3-flash".
+# Kosong = satu model bawaan (deepseek-v4.1-flash). Diatur lewat Telegram: /model_pakai.
+NUSAGATE_MODELS = _csv(_get("ITSME_NUSAGATE_MODELS"))
+# Batas LUNAK permintaan per menit per key sebelum key lain didahulukan (NusaGate: 60).
+try:
+    POOL_RPM = max(1, int(_get("ITSME_POOL_RPM", "50") or "50"))
+except ValueError:
+    POOL_RPM = 50
 DEEPSEEK_URL = (_get("DEEPSEEK_URL", "") or "").rstrip("/")   # kosong = auto dari key
 DEEPSEEK_MODEL = _get("ITSME_DEEPSEEK_MODEL", "") or ""       # kosong = auto dari key
 # Otak DeepSeek juga jatuh ke otak lokal lewat FALLBACK_LOCAL di atas.
 DEEPSEEK_TIMEOUT = float(_get("ITSME_DEEPSEEK_TIMEOUT", "300"))
 _NUSAGATE_URL = "https://api.nusagate.com/v1"
 _DEEPSEEK_OFFICIAL_URL = "https://api.deepseek.com/v1"
+
+
+def deepseek_keys():
+    """Semua key DeepSeek/NusaGate yang dikenal (tanpa duplikat, urutan tetap): key tunggal
+    lama DEEPSEEK_API_KEY lebih dulu, lalu daftar DEEPSEEK_API_KEYS. Dibaca saat dipanggil
+    (bukan disalin), supaya key baru dari Telegram langsung terpakai."""
+    out = []
+    for key in [DEEPSEEK_API_KEY] + list(DEEPSEEK_API_KEYS):
+        if key and key not in out:
+            out.append(key)
+    return out
 
 
 def deepseek_url(key=None):
@@ -310,8 +337,8 @@ DRIVE_DOWNLOAD_DIR = _get("ITSME_DRIVE_DOWNLOAD_DIR", os.path.join(os.path.expan
 # Nyalakan dengan ITSME_WHATSAPP=1 setelah "npm install" sekali di folder
 # itsme/whatsapp. Akun yang BELUM tertaut: QR dikirim ke Telegram (dan tampil di jendela
 # It's Me), pindai dari WhatsApp HP (Perangkat tertaut). Akun yang SUDAH tertaut (sesi di
-# data/whatsapp) langsung tersambung tanpa QR; /wa_ulang meminta QR baru. Hanya nomor
-# WA_OWNER yang dilayani.
+# data/whatsapp) langsung tersambung tanpa QR; /wa_ulang meminta QR baru. Bawaannya hanya
+# pemilik (WA_OWNER / chat ke diri sendiri) yang dilayani; orang lain hanya kalau WA_OPEN/WA_GUESTS.
 WHATSAPP = _bool("ITSME_WHATSAPP", False)
 WA_OWNER = (_get("ITSME_WA_OWNER", "") or "").strip()
 # Nomor WA lain yang dilayani (dipisah koma). WA_OPEN=1 melayani semua nomor.
@@ -319,6 +346,30 @@ WA_OWNER = (_get("ITSME_WA_OWNER", "") or "").strip()
 WA_GUESTS = ({x.strip() for x in (_get("ITSME_WA_GUESTS", "") or "").replace(";", ",").split(",")
               if x.strip()})
 WA_OPEN = _bool("ITSME_WA_OPEN", False)
+# Mode terbuka (WA_OPEN=1): SIAPA PUN yang chat ke nomor ini dijawab AI (hanya tanya-jawab, tanpa alat,
+# tanpa memori pemilik; grup & siaran tidak pernah dibalas). Nyalakan/matikan lewat Telegram: /wa_tamu.
+# Nomor yang tidak pernah dibalas walau mode terbuka (dipisah koma; atur lewat /wa_blokir):
+WA_BLOCK = {re.sub(r"\D", "", x) for x in _csv(_get("ITSME_WA_BLOCK"))} - {""}
+# Perkenalan di balasan PERTAMA tiap kontak per hari, supaya lawan bicara tahu itu AI. "off" = tanpa.
+WA_GUEST_INTRO = _get(
+    "ITSME_WA_GUEST_INTRO",
+    "🤖 Ini asisten AI yang membalas otomatis atas nama pemilik nomor ini. "
+    "Pesanmu juga akan dibaca pemilik.",
+)
+if str(WA_GUEST_INTRO).strip().lower() in ("off", "0", "false", "no"):
+    WA_GUEST_INTRO = ""
+# Pesan beruntun dari satu kontak yang masih dilayani per menit (penjaga banjir / balas-balasan
+# dengan bot lain). Lebihnya diabaikan diam-diam.
+try:
+    WA_GUEST_PER_MIN = max(1, int(_get("ITSME_WA_GUEST_PER_MIN", "6") or "6"))
+except ValueError:
+    WA_GUEST_PER_MIN = 6
+# Batas jawaban untuk SEMUA tamu WhatsApp digabung per hari (di atas batas per tamu GUEST_DAILY_MAX):
+# pagar biaya kalau nomor ini tiba-tiba kebanjiran pesan dari banyak orang asing. 0 = tanpa batas.
+try:
+    WA_GUEST_TOTAL_MAX = int(_get("ITSME_WA_GUEST_TOTAL_MAX", "500") or "500")
+except ValueError:
+    WA_GUEST_TOTAL_MAX = 500
 # Batas ukuran berkas WhatsApp (MB), untuk terima maupun kirim.
 WA_MAX_MB = int(_get("ITSME_WA_MAX_MB", "100"))
 # Berkas yang dikirim ke bot WhatsApp disimpan di sini.
@@ -349,8 +400,8 @@ def check():
         )
     if BACKEND == "openrouter" and not OPENROUTER_API_KEY:
         problems.append("OPENROUTER_API_KEY belum diisi (wajib untuk ITSME_BACKEND=openrouter).")
-    if BACKEND == "deepseek" and not DEEPSEEK_API_KEY:
-        problems.append("DEEPSEEK_API_KEY belum diisi (wajib untuk ITSME_BACKEND=deepseek).")
+    if BACKEND == "deepseek" and not deepseek_keys():
+        problems.append("DEEPSEEK_API_KEY / DEEPSEEK_API_KEYS belum diisi (wajib untuk ITSME_BACKEND=deepseek).")
     if BACKEND == "claude" and not ANTHROPIC_API_KEY:
         problems.append("ANTHROPIC_API_KEY belum diisi (wajib untuk ITSME_BACKEND=claude).")
     if BACKEND == "claude_code" and not CLAUDE_CODE_OAUTH_TOKEN:

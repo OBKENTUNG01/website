@@ -265,6 +265,17 @@ def _call(body):
             time.sleep(min(wait, RETRY_CAP))
 
 
+def guest_chat(system_text, messages):
+    """Jawaban tanya-jawab untuk TAMU: tanpa alat, tanpa memori pemilik, singkat (lihat brain_guest.py)."""
+    body = {
+        "model": config.OPENROUTER_MODEL,
+        "messages": [{"role": "system", "content": system_text}] + list(messages),
+        "max_tokens": 500,
+    }
+    choice = _call(body)
+    return clean_reply((choice.get("message") or {}).get("content")) or "(tidak ada jawaban)"
+
+
 def run_agent(messages, ctx):
     """Jalankan loop agen sampai selesai. Mengubah `messages` di tempat.
 

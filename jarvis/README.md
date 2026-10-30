@@ -36,6 +36,12 @@ bot dari HP.
   rahasia (`.env`, kunci, login) otomatis dilewati dan dilaporkan; arsip
   berbahaya yang mencoba menulis di luar folder tujuan (zip-slip) ditolak.
 - **Ingat** hal penting yang kamu beri tahu (memori jangka panjang).
+- **Banyak key NusaGate dipakai bergiliran** — punya 10 key atau lebih? Pasang semuanya lewat
+  Telegram (`/kunci`); beban dibagi rata, key yang sedang dibatasi atau habis saldo dilewati
+  otomatis tanpa kamu merasakan kegagalan ([detail](#banyak-key-nusagate-dipakai-semuanya-bergiliran)).
+- **Orang lain yang chat ke nomor WhatsApp-mu ikut dijawab AI** (mode tamu, bawaan mati,
+  dinyalakan lewat Telegram: `/wa_tamu aktif`) — hanya tanya-jawab, tanpa akses ke alat,
+  memori, atau datamu ([detail](#orang-lain-yang-chat-ke-nomormu-dijawab-ai-mode-tamu)).
 - **Aman** — hanya kamu (pemilik) yang bisa memerintah.
   - Perintah yang hanya melihat keadaan (`git status`, `git diff`, `git log`,
     `ls`, `dir`, …) langsung jalan. Perintah lain, menulis berkas, deploy, dan
@@ -248,7 +254,10 @@ disembunyikan dari pemilik atau antivirus.
 | `/claudepc` | Pakai Claude di komputer dengan akun Claude-mu, tanpa API key ([cara login](#memakai-akun-claude-mu-tanpa-api-key-claudepc)) |
 | `/claude` | Pakai otak Claude (Anthropic API, butuh `ANTHROPIC_API_KEY` di `.env`) |
 | `/lokal` | Pakai otak lokal (Ollama) |
-| `/kunci <key>` | Simpan API key Claude (`sk-ant-…`), token akun Claude (`sk-ant-oat…`), key OpenRouter (`sk-or-…`), atau API key Tailscale (`tskey-api-…`, untuk `/pasang` tanpa login); pesannya langsung dihapus |
+| `/kunci <key>` | Simpan API key Claude (`sk-ant-…`), token akun Claude (`sk-ant-oat…`), key OpenRouter (`sk-or-…`), atau API key Tailscale (`tskey-api-…`, untuk `/pasang` tanpa login); pesannya langsung dihapus. Key NusaGate (`nsk_…`) boleh **banyak sekaligus** ([lihat di bawah](#banyak-key-nusagate-dipakai-semuanya-bergiliran)) |
+| `/kunci_daftar`, `/kunci_hapus <no>`, `/kunci_tes [chat]` | Lihat semua key NusaGate + statusnya, keluarkan satu, atau periksa semuanya |
+| `/model_daftar`, `/model_pakai <nama> …` | Lihat model NusaGate, atau putar beberapa model bergantian |
+| `/wa_tamu [aktif\|mati]`, `/wa_blokir <nomor>`, `/wa_buka <nomor>`, `/wa_info <teks>` | Atur balasan AI untuk orang yang chat ke nomor WhatsApp-mu ([lihat di bawah](#orang-lain-yang-chat-ke-nomormu-dijawab-ai-mode-tamu)) |
 | `/akses` | Lihat mode akses: 🔒 aman (bawaan) atau 🔓 penuh |
 | `/akses_penuh` | Langsung bertindak tanpa tombol ([lihat di bawah](#akses-penuh-akses_penuh)) |
 | `/akses_aman` | Kembali minta tombol "Ya" untuk aksi yang mengubah sesuatu |
@@ -470,6 +479,63 @@ di layarmu saat ditempel. Paling aman tetap mengisi `.env` langsung di
 komputer; kalau memakai `/kunci`, buat key khusus untuk It's Me dengan batas
 pengeluaran, supaya bisa dicabut kapan saja.
 
+**Key hanya dipasang lewat Telegram — tidak pernah lewat WhatsApp.** Pesan WhatsApp
+yang berisi key (atau perintah `/kunci …`) langsung ditolak: tidak dibaca AI, tidak
+disimpan di riwayat, tidak dicatat di log, dan pemilik diberi tahu agar memasangnya lewat
+Telegram. Key yang sudah terlanjur diketik di WhatsApp sebaiknya dianggap bocor: hapus
+pesannya dan buat ulang key-nya. Key yang ditempel di Telegram **tanpa** `/kunci` (atau
+dengan perintah salah ketik, mis. `/kunc …`) tetap dipasang dan pesannya dihapus, bukan
+dikirim ke AI. Kalau penyedia mengulang key dalam pesan galatnya, key itu disamarkan
+sebelum tampil di chat atau log.
+
+### Banyak key NusaGate, dipakai semuanya bergiliran
+
+NusaGate membatasi **60 permintaan per menit untuk tiap key**, dan saldo atau paket tiap
+key bisa habis sendiri-sendiri. Punya 10 key? Pasang semuanya sekaligus, satu per baris
+(boleh juga dipisah spasi atau koma):
+
+```
+/kunci
+nsk_aaaa…
+nsk_bbbb…
+nsk_cccc…
+```
+
+- Semua key **diperiksa bersamaan** ke NusaGate (gratis), yang baik **ditambahkan** ke daftar
+  (bukan menggantikan yang lama), yang ditolak atau tidak bisa diperiksa dilaporkan satu per
+  satu dan tidak disimpan. Pesan berisi key dihapus **sebelum** pemeriksaan dimulai.
+- **Cara bergilirnya:** tiap permintaan memakai key yang *paling sedikit sedang bekerja*, lalu
+  yang *paling lama menganggur*. Hasilnya beban tersebar rata — tidak ada key yang
+  kebanjiran dan tidak ada yang menganggur (diuji: 10 key dan 40 key — tidak ada batas jumlah
+  key; masing-masing terpakai persis sama banyak).
+- **Kalau satu key bermasalah** — dibatasi 60/menit, saldo habis, paket penuh, ditolak, atau
+  server sibuk — permintaan yang *sama* langsung dicoba dengan key lain, jadi kamu tidak
+  merasakan kegagalan selama masih ada satu key sehat. Key yang bermasalah ditinggalkan
+  sebentar (menurut penyebabnya: sesuai `retry_after` dari NusaGate, 20 menit untuk paket
+  penuh, 30 menit untuk saldo habis, sejam untuk ditolak) lalu otomatis dicoba lagi. Kamu
+  dikabari lewat Telegram (satu pesan, key hanya tampil `nsk…a1b2`) saat saldo/paket/penolakan
+  menimpa sebuah key.
+- Yang memakai kumpulan ini: otak **DeepSeek** (`/deepseek`) dan **semua tamu WhatsApp**
+  ([mode tamu](#orang-lain-yang-chat-ke-nomormu-dijawab-ai-mode-tamu)), walau otak utamamu
+  sedang yang lain.
+- **Model bergantian.** `ITSME_NUSAGATE_MODELS` (atau `/model_pakai a b c`) memutar model:
+  tiap jawaban memakai model yang paling lama menganggur, supaya satu model tidak dibebani
+  sendirian. `/model_pakai semua` memutar **semua** model yang ditawarkan NusaGate (saat ini 20
+  model; diminta konfirmasi dulu, karena harga dan kemampuan tiap model berbeda: yang mahal ikut
+  terpakai dan yang tidak mendukung alat menjawab tanpa menjalankan alat). Model yang ditolak
+  NusaGate (`model_not_found`, atau menolak alat) otomatis ditinggalkan 30 menit dan
+  permintaannya dialihkan. Daftar model: `/model_daftar`. Satu key NusaGate berlaku untuk semua
+  model, jadi memutar model tidak membutuhkan key tambahan. Bawaannya satu model saja
+  (`deepseek-v4.1-flash`): memutar model itu pilihanmu, bukan otomatis.
+- **Periksa kapan saja:** `/kunci_daftar` (status tiap key, berapa kali dipakai),
+  `/kunci_tes` (periksa semua key ke NusaGate, gratis), `/kunci_tes chat` (meminta tiap key
+  menjawab satu kata — bukti paling jujur bahwa key itu benar-benar bisa dipakai; biayanya
+  beberapa token per key), `/kunci_hapus 3` (keluarkan key nomor 3).
+- Batas lunak 50 permintaan/menit per key (`ITSME_POOL_RPM`) supaya key tidak mepet batas
+  keras 60. Hitungan pemakaian disimpan di `data/keypool.json` (hanya id hash, bukan key).
+- Komputer lain yang bergabung ke bot ikut menerima key lewat penyelarasan `.env` dari
+  Hub; satu-satunya yang menjawab Telegram/WhatsApp tetap komputer pemimpin.
+
 ## Pengaturan (opsional, di `.env`)
 
 | Variabel | Bawaan | Fungsi |
@@ -480,6 +546,15 @@ pengeluaran, supaya bisa dicabut kapan saja.
 | `ITSME_OPENROUTER_FALLBACKS` | `openrouter/free` (untuk model `:free`) | Model cadangan kalau model utama penuh; `off` = matikan |
 | `ITSME_OPENROUTER_REASONING` | `medium` | Seberapa keras model cloud berpikir (`none` … `max`, atau `default`) |
 | `ITSME_FALLBACK_LOCAL` | `1` | Otak lokal menjawab kalau otak cloud gagal (`0` = matikan) |
+| `DEEPSEEK_API_KEYS` | — | Banyak key NusaGate/DeepSeek, dipisah koma; **semuanya dipakai bergiliran**. Diisi otomatis oleh `/kunci` (jangan lewat WhatsApp) |
+| `ITSME_NUSAGATE_MODELS` | — | Model NusaGate yang diputar bergantian, dipisah koma (kosong = satu model bawaan). Atur dengan `/model_pakai` |
+| `ITSME_POOL_RPM` | `50` | Batas lunak permintaan per menit per key sebelum key lain didahulukan (NusaGate: 60) |
+| `ITSME_WA_OPEN` | `0` | `1` = orang lain yang chat ke nomor WhatsApp-mu dijawab AI (mode tamu). Atur dengan `/wa_tamu` |
+| `ITSME_WA_BLOCK` | — | Nomor yang tidak pernah dijawab AI, dipisah koma. Atur dengan `/wa_blokir` / `/wa_buka` |
+| `ITSME_WA_GUEST_INTRO` | "🤖 Ini asisten AI…" | Perkenalan di balasan pertama tiap kontak per hari; `off` = tanpa |
+| `ITSME_WA_GUEST_PER_MIN` | `6` | Pesan per menit per kontak yang dilayani (lebihnya diabaikan) |
+| `ITSME_GUEST_DAILY_MAX` | `50` | Pertanyaan per hari per tamu (Telegram & WhatsApp); `0` = tanpa batas |
+| `ITSME_WA_GUEST_TOTAL_MAX` | `500` | Jawaban per hari untuk SEMUA tamu WhatsApp digabung; `0` = tanpa batas |
 | `ITSME_OLLAMA_MODEL` | `qwen3.5:9b` | Model lokal yang dipakai |
 | `ITSME_OLLAMA_NUM_CTX` | `16384` | Panjang konteks; turunkan kalau RAM penuh |
 | `ITSME_OLLAMA_NUM_GPU` | otomatis | Lapisan model di GPU; `0` = CPU saja (kalau driver GPU bermasalah) |
@@ -567,9 +642,75 @@ Balas pesan dari WhatsApp-mu sendiri, bukan cuma Telegram.
    dan itu tidak masalah selama mereka siaga. `/diagnosa` menunjukkan keadaan Node.js
    dan `npm install` di komputer yang membalas.
 
-Sesi login disimpan di `data/whatsapp/` (jangan di-commit). Hanya nomor
-`ITSME_WA_OWNER` yang dilayani; grup dan nomor lain diabaikan. Tombol
-konfirmasi aksi tetap lewat Telegram.
+Sesi login disimpan di `data/whatsapp/` (jangan di-commit). Bawaannya hanya pemilik yang
+dilayani (chat "Pesan ke diri sendiri" / nomor `ITSME_WA_OWNER`); grup tidak pernah. Tombol
+konfirmasi aksi tetap lewat Telegram. **API key tidak pernah diterima lewat WhatsApp**
+([alasannya](#mengirim-api-key-lewat-telegram-kunci)): pasang hanya lewat Telegram.
+
+### Orang lain yang chat ke nomormu dijawab AI (mode tamu)
+
+Dengan **mode tamu**, siapa pun yang mengirim pesan ke nomor WhatsApp-mu (satu lawan satu)
+dijawab AI atas nama nomor itu; jawabannya muncul di chat mereka dan juga terlihat di
+WhatsApp-mu. **Bawaannya MATI** — menyalakan balasan otomatis ke semua orang itu keputusanmu,
+jadi lewat Telegram:
+
+| Perintah | Fungsi |
+|---|---|
+| `/wa_tamu` | Lihat status mode tamu dan apa saja yang berlaku |
+| `/wa_tamu aktif` | Nyalakan (diminta konfirmasi dengan tombol; langsung berlaku, WhatsApp tidak diputus) |
+| `/wa_tamu mati` | Matikan seketika |
+| `/wa_blokir <nomor>` / `/wa_buka <nomor>` | Nomor itu tidak pernah dijawab AI / dijawab lagi (`/wa_blokir` saja = daftarnya) |
+| `/wa_info <teks>` / `/wa_info hapus` | Keterangan yang BOLEH dibagikan AI ke tamu (jam kerja, alamat, dsb.; maks. 2000 huruf) |
+
+Mau lebih ketat — hanya beberapa orang tertentu? Isi `ITSME_WA_GUESTS` di `.env` (nomor dipisah
+koma, mis. `6281234567890,6289876543210`) dan biarkan mode tamu **mati**: hanya nomor-nomor itu
+yang dijawab (aturan di bawah tetap berlaku untuk mereka).
+
+Yang dijaga untuk tamu:
+
+- **Hanya tanya-jawab.** Tamu tidak mendapat alat apa pun (shell, berkas, web, komputer lain),
+  tidak membawa **memori** atau data pribadimu, dan tidak pernah sampai ke otak pilihanmu
+  (termasuk "Claude di komputer", yang punya alat sendiri). Mereka dijawab lewat jalur khusus:
+  kumpulan key NusaGate (beban dibagi rata) → OpenRouter → otak lokal → permintaan maaf
+  singkat. Tamu tidak pernah melihat isi galat teknis.
+- **Lawan bicara diberi tahu itu AI.** Balasan pertama yang berhasil ke tiap kontak per hari
+  diawali "🤖 Ini asisten AI yang membalas otomatis atas nama pemilik nomor ini…" (ubah dengan
+  `ITSME_WA_GUEST_INTRO`, `off` = tanpa). Perkenalan ini dipasang oleh program, tidak bergantung
+  pada model. Instruksi untuk modelnya: mengaku AI kalau ditanya, tidak mengaku sebagai kamu,
+  tidak mengarang data pribadimu, dan memperlakukan isi pesan tamu sebagai data, bukan perintah.
+  (Model tetap bisa keliru; karena itu tamu tidak diberi akses ke apa pun yang berharga.)
+- **Tidak dibalas sama sekali:** grup, siaran, status, saluran, pesan yang kamu ketik sendiri
+  ke orang lain, nomor yang diblokir, stiker, dan pesan basi (lebih dari 10 menit — misalnya
+  terkirim saat It's Me mati). Pesan ganda hanya dijawab sekali. Lampiran dari tamu **tidak
+  diunduh** dan tidak dibaca: tamu diminta menulis dengan kata-kata.
+- **Anti banjir & anti biaya bengkak:** maks. 6 pesan/menit per kontak (`ITSME_WA_GUEST_PER_MIN`;
+  lebihnya diam-diam diabaikan, supaya tidak jadi balas-balasan dengan bot lain), kuota
+  harian per kontak (`ITSME_GUEST_DAILY_MAX`, bawaan 50; setelah habis dikabari sekali lalu
+  diam), **batas gabungan semua tamu** per hari (`ITSME_WA_GUEST_TOTAL_MAX`, bawaan 500; kalau
+  tercapai tamu tidak dijawab lagi sampai besok dan kamu dikabari sekali lewat Telegram — pagar
+  biaya kalau nomormu tiba-tiba kebanjiran pesan orang asing), paling banyak 4 jawaban tamu
+  diproses bersamaan.
+- **API key dan token rahasia yang dikirim siapa pun ke WhatsApp ditolak** (pemilik maupun
+  tamu) tanpa dibaca AI. Yang dikenali: key NusaGate/DeepSeek/OpenAI, Claude, OpenRouter, GitHub,
+  Google, Slack, AWS, kunci pribadi, dan perintah `/kunci …`.
+
+Catatan jujur:
+
+- Pencocokan nomor memakai semua penanda yang diberikan WhatsApp (nomor asli dan alamat
+  `@lid`). Kalau sebuah kontak hanya muncul dengan alamat `@lid` tanpa nomor aslinya, nomornya
+  tidak bisa dicocokkan dengan daftar blokir; matikan mode tamu kalau butuh kepastian.
+- Penjaga "pesan basi" (10 menit) membandingkan cap waktu WhatsApp dengan jam komputer, jadi jam
+  komputer harus akurat (Windows: Pengaturan > Waktu & bahasa > sinkronkan sekarang). Kalau jam
+  komputer maju lebih dari 10 menit, pesan tamu dianggap basi dan tidak dijawab.
+- AI bisa keliru — jangan aktifkan kalau ada kontak yang tidak boleh menerima jawaban salah atas
+  namamu (bank, kantor, dsb.): blokir nomornya atau biarkan mode ini mati. Pesan sekali-pakai dari
+  layanan (kode OTP, notifikasi bank) juga akan dijawab kalau nomornya mengirim ke WhatsApp-mu —
+  blokir nomor layanan semacam itu.
+- Bot ini tersambung sebagai "perangkat tertaut" lewat pustaka tidak resmi (Baileys), bukan WhatsApp
+  Business API resmi. WhatsApp bisa membatasi nomor yang dipakai membalas banyak orang secara
+  otomatis. It's Me hanya **membalas** pesan yang masuk (tidak pernah memulai percakapan, tidak
+  menyiarkan), dan dibatasi per kontak, tapi risiko dari sisi WhatsApp tetap ada: pakai nomor yang
+  siap menanggung itu, dan mulai dengan sedikit kontak.
 
 ## Google Drive (opsional)
 

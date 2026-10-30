@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from . import access, brain, config, hp, node, tools, updater
+from . import access, brain, config, hp, keypool, keys, node, tools, updater
 
 log = logging.getLogger("itsme")
 
@@ -131,7 +131,7 @@ def status(app):
         "brains": {
             "ollama": {"label": "Lokal (Ollama)", **_brain_entry("ollama", True)},
             "openrouter": {"label": "Cloud (OpenRouter)", **_brain_entry("openrouter", bool(config.OPENROUTER_API_KEY))},
-            "deepseek": {"label": "DeepSeek", **_brain_entry("deepseek", bool(config.DEEPSEEK_API_KEY))},
+            "deepseek": {"label": "DeepSeek", **_brain_entry("deepseek", keypool.has_keys())},
             "claude": {"label": "Claude (API key)", **_brain_entry("claude", bool(config.ANTHROPIC_API_KEY))},
             "claude_code": {"label": "Claude di komputer", **_brain_entry("claude_code", brain.claude_code_ready())},
         },
@@ -169,7 +169,9 @@ def _logs(limit=120):
             lines = f.readlines()[-limit:]
     except OSError:
         return "(log belum ada)"
-    return _REDACT.sub("***", "".join(lines)).strip() or "(log kosong)"
+    # Log tidak seharusnya memuat key; ini jaring pengaman kedua untuk semua bentuk key yang dikenal
+    # (termasuk nsk_ NusaGate), bukan hanya sk-xxx- dan token bot.
+    return keys.scrub(_REDACT.sub("***", "".join(lines))).strip() or "(log kosong)"
 
 
 # --- aksi --------------------------------------------------------------------------

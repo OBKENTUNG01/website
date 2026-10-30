@@ -28,11 +28,12 @@ import re
 import sys
 import time
 import uuid
+from collections import OrderedDict, deque
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from urllib.parse import urlparse
 
-from . import access, brain, config, dashboard, devices, keys, launch, lock, node, quota, updater
+from . import access, brain, brain_guest, config, dashboard, devices, keypool, keys, launch, lock, node, quota, updater
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -56,7 +57,15 @@ HELP = (
     "/claudepc — pakai Claude di komputer (akun Claude-mu, tanpa API key)\n"
     "/claude — pakai otak Claude (Anthropic API, paling pintar)\n"
     "/lokal — pakai otak lokal (gratis, privat)\n"
-    "/kunci <key> — simpan API key atau token akun Claude (pesannya langsung kuhapus)\n"
+    "/kunci <key> — simpan API key atau token akun Claude (pesannya langsung kuhapus). Key NusaGate boleh "
+    "banyak sekaligus (satu per baris): SEMUANYA dipakai bergiliran. Key hanya dipasang lewat Telegram, "
+    "tidak pernah lewat WhatsApp\n"
+    "/kunci_daftar — lihat semua key NusaGate beserta statusnya (siap / dibatasi / saldo habis / ditolak)\n"
+    "/kunci_hapus <no> — keluarkan key dari daftar (nomor dari /kunci_daftar)\n"
+    "/kunci_tes — periksa semua key ke penyedianya; /kunci_tes chat = coba menjawab sungguhan (biaya sangat kecil)\n"
+    "/model_daftar — model yang ditawarkan NusaGate; /model_pakai <nama> <nama> … — putar beberapa model bergantian\n"
+    "/wa_tamu — atur apakah orang yang chat ke nomor WhatsApp-mu dijawab AI (aktif/mati); "
+    "/wa_blokir <nomor>, /wa_buka <nomor>, /wa_info <teks>\n"
     "/akses — lihat mode akses (aman/penuh)\n"
     "/akses_penuh — langsung bertindak tanpa tombol (berkas rahasia tetap dijaga)\n"
     "/akses_aman — kembali minta tombol untuk aksi yang mengubah sesuatu\n"
@@ -82,7 +91,65 @@ _HUB_ONLY = {
     "/start", "/help", "/kunci", "/akses", "/akses_penuh", "/akses_aman",
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/pasang_tetap", "/id",
     "/lock", "/komputer", "/layar", "/nyalakan", "/wa", "/wa_ulang", "/alamat", "/diagnosa",
+    "/kunci_daftar", "/kunci_hapus", "/kunci_tes", "/model_daftar", "/model_pakai",
+    "/wa_tamu", "/wa_blokir", "/wa_buka", "/wa_info",
 }
+# Perintah pengaturan yang hanya jalan lewat Telegram (key dan pengaturan tamu tidak boleh diurus dari
+# WhatsApp). Kalau pemilik mengetiknya di WhatsApp, dia diberi tahu ke mana harus pergi.
+_WA_TELEGRAM_ONLY = {
+    "/kunci", "/deepseek", "/kunci_daftar", "/kunci_hapus", "/kunci_tes", "/model_daftar", "/model_pakai",
+    "/wa_tamu", "/wa_blokir", "/wa_buka", "/wa_info",
+}
+_WA_TELEGRAM_ONLY_NOTE = ("Perintah itu hanya bisa lewat Telegram (key dan pengaturan sengaja tidak diurus dari "
+                          "WhatsApp, supaya tidak bocor). Kirim di bot Telegram-mu.")
+_WA_SECRET_OWNER = (
+    "🔒 Pesan itu berisi API key / kunci rahasia, jadi TIDAK kuproses lewat WhatsApp (dari sini key bisa bocor).\n\n"
+    "Pasang key hanya lewat Telegram: kirim ke bot Telegram-mu\n/kunci <key>\n\n"
+    "Karena key itu sudah tertulis di WhatsApp, hapus pesannya dari chat ini (hapus untuk semua orang), "
+    "dan sebaiknya buat ulang key-nya di penyedianya, lalu pasang yang baru lewat Telegram."
+)
+_WA_SECRET_GUEST = ("⚠️ Jangan mengirim kunci rahasia, kata sandi, atau API key lewat WhatsApp. "
+                    "Pesan itu tidak kubaca; hapus saja dari chat ini.")
+_WA_GUEST_BUSY = "Maaf, asisten AI sedang tidak bisa menjawab. Coba lagi nanti ya."
+_WA_GUEST_TEXT_ONLY = "Maaf, aku hanya bisa membaca pesan teks. Tulis pertanyaanmu dengan kata-kata ya."
+_WA_GUEST_QUOTA = "Kuota harian untuk asisten AI sudah habis. Coba lagi besok ya."
+# Paling banyak sekian jawaban tamu diproses bersamaan (sisanya antre), supaya satu keramaian tidak
+# menghabiskan thread dan membuat pemilik menunggu. Dan paling banyak sekian riwayat tamu disimpan.
+_WA_GUEST_PARALLEL = 4
+_WA_GUEST_HISTORIES = 200
+_WA_GUEST_TIMEOUT = 120  # detik menunggu jawaban AI untuk seorang tamu
+_POOL_ALERT_WAIT = 3  # detik mengumpulkan kabar "key tidak bisa dipakai" jadi satu pesan
+_WA_OPEN_WARNING = (
+    "Aktifkan balasan AI untuk SEMUA orang yang chat ke nomor WhatsApp-mu?\n\n"
+    "Yang terjadi: setiap pesan teks dari kontak (satu lawan satu) dijawab AI atas nama nomor ini, dan "
+    "jawabannya tampil di chat mereka seperti pesanmu sendiri - diawali tulisan bahwa itu asisten AI. "
+    "Tamu hanya bisa tanya-jawab: tanpa alat, tanpa memorimu, tanpa berkas atau data pribadimu. Grup, "
+    "siaran, dan status tidak dibalas.\n\n"
+    "Kamu bisa memblokir nomor tertentu (/wa_blokir) dan mematikannya kapan saja (/wa_tamu mati).\n"
+    "Biaya: tiap jawaban memakai key NusaGate-mu (batas harian per kontak berlaku)."
+)
+
+
+_MODEL_ALL_WARNING = (
+    "Putar SEMUA {n} model yang ditawarkan NusaGate secara bergantian?\n\n"
+    "Tiap jawaban memakai model berikutnya, jadi tidak ada model yang menganggur. Tapi harga dan kemampuan "
+    "tiap model BERBEDA: model yang mahal ikut terpakai (saldo lebih cepat habis), dan model yang tidak "
+    "mendukung alat akan menjawab tanpa menjalankan alat. Model yang ditolak penyedia otomatis dilewati.\n\n"
+    "Mau lebih terkontrol? Pilih sebagian saja: /model_pakai <nama> <nama> …"
+)
+
+
+class _NoMemory:
+    """Memori kosong untuk tamu: memori pemilik tidak pernah sampai ke orang lain."""
+
+    def text(self):
+        return ""
+
+    def add(self, *args, **kwargs):
+        return None
+
+    def clear(self):
+        return None
 # Paling banyak sekian QR WhatsApp dikirim per permintaan (/wa, /wa_ulang); WhatsApp terus
 # membuat QR baru tiap ~20 detik selama belum dipindai, dan chat tak boleh dibanjiri.
 _WA_QR_MAX = 3
@@ -96,12 +163,15 @@ _DEVICE_REPLY_TIMEOUT = 3600
 
 KUNCI_HELP = (
     "Kirim API key dengan: /kunci <key>\n\n"
+    "Key NusaGate (diawali nsk_) boleh BANYAK sekaligus — satu per baris, atau dipisah spasi: semuanya "
+    "diperiksa lalu dipakai bergiliran supaya beban terbagi rata. Key baru DITAMBAHKAN ke yang sudah ada, "
+    "tidak menggantikannya (lihat /kunci_daftar).\n\n"
     "Key Claude diawali sk-ant-, token akun Claude (dari claude setup-token) "
-    "diawali sk-ant-oat, key OpenRouter diawali sk-or-, key DeepSeek (gateway) "
-    "diawali nsk-. Pesanmu langsung kuhapus, key diperiksa dulu ke penyedianya, "
-    "lalu disimpan ke .env dan langsung aktif. Key tidak pernah dibaca otak AI.\n\n"
+    "diawali sk-ant-oat, key OpenRouter diawali sk-or-. Pesanmu langsung kuhapus, key diperiksa "
+    "dulu ke penyedianya, lalu disimpan ke .env dan langsung aktif. Key tidak pernah dibaca otak AI.\n\n"
     "Key DeepSeek resmi diawali sk- (tak bisa dibedakan otomatis) — untuk yang "
-    "itu kirim: /deepseek <key>."
+    "itu kirim: /deepseek <key>.\n\n"
+    "Pasang key hanya lewat Telegram, jangan lewat WhatsApp."
 )
 ACCESS_WARNING = (
     "Aktifkan akses penuh?\n\n"
@@ -272,6 +342,15 @@ class App:
         self._wa_relinking = False  # /wa_ulang sedang jalan: "keluar" bukan kejutan bagi pemilik
         self._wa_last_in = None  # kapan pesan WhatsApp terakhir masuk (bukti jalur pesan hidup)
         self.wa = None  # jembatan WhatsApp (itsme/whatsapp.py)
+        # Tamu WhatsApp (mode terbuka): penjaga banjir per kontak, kabar yang cukup sekali sehari, urutan
+        # riwayat tamu terbaru, dan batas jumlah jawaban tamu yang berjalan bersamaan.
+        self._wa_pace = {}
+        self._wa_noted = {}
+        self._wa_guest_seen = OrderedDict()
+        self._wa_guest_gate = asyncio.Semaphore(_WA_GUEST_PARALLEL)
+        # Kabar "key NusaGate tidak bisa dipakai" dikumpulkan beberapa detik jadi satu pesan.
+        self._pool_alerts = {}
+        self._pool_alert_timer = None
         # Webhook Telegram sedang terpasang & sehat (diurus _keep_webhook). Selama False,
         # _poll memakai getUpdates supaya bot tidak tuli.
         self._webhook_ok = False
@@ -297,10 +376,13 @@ class App:
             lines.append(f"/cloud — {brain.describe('openrouter')}")
         else:
             lines.append("/cloud — belum aktif (kirim /kunci <key OpenRouter>)")
-        if config.DEEPSEEK_API_KEY:
+        if keypool.has_keys():
             lines.append(f"/deepseek — {brain.describe('deepseek')}")
+            rows = keypool.snapshot()
+            siap = sum(1 for r in rows if r["status"] in ("siap", "sibuk"))
+            lines.append(f"   Kumpulan key: {len(rows)} key, {siap} siap sekarang (/kunci_daftar)")
         else:
-            lines.append("/deepseek — belum aktif (kirim /deepseek <key>)")
+            lines.append("/deepseek — belum aktif (kirim /kunci <key NusaGate>, boleh banyak sekaligus)")
         if config.ANTHROPIC_API_KEY:
             lines.append(f"/claude — {brain.describe('claude')}")
         else:
@@ -462,27 +544,54 @@ class App:
         await self._say(chat_id, f"✅ Tugas latar selesai: {instruksi}\n\n{reply}")
 
     # --- API key lewat chat (/kunci) ----------------------------------------
+    async def _verify_many(self, picked):
+        """Periksa banyak key bersamaan (paling banyak 6 sekaligus). `picked` = [(jenis, key)].
+        Kembalikan [(status, keterangan)] searah dengan `picked`; status: ok | rejected | error."""
+        gate = asyncio.Semaphore(6)
+
+        async def one(kind, key):
+            async with gate:
+                try:
+                    await asyncio.to_thread(keys.verify, kind, key)
+                    return "ok", ""
+                except keys.KeyRejected as exc:
+                    return "rejected", str(exc)
+                except Exception as exc:  # noqa: BLE001 - mis. internet putus
+                    # Hanya nama error-nya: pesan error lengkap tidak boleh membawa key ke log.
+                    log.warning("API key %s belum bisa diperiksa: %s", keys.label(kind), type(exc).__name__)
+                    return "error", type(exc).__name__
+
+        return await asyncio.gather(*(one(kind, key) for kind, key in picked))
+
     async def _save_key(self, chat_id, message, force_kind=None, then_use=False):
         """Simpan API key dari chat tanpa membiarkannya terbaca: pesannya
         langsung dihapus, key diperiksa, disimpan ke .env, dan hanya
         ditampilkan sebagian. Tidak pernah masuk riwayat atau log.
 
+        Boleh BANYAK key sekaligus (satu per baris, atau dipisah spasi/koma): semuanya diperiksa
+        bersamaan. Key NusaGate/DeepSeek DITAMBAHKAN ke kumpulan yang dipakai bergiliran (keypool.py);
+        jenis lain menggantikan key lama.
+
         force_kind memaksa jenis key (mis. "deepseek" untuk key resmi sk- yang
         tak bisa dibedakan otomatis). then_use langsung memakai otaknya."""
-        parts = (message.get("text") or "").split()[1:]
-        if not parts:
+        tokens = keys.parse_tokens(message.get("text") or "")
+        if not tokens:
             await self.tg.send(
                 chat_id,
-                "Kirim: /deepseek <key>  (key diawali nsk- atau sk-)." if force_kind else KUNCI_HELP,
+                "Kirim: /deepseek <key>  (key diawali nsk- atau sk-). Boleh banyak, satu per baris."
+                if force_kind else KUNCI_HELP,
             )
             return
         deleted = await self.tg.delete_message(chat_id, message.get("message_id"))
         note = "" if deleted else "\n\n⚠️ Pesanmu yang berisi key belum bisa kuhapus — hapus sendiri, ya."
-        if force_kind:
-            key = next((p for p in parts if keys.looks_like_key(p)), None)
-        else:
-            key = next((p for p in parts if keys.detect(p)), None)
-        if key is None:
+        picked, unknown = [], 0
+        for token in tokens:
+            kind = (force_kind if keys.looks_like_key(token) else None) if force_kind else keys.detect(token)
+            if kind:
+                picked.append((kind, token))
+            else:
+                unknown += 1
+        if not picked:
             await self.tg.send(
                 chat_id,
                 ("Itu tidak seperti API key (hanya huruf, angka, - dan _)." if force_kind else
@@ -490,44 +599,322 @@ class App:
                  "sk-or-, key DeepSeek diawali nsk-. Contoh: /kunci sk-ant-…") + note,
             )
             return
-        kind = force_kind or keys.detect(key)
-        name = keys.label(kind)
-        try:
-            await asyncio.to_thread(keys.verify, kind, key)
-        except keys.KeyRejected as exc:
-            await self.tg.send(chat_id, f"❌ {exc} Key tidak disimpan." + note)
+        results = await self._verify_many(picked)
+
+        if len(tokens) == 1:  # satu key: jawaban ringkas
+            kind, key = picked[0]
+            status, detail = results[0]
+            name = keys.label(kind)
+            if status == "rejected":
+                await self.tg.send(chat_id, f"❌ {detail} Key tidak disimpan." + note)
+                return
+            if status == "error":
+                await self.tg.send(
+                    chat_id,
+                    f"⚠️ Key {name} belum bisa diperiksa ({detail}). Cek "
+                    "internet komputer lalu kirim lagi. Key tidak disimpan." + note,
+                )
+                return
+            added = True
+            try:
+                if kind == "deepseek":  # ditambahkan ke kumpulan, bukan menggantikan
+                    added, _ = await asyncio.to_thread(keys.pool_add_many, [key])
+                else:
+                    await asyncio.to_thread(keys.save, kind, key)
+            except OSError as exc:
+                await self.tg.send(chat_id, f"⚠️ Key {name} gagal disimpan ke .env: {exc.strerror or exc}" + note)
+                return
+            usage = await self._key_usage(chat_id, kind, then_use)
+            if kind == "deepseek":
+                total = len(keypool.all_keys())
+                head = (f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa dan ditambahkan; sekarang {total} key "
+                        "dipakai bergiliran." if added else
+                        f"↩️ Key {name} ({keys.mask(key)}) sudah ada di daftar (tidak dobel); total {total} key.")
+            else:
+                head = f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa, disimpan, dan langsung aktif."
+            await self.tg.send(chat_id, f"{head} {usage}" + note)
             return
-        except Exception as exc:  # noqa: BLE001 - mis. internet putus
-            # Hanya nama error-nya: pesan error lengkap tidak boleh membawa key ke log.
-            log.warning("API key %s belum bisa diperiksa: %s", name, type(exc).__name__)
-            await self.tg.send(
-                chat_id,
-                f"⚠️ Key {name} belum bisa diperiksa ({type(exc).__name__}). Cek "
-                "internet komputer lalu kirim lagi. Key tidak disimpan." + note,
-            )
-            return
+
+        accepted, rejected, unchecked = [], [], []
+        for index, (kind, key) in enumerate(picked):
+            status = results[index][0]
+            if status == "ok":
+                accepted.append((kind, key))
+            elif status == "rejected":
+                rejected.append(key)
+            else:
+                unchecked.append(key)
+        added, existing, ignored, singles = [], [], [], {}
         try:
-            await asyncio.to_thread(keys.save, kind, key)
+            pool_keys = [key for kind, key in accepted if kind == "deepseek"]
+            if pool_keys:
+                added, existing = await asyncio.to_thread(keys.pool_add_many, pool_keys)
+            for kind, key in accepted:
+                if kind == "deepseek":
+                    continue
+                if kind in singles:
+                    ignored.append(key)  # jenis selain NusaGate/DeepSeek hanya punya satu tempat
+                else:
+                    singles[kind] = key
+            for kind, key in singles.items():
+                await asyncio.to_thread(keys.save, kind, key)
         except OSError as exc:
-            await self.tg.send(chat_id, f"⚠️ Key {name} gagal disimpan ke .env: {exc.strerror or exc}" + note)
+            await self.tg.send(chat_id, f"⚠️ Key gagal disimpan ke .env: {exc.strerror or exc}" + note)
             return
+
+        lines = []
+        if added:
+            lines.append(f"✅ {len(added)} key NusaGate/DeepSeek baru ditambahkan: "
+                         f"{', '.join(keys.mask(k) for k in added)}")
+        if existing:
+            lines.append(f"↩️ {len(existing)} key sudah ada sebelumnya (tidak dobel): "
+                         f"{', '.join(keys.mask(k) for k in existing)}")
+        for kind, key in singles.items():
+            lines.append(f"✅ Key {keys.label(kind)} ({keys.mask(key)}) disimpan dan langsung aktif.")
+        if ignored:
+            lines.append(f"ℹ️ {len(ignored)} key lain dari jenis yang hanya punya satu tempat tidak dipakai "
+                         f"(diabaikan): {', '.join(keys.mask(k) for k in ignored)}")
+        if rejected:
+            lines.append(f"❌ {len(rejected)} key DITOLAK penyedia dan tidak disimpan: "
+                         f"{', '.join(keys.mask(k) for k in rejected)}")
+        if unchecked:
+            lines.append(f"⚠️ {len(unchecked)} key belum bisa diperiksa (internet?) dan tidak disimpan: "
+                         f"{', '.join(keys.mask(k) for k in unchecked)} — kirim lagi nanti.")
+        if unknown:
+            lines.append(f"❓ {unknown} potongan teks tidak dikenali sebagai key (diabaikan).")
+        pool_used = any(kind == "deepseek" for kind, _ in accepted)
+        if pool_used:
+            lines.append(f"\n🔑 Sekarang ada {len(keypool.all_keys())} key NusaGate/DeepSeek; semuanya dipakai "
+                         "bergiliran. Daftar & status: /kunci_daftar")
+        for kind in list(singles) + (["deepseek"] if pool_used else []):
+            lines.append(await self._key_usage(chat_id, kind, then_use and kind == force_kind))
+        await self.tg.send(chat_id, "\n".join(lines) + note)
+
+    async def _key_usage(self, chat_id, kind, then_use):
+        """Kalimat 'apa selanjutnya' setelah key jenis `kind` tersimpan (dan, kalau diminta, pakai otaknya)."""
+        name = keys.label(kind)
         if then_use:
             try:
                 await asyncio.to_thread(brain.set_backend, kind)
                 self.histories.pop(chat_id, None)  # format riwayat tiap otak berbeda
-                usage = f"Otak {name} sekarang aktif. Konteks obrolan direset, memori tetap."
+                return f"Otak {name} sekarang aktif. Konteks obrolan direset, memori tetap."
             except ValueError as exc:
-                usage = f"Tersimpan, tapi belum bisa dipakai sekarang: {exc}"
-        elif kind == "github":
-            usage = "Sekarang kamu bisa generate APK aplikasi HP dari dashboard (tab HP)."
-        elif brain.current_backend() == kind:
-            usage = f"Otak {name} sekarang memakai key ini."
+                return f"Tersimpan, tapi belum bisa dipakai sekarang: {exc}"
+        if kind == "github":
+            return "Sekarang kamu bisa generate APK aplikasi HP dari dashboard (tab HP)."
+        if brain.current_backend() == kind:
+            return f"Otak {name} sekarang memakai key ini."
+        if kind == "deepseek":
+            return (f"Kirim {_KEY_COMMANDS[kind]} supaya jadi otak utama. Tamu WhatsApp (kalau /wa_tamu aktif) "
+                    "dan otak DeepSeek otomatis memakai semua key ini.")
+        return f"Kirim {_KEY_COMMANDS[kind]} untuk memakainya."
+
+    # --- kumpulan key NusaGate (Telegram saja) -----------------------------------------------
+    @staticmethod
+    def _pool_status(row, now):
+        """Satu baris status key untuk pemilik (bahasa manusia)."""
+        def left(seconds):
+            seconds = max(1, int(seconds))
+            return f"±{seconds} dtk" if seconds < 90 else f"±{round(seconds / 60)} mnt"
+
+        until = (row["until"] - now) if row["until"] else 0
+        status = row["status"]
+        if status == "siap":
+            return f"siap · dipakai {row['uses']}x" + (" · sedang bekerja" if row["inflight"] else "")
+        if status == "sibuk":
+            return f"sempat error, diturunkan sebentar · dipakai {row['uses']}x"
+        if status == "penuh":
+            return f"penuh menit ini (batas lunak {config.POOL_RPM}/menit), lega lagi {left(until)}"
+        if status == "limit":
+            return f"dibatasi penyedia (60 permintaan/menit per key), pulih {left(until)}"
+        if status == "cap":
+            return f"batas paket tercapai, dicoba lagi {left(until)}"
+        if status == "balance":
+            return f"saldo habis, dicoba lagi {left(until)} — isi ulang di nusagate.com"
+        return f"ditolak/dicabut penyedia — periksa: /kunci_tes · keluarkan: /kunci_hapus {row['no']}"
+
+    def _pool_text(self):
+        rows = keypool.snapshot()
+        if not rows:
+            return ("Belum ada key NusaGate/DeepSeek.\n\nPasang lewat Telegram ini (jangan lewat WhatsApp): "
+                    "/kunci <key>. Boleh banyak key sekaligus, satu per baris; semuanya dipakai bergiliran.")
+        ready = sum(1 for r in rows if r["status"] in ("siap", "sibuk"))
+        now = time.time()
+        lines = [f"🔑 {len(rows)} key NusaGate/DeepSeek dipakai bergiliran — {ready} siap sekarang.", ""]
+        lines += [f"{r['no']}. {r['mask']} — {self._pool_status(r, now)}" for r in rows]
+        total = sum(r["uses"] for r in rows)
+        lines += ["", f"Total permintaan terlayani: {total}"
+                      + (f" (sejak {datetime.fromtimestamp(keypool.since()):%d-%m-%Y})" if keypool.since() else "")]
+        models = keypool.model_rows()
+        if models:
+            lines.append("Model bergantian: " + ", ".join(
+                f"{m['name']} ({m['uses']}x{', istirahat' if m['cooling'] else ''})" for m in models))
         else:
-            usage = f"Kirim {_KEY_COMMANDS[kind]} untuk memakainya."
-        await self.tg.send(
-            chat_id,
-            f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa, disimpan, dan langsung aktif. {usage}" + note,
-        )
+            first = (keypool.all_keys() or [None])[0]
+            lines.append(f"Model: {config.deepseek_model(first)} (bawaan). Atur putaran model: /model_pakai")
+        lines += ["", "Tambah: /kunci <key> · Keluarkan: /kunci_hapus <no> · Periksa semua: /kunci_tes"]
+        return "\n".join(lines)
+
+    async def _key_list(self, chat_id, arg=""):
+        await self.tg.send(chat_id, self._pool_text())
+
+    async def _key_remove(self, chat_id, arg=""):
+        pool = keypool.all_keys()
+        if not pool:
+            await self.tg.send(chat_id, "Belum ada key yang bisa dikeluarkan. /kunci_daftar")
+            return
+        numbers = sorted({int(n) for n in re.findall(r"\d+", arg or "")})
+        if not numbers:
+            await self.tg.send(chat_id, "Pakai: /kunci_hapus <nomor> — nomornya dari /kunci_daftar. "
+                                        "Boleh beberapa: /kunci_hapus 2 5")
+            return
+        bad = [n for n in numbers if not 1 <= n <= len(pool)]
+        if bad:
+            await self.tg.send(chat_id, f"Tidak ada key bernomor {', '.join(map(str, bad))}. "
+                                        f"Nomor yang ada 1–{len(pool)} (lihat /kunci_daftar).")
+            return
+        targets = [pool[n - 1] for n in numbers]
+        removed = []
+        for key in targets:
+            masked = keys.mask(key)
+            if await asyncio.to_thread(keys.pool_remove, key):
+                removed.append(masked)
+        left = len(keypool.all_keys())
+        text = f"🗑️ Dikeluarkan: {', '.join(removed) or '(tidak ada)'}. Sisa {left} key."
+        if not left:
+            text += (" Kumpulan kosong: tamu WhatsApp dijawab otak cadangan (OpenRouter atau otak lokal) "
+                     "sampai kamu memasang key lagi.")
+        else:
+            text += " Nomor key bisa bergeser, lihat /kunci_daftar sebelum menghapus lagi."
+        await self.tg.send(chat_id, text)
+
+    async def _key_test(self, chat_id, arg=""):
+        """/kunci_tes: periksa SEMUA key (gratis, lewat daftar model). '/kunci_tes chat' juga meminta tiap
+        key menjawab satu kata - bukti paling jujur bahwa key itu benar-benar bisa dipakai."""
+        pool = keypool.all_keys()
+        if not pool:
+            await self.tg.send(chat_id, "Belum ada key. Kirim /kunci <key> dulu.")
+            return
+        chat = arg.strip().lower() in ("chat", "jawab", "penuh")
+        await self.tg.send(chat_id, f"Memeriksa {len(pool)} key{' dan meminta tiap key menjawab' if chat else ''}… "
+                                    "tunggu sebentar.")
+        from . import brain_deepseek
+
+        gate = asyncio.Semaphore(6)
+
+        async def one(number, key):
+            label = f"{number}. {keys.mask(key)}"
+            async with gate:
+                try:
+                    names = await asyncio.to_thread(keys.gateway_models, key)
+                except keys.KeyRejected:
+                    keypool.mark_checked(key, False)
+                    return label + " ❌ ditolak penyedia (salah atau dicabut)", False, []
+                except Exception as exc:  # noqa: BLE001 - mis. internet putus
+                    log.warning("pemeriksaan key %d gagal: %s", number, type(exc).__name__)
+                    return label + f" ⚠️ belum terjangkau ({type(exc).__name__})", False, []
+                if not chat:
+                    keypool.mark_checked(key, True, full=False)
+                    return label + f" ✅ dikenali penyedia ({len(names)} model)", True, names
+                ok, info, took = await asyncio.to_thread(brain_deepseek.ping, key)
+                if ok:
+                    return label + f" ✅ bisa menjawab (model {info}, {took:.1f} dtk)", True, names
+                return label + f" ❌ tidak bisa menjawab: {info}", False, names
+
+        results = await asyncio.gather(*(one(i, k) for i, k in enumerate(pool, 1)))
+        good = sum(1 for _, ok, _ in results if ok)
+        lines = [f"🔎 Hasil pemeriksaan {len(pool)} key: {good} baik"
+                 f"{'' if good == len(pool) else f', {len(pool) - good} bermasalah'}.", ""]
+        lines += [text for text, _, _ in results]
+        if not chat:
+            lines += ["", "Ini baru memastikan key dikenali. Untuk membuktikan tiap key benar-benar bisa menjawab "
+                          "(biaya hanya beberapa token per key): /kunci_tes chat"]
+        bad = [i for i, (_, ok, _) in enumerate(results, 1) if not ok]
+        if bad:
+            lines.append(f"Keluarkan yang bermasalah: /kunci_hapus {' '.join(map(str, bad))}")
+        await self.tg.send(chat_id, "\n".join(lines))
+
+    async def _model_list(self, chat_id, arg=""):
+        pool = keypool.all_keys()
+        key = next((k for k in pool if keypool.is_gateway(k)), None)
+        if key is None:
+            await self.tg.send(chat_id, "Belum ada key NusaGate. Kirim /kunci <key> dulu.")
+            return
+        try:
+            names = await asyncio.to_thread(keys.gateway_models, key)
+        except keys.KeyRejected:
+            await self.tg.send(chat_id, "Key pertama ditolak penyedia, jadi daftar model belum bisa diambil. "
+                                        "Cek dengan /kunci_tes.")
+            return
+        except Exception as exc:  # noqa: BLE001 - mis. internet putus
+            await self.tg.send(chat_id, f"Daftar model belum bisa diambil ({type(exc).__name__}). Coba lagi nanti.")
+            return
+        using = config.NUSAGATE_MODELS
+        first = (pool or [None])[0]
+        lines = [f"Model yang ditawarkan penyedia ({len(names)}):", ""]
+        lines += [("• " + n + ("  ← dipakai" if n in using else "")) for n in names[:80]]
+        if len(names) > 80:
+            lines.append(f"… dan {len(names) - 80} lainnya")
+        lines += ["", ("Sekarang diputar bergantian: " + ", ".join(using)) if using
+                  else f"Sekarang satu model saja: {config.deepseek_model(first)} (bawaan).",
+                  "Putar beberapa model bergantian: /model_pakai <nama> <nama> … · semuanya: /model_pakai semua · "
+                  "kembali ke bawaan: /model_pakai bawaan",
+                  "Tiap jawaban memakai model berikutnya, jadi tidak ada model yang kebanjiran atau menganggur."]
+        await self.tg.send(chat_id, "\n".join(lines))
+
+    async def _model_use(self, chat_id, arg=""):
+        wanted = [w for w in re.split(r"[\s,;]+", arg or "") if w]
+        if not wanted:
+            await self.tg.send(chat_id, "Pakai: /model_pakai <nama> <nama> … (nama dari /model_daftar), "
+                                        "/model_pakai semua untuk memutar SEMUA model yang ditawarkan, atau "
+                                        "/model_pakai bawaan untuk kembali ke satu model bawaan.")
+            return
+        if len(wanted) == 1 and wanted[0].lower() in ("bawaan", "default", "reset", "kosong"):
+            await asyncio.to_thread(keys.set_models, [])
+            await self.tg.send(chat_id, f"Kembali ke satu model bawaan: {config.deepseek_model((keypool.all_keys() or [None])[0])}.")
+            return
+        every = len(wanted) == 1 and wanted[0].lower() in ("semua", "all")
+        warning = ""
+        pool = keypool.all_keys()
+        gateway_key = next((k for k in pool if keypool.is_gateway(k)), None)
+        if gateway_key is not None:
+            try:
+                names = await asyncio.to_thread(keys.gateway_models, gateway_key)
+            except Exception as exc:  # noqa: BLE001 - tidak bisa memeriksa
+                names = None
+                if every:
+                    await self.tg.send(chat_id, f"Daftar model belum bisa diambil ({type(exc).__name__}), jadi "
+                                                "\"semua\" belum bisa dijalankan. Coba lagi nanti, atau sebutkan "
+                                                "nama modelnya satu per satu.")
+                    return
+                warning = (f"\n⚠️ Daftar model penyedia belum bisa diperiksa ({type(exc).__name__}); nama yang salah "
+                           "akan dilewati otomatis, tapi cek dengan /model_daftar.")
+            if every:
+                if not names:
+                    await self.tg.send(chat_id, "Penyedia tidak mengirim daftar model, jadi \"semua\" belum bisa "
+                                                "dijalankan. Sebutkan nama modelnya satu per satu.")
+                    return
+                if not await self._ask_confirm(chat_id, _MODEL_ALL_WARNING.format(n=len(names))):
+                    await self.tg.send(chat_id, "Oke, model tidak diubah.")
+                    return
+                wanted = list(names)
+            elif names is not None:
+                unknown = [w for w in wanted if w not in names]
+                if unknown:
+                    await self.tg.send(chat_id, f"Model tidak ada di penyedia: {', '.join(unknown)}. Tidak disimpan. "
+                                                "Lihat nama yang benar di /model_daftar.")
+                    return
+        elif every:
+            await self.tg.send(chat_id, "Belum ada key NusaGate, jadi daftar model belum bisa diambil. "
+                                        "Kirim /kunci <key> dulu.")
+            return
+        else:
+            warning = "\nℹ️ Belum ada key NusaGate; model ini baru dipakai setelah kamu memasang key (/kunci)."
+        await asyncio.to_thread(keys.set_models, wanted)
+        how = (f"Tiap jawaban memakai model berikutnya secara bergilir ({len(config.NUSAGATE_MODELS)} model)."
+               if len(config.NUSAGATE_MODELS) > 1 else "Semua jawaban memakai model itu.")
+        await self.tg.send(chat_id, f"✅ Model dipakai: {', '.join(config.NUSAGATE_MODELS)}. {how} Model yang "
+                                    "ditolak penyedia otomatis dilewati." + warning)
 
     def _new_wa(self):
         return WhatsApp(self._wa_inbox, self._wa_qr, on_giveup=self._wa_gave_up, on_state=self._wa_state)
@@ -637,6 +1024,281 @@ class App:
             self._wa_relinking = False
         await self.tg.send(chat_id, self._wa_link_report(config.WA_OWNER, state))
 
+    # --- tamu WhatsApp (mode terbuka): diatur dari Telegram ----------------------------------------
+    def _wa_guest_text(self):
+        on = config.WA_OPEN
+        owner = config.WA_OWNER or "(belum diisi: /wa <nomor>)"
+        if self.wa:
+            bridge = f"menyala, {self.wa.status_text()}"
+        else:
+            bridge = "BELUM menyala" if config.WHATSAPP else "dimatikan (nyalakan dengan /wa <nomor>)"
+        brains = []
+        if keypool.has_keys():
+            n = len(keypool.all_keys())
+            brains.append(f"{n} key NusaGate/DeepSeek bergiliran")
+        if config.OPENROUTER_API_KEY:
+            brains.append("OpenRouter")
+        brains.append("otak lokal (Ollama)")
+        lines = [
+            f"👥 Mode tamu WhatsApp: {'AKTIF ✅' if on else 'MATI ⛔'}",
+            "",
+            f"Nomor: {owner} · bot WhatsApp: {bridge}",
+            "",
+            "Kalau AKTIF: orang yang chat ke nomor ini (satu lawan satu) dijawab AI. Mereka hanya bisa "
+            "tanya-jawab: tanpa alat, tanpa memorimu, tanpa berkas atau data pribadimu. Grup, siaran, dan "
+            "status tidak pernah dibalas, lampiran dari tamu tidak diunduh. Balasan pertama ke tiap kontak "
+            "per hari diawali pemberitahuan bahwa itu asisten AI.",
+            "",
+            "Otak untuk tamu: " + " → ".join(brains) + " (yang pertama siap dipakai)",
+            f"Batas per kontak: {config.WA_GUEST_PER_MIN} pesan/menit, "
+            f"{config.GUEST_DAILY_MAX if config.GUEST_DAILY_MAX > 0 else 'tanpa batas'} pertanyaan/hari · "
+            f"semua tamu digabung: "
+            f"{config.WA_GUEST_TOTAL_MAX if config.WA_GUEST_TOTAL_MAX > 0 else 'tanpa batas'} jawaban/hari",
+            f"Diblokir: {len(config.WA_BLOCK)} nomor · info untuk tamu: {'ada' if brain_guest.read_info() else 'belum ada'}",
+        ]
+        if on and not keypool.has_keys() and not config.OPENROUTER_API_KEY:
+            lines += ["", "⚠️ Belum ada key NusaGate/OpenRouter: tamu hanya dijawab otak lokal (kalau Ollama menyala), "
+                          "kalau tidak mereka menerima permintaan maaf. Pasang key lewat /kunci <key>."]
+        lines += ["", "Atur: /wa_tamu aktif · /wa_tamu mati · /wa_blokir <nomor> · /wa_buka <nomor> · /wa_info <teks>"]
+        return "\n".join(lines)
+
+    def _wa_push_settings(self):
+        """Terapkan pengaturan tamu ke jembatan yang sedang jalan (tanpa memutus WhatsApp)."""
+        if self.wa:
+            return bool(self.wa.update_settings())
+        return False
+
+    async def _wa_guest_mode(self, chat_id, arg=""):
+        """/wa_tamu [aktif|mati]: balas AI untuk orang yang chat ke nomor ini."""
+        arg = (arg or "").strip().lower()
+        if arg in ("aktif", "on", "nyala", "nyalakan", "ya"):
+            if config.WA_OPEN:
+                await self.tg.send(chat_id, "Mode tamu sudah AKTIF.\n\n" + self._wa_guest_text())
+                return
+            if not await self._ask_confirm(chat_id, _WA_OPEN_WARNING):
+                await self.tg.send(chat_id, "Oke, mode tamu tetap MATI.")
+                return
+            keys._set_env(keys.ENV_FILE, "ITSME_WA_OPEN", "1")
+            config.WA_OPEN = True
+            live = self._wa_push_settings()
+            await self.tg.send(chat_id, "✅ Mode tamu AKTIF. " + (
+                "Mulai sekarang orang yang chat ke nomor ini dijawab AI." if live else
+                "Tersimpan, tapi bot WhatsApp belum menyala — aktif begitu menyala (/wa)."
+            ) + " Matikan kapan saja: /wa_tamu mati")
+            return
+        if arg in ("mati", "off", "matikan", "tidak"):
+            keys._set_env(keys.ENV_FILE, "ITSME_WA_OPEN", "0")
+            config.WA_OPEN = False
+            self._wa_push_settings()
+            await self.tg.send(chat_id, "⛔ Mode tamu MATI. Tidak ada lagi balasan AI ke orang lain; "
+                                        "hanya chat \"Pesan ke diri sendiri\" yang dilayani.")
+            return
+        await self.tg.send(chat_id, self._wa_guest_text())
+
+    @staticmethod
+    def _wa_number(arg):
+        nomor = re.sub(r"\D", "", arg or "")
+        if nomor.startswith("0"):
+            nomor = "62" + nomor[1:]
+        return nomor if 8 <= len(nomor) <= 15 else ""
+
+    async def _wa_block(self, chat_id, arg=""):
+        """/wa_blokir <nomor>: nomor itu tidak pernah dijawab AI (walau mode tamu aktif)."""
+        if not (arg or "").strip():
+            shown = ", ".join(sorted(config.WA_BLOCK)) or "(belum ada)"
+            await self.tg.send(chat_id, f"Nomor yang diblokir: {shown}\n\nBlokir: /wa_blokir 6281234567890 · "
+                                        "buka lagi: /wa_buka 6281234567890")
+            return
+        nomor = self._wa_number(arg)
+        if not nomor:
+            await self.tg.send(chat_id, "Nomor tidak valid. Contoh: /wa_blokir 6281234567890")
+            return
+        if nomor == re.sub(r"\D", "", config.WA_OWNER or ""):
+            await self.tg.send(chat_id, "Itu nomor pemilik sendiri; tidak perlu diblokir.")
+            return
+        if nomor in config.WA_BLOCK:
+            await self.tg.send(chat_id, f"Nomor {nomor} sudah diblokir.")
+            return
+        blocked = sorted(config.WA_BLOCK | {nomor})
+        keys._set_env(keys.ENV_FILE, "ITSME_WA_BLOCK", ",".join(blocked))
+        config.WA_BLOCK = set(blocked)
+        self._wa_push_settings()
+        self.histories.pop("wa:" + nomor + "@s.whatsapp.net", None)
+        await self.tg.send(chat_id, f"🚫 Nomor {nomor} diblokir: tidak akan dijawab AI lagi. "
+                                    f"Total diblokir: {len(blocked)}. Buka lagi: /wa_buka {nomor}")
+
+    async def _wa_unblock(self, chat_id, arg=""):
+        """/wa_buka <nomor>: nomor itu boleh dijawab AI lagi."""
+        nomor = self._wa_number(arg)
+        if not nomor:
+            await self.tg.send(chat_id, "Pakai: /wa_buka 6281234567890 (lihat yang diblokir: /wa_blokir)")
+            return
+        if nomor not in config.WA_BLOCK:
+            await self.tg.send(chat_id, f"Nomor {nomor} tidak ada di daftar blokir.")
+            return
+        blocked = sorted(config.WA_BLOCK - {nomor})
+        keys._set_env(keys.ENV_FILE, "ITSME_WA_BLOCK", ",".join(blocked))
+        config.WA_BLOCK = set(blocked)
+        self._wa_push_settings()
+        await self.tg.send(chat_id, f"✅ Nomor {nomor} dibuka lagi. Sisa diblokir: {len(blocked)}.")
+
+    async def _wa_info(self, chat_id, arg=""):
+        """/wa_info [teks|hapus]: keterangan yang BOLEH dibagikan AI kepada tamu (jam kerja, alamat, dsb)."""
+        path = brain_guest.info_file()
+        arg = (arg or "").strip()
+        if arg.lower() in ("hapus", "kosong", "reset"):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                await self.tg.send(chat_id, f"Info gagal dihapus: {exc.strerror or exc}")
+                return
+            await self.tg.send(chat_id, "Info untuk tamu dikosongkan.")
+            return
+        if not arg:
+            current = brain_guest.read_info()
+            await self.tg.send(chat_id, (f"Info yang boleh dibagikan AI kepada tamu:\n\n{current}\n\n" if current else
+                                         "Belum ada info untuk tamu.\n\n")
+                               + "Tulis/ganti: /wa_info <teks> · kosongkan: /wa_info hapus\n"
+                                 "Isinya bisa dibaca SEMUA tamu - jangan menulis hal pribadi atau rahasia.")
+            return
+        if len(arg) > 2000:
+            await self.tg.send(chat_id, f"Terlalu panjang ({len(arg)} huruf, maksimal 2000). Ringkas dulu.")
+            return
+        try:
+            os.makedirs(config.DATA_DIR, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(arg)
+        except OSError as exc:
+            await self.tg.send(chat_id, f"Info gagal disimpan: {exc.strerror or exc}")
+            return
+        await self.tg.send(chat_id, "✅ Info untuk tamu tersimpan. AI hanya akan membagikan isi ini (dan "
+                                    "pengetahuan umumnya) kepada tamu.")
+
+    async def _wa_say(self, jid, text):
+        """Kirim teks ke chat WhatsApp (di thread). Diam kalau jembatan sedang tidak ada."""
+        wa = self.wa
+        if wa is None:
+            return False
+        return await asyncio.to_thread(wa.send, jid, text)
+
+    def _wa_guest_pace(self, jid):
+        """Penjaga banjir: satu kontak paling banyak WA_GUEST_PER_MIN pesan per menit yang dilayani
+        (juga memutus balas-balasan dengan bot lain). Lebihnya diabaikan diam-diam."""
+        now = time.monotonic()
+        stamps = self._wa_pace.setdefault(jid, deque())
+        while stamps and now - stamps[0] > 60:
+            stamps.popleft()
+        if len(stamps) >= config.WA_GUEST_PER_MIN:
+            return False
+        stamps.append(now)
+        if len(self._wa_pace) > 500:  # jangan tumbuh tanpa batas
+            for old in [j for j, s in self._wa_pace.items() if not s or now - s[-1] > 120]:
+                del self._wa_pace[old]
+        return True
+
+    def _wa_once_a_day(self, kind, jid):
+        """True sekali saja per hari untuk (jenis, kontak): perkenalan dan kabar kuota tidak diulang-ulang."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._wa_noted.get((kind, jid)) == today:
+            return False
+        if len(self._wa_noted) > 2000:
+            self._wa_noted = {k: v for k, v in self._wa_noted.items() if v == today}
+        self._wa_noted[(kind, jid)] = today
+        return True
+
+    async def _wa_guest_answer(self, key, text):
+        """Jawaban AI untuk seorang tamu: (teks, berhasil). Riwayat tamu itu terpisah dari semua orang dan
+        dari pemilik; jawaban baru masuk riwayat hanya kalau berhasil (kegagalan tidak meninggalkan
+        setengah percakapan, dan tamu hanya menerima permintaan maaf singkat, tidak pernah isi galatnya)."""
+        async with self._wa_guest_gate:
+            async with self._lock(key):
+                history = list(self.histories.get(key, []))
+                history.append({"role": "user", "content": _stamped(text)})
+                try:
+                    reply = await asyncio.wait_for(
+                        asyncio.to_thread(run_agent, history, self._guest_ctx(key)), _WA_GUEST_TIMEOUT)
+                except Exception as exc:  # noqa: BLE001 - tamu tidak pernah melihat isi galat
+                    log.warning("tamu WhatsApp: AI tidak bisa menjawab (%s)", type(exc).__name__)
+                    return _WA_GUEST_BUSY, False
+                self.histories[key] = history
+                self._wa_guest_seen[key] = None
+                self._wa_guest_seen.move_to_end(key)
+                while len(self._wa_guest_seen) > _WA_GUEST_HISTORIES:  # simpan riwayat tamu terbaru saja
+                    old, _ = self._wa_guest_seen.popitem(last=False)
+                    self.histories.pop(old, None)
+                return reply, True
+
+    @staticmethod
+    def _guest_ctx(key):
+        """Konteks minimal untuk tamu: tanpa memori pemilik, tombol konfirmasi, atau tugas latar."""
+        return {"guest": True, "memory": _NoMemory(), "chat_id": key, "full_access": False, "in_background": False}
+
+    async def _run_wa_guest(self, jid, text, media=None):
+        """Tamu: orang lain yang chat ke nomor ini (mode terbuka). Hanya tanya-jawab lewat brain_guest -
+        tanpa alat, tanpa memori pemilik, tanpa lampiran. Dijaga: penjaga banjir, kuota harian, dan batas
+        jumlah jawaban yang diproses bersamaan."""
+        if not self._wa_guest_pace(jid):
+            return
+        text = (text or "").strip()
+        first = text.split(maxsplit=1)[0].lower() if text.startswith("/") else ""
+        if first in _WA_OWNER_COMMANDS:
+            # Sama seperti di Telegram: perintah ini khusus pemilik, bukan tamu.
+            await self._wa_say(jid, "Mode tamu: perintah itu hanya untuk pemilik.")
+            return
+        if not text:  # lampiran saja (gambar, suara, dokumen): tidak dibaca
+            await self._wa_say(jid, _WA_GUEST_TEXT_ONLY)
+            return
+        if not quota.allow("wa:" + jid):
+            if self._wa_once_a_day("kuota", jid):  # setelah itu diam, supaya tidak jadi balas-balasan tanpa akhir
+                await self._wa_say(jid, _WA_GUEST_QUOTA)
+            return
+        # Pagar biaya untuk SEMUA tamu digabung (dicek setelah batas per tamu, supaya satu tamu yang berisik
+        # tidak menghabiskan jatah orang lain). Habis: diam (bukan balasan), pemilik dikabari sekali sehari.
+        if not quota.allow("wa-total", config.WA_GUEST_TOTAL_MAX):
+            if self._wa_once_a_day("total", "*") and self.tg is not None:
+                self._spawn(self.tg.send(
+                    config.OWNER_ID,
+                    f"⚠️ Batas harian GABUNGAN tamu WhatsApp ({config.WA_GUEST_TOTAL_MAX} jawaban) tercapai. "
+                    "Tamu tidak dijawab lagi sampai besok. Naikkan batasnya dengan ITSME_WA_GUEST_TOTAL_MAX di "
+                    ".env, atau matikan mode tamu: /wa_tamu mati"))
+            return
+        reply, answered = await self._wa_guest_answer("wa:" + jid, text[:2000])
+        # Perkenalan ("ini asisten AI") menyertai jawaban PERTAMA yang berhasil per kontak per hari;
+        # permintaan maaf karena AI sedang gagal tidak memakai jatahnya.
+        if answered and config.WA_GUEST_INTRO and self._wa_once_a_day("perkenalan", jid):
+            reply = f"{config.WA_GUEST_INTRO}\n\n{reply}"
+        await self._wa_say(jid, reply)
+
+    def _pool_alert(self, kind, masked):
+        """Dari thread mana pun: sebuah key NusaGate tidak bisa dipakai lagi. Pemilik dikabari (key lain tetap
+        bekerja). Kabar dikumpulkan beberapa detik supaya banyak key yang gagal bersamaan jadi satu pesan."""
+        if self.tg is None or self.loop is None:
+            return
+        self.loop.call_soon_threadsafe(self._queue_pool_alert, kind, masked)
+
+    def _queue_pool_alert(self, kind, masked):
+        self._pool_alerts.setdefault(kind, []).append(masked)
+        if not self._pool_alert_timer:
+            self._pool_alert_timer = self.loop.call_later(_POOL_ALERT_WAIT, self._send_pool_alerts)
+
+    def _send_pool_alerts(self):
+        alerts, self._pool_alerts, self._pool_alert_timer = self._pool_alerts, {}, None
+        what = {
+            "balance": "saldonya habis (dicoba lagi tiap 30 menit). Isi ulang di nusagate.com",
+            "cap": "batas paketnya tercapai (dicoba lagi tiap 20 menit)",
+            "invalid": "ditolak penyedia (salah atau dicabut; dicoba lagi tiap jam). Keluarkan lewat /kunci_hapus",
+        }
+        left = len([r for r in keypool.snapshot() if r["status"] in ("siap", "sibuk")])
+        for kind, masks in alerts.items():
+            if kind in what:
+                self._spawn(self.tg.send(
+                    config.OWNER_ID,
+                    f"⚠️ {len(masks)} key NusaGate tidak bisa dipakai sementara — {what[kind]}:\n"
+                    + "\n".join(f"• {m}" for m in masks)
+                    + f"\n\nKey lain tetap bekerja ({left} siap sekarang). Daftar: /kunci_daftar"))
+
     def _wa_qr(self, png):
         """QR login dari thread node: kirim sebagai foto ke Telegram. Jarak antar-QR minimal
         _WA_QR_GAP detik dan paling banyak _WA_QR_MAX per permintaan (WhatsApp terus membuat QR baru
@@ -688,28 +1350,37 @@ class App:
         ))
 
     # --- WhatsApp -------------------------------------------------------------
-    def _wa_inbox(self, jid, text, guest=False, file=None):
+    def _wa_inbox(self, jid, text, guest=False, file=None, media=None):
         """Dipanggil dari thread pembaca WhatsApp; serahkan ke event loop."""
-        if text.strip() or file:
+        if text.strip() or file or media:
             # Hanya jejak "ada pesan masuk" (tanpa isi & tanpa nomor): bukti jalur pesan hidup,
             # dipakai /diagnosa.
             self._wa_last_in = datetime.now()
             log.info("WhatsApp: pesan masuk (%s, %d karakter%s).", "tamu" if guest else "pemilik",
-                     len(text), ", + berkas" if file else "")
-            self.loop.call_soon_threadsafe(self._spawn, self._run_wa(jid, text, guest, file))
+                     len(text), ", + berkas" if file else (", + lampiran tak dibaca" if media else ""))
+            self.loop.call_soon_threadsafe(self._spawn, self._run_wa(jid, text, guest, file, media))
 
-    async def _run_wa(self, jid, text, guest=False, file=None):
+    async def _run_wa(self, jid, text, guest=False, file=None, media=None):
         # ponytail: riwayat dipisah per nomor WhatsApp, tapi konfirmasi aksi &
         # tugas latar tetap lewat chat Telegram pemilik (tombol).
-        if guest and not quota.allow("wa:" + jid):
-            await asyncio.to_thread(self.wa.send, jid, "Kuota harian tamu sudah habis. Coba lagi besok.")
+        if keys.contains_secret(text):
+            # API key / kata sandi TIDAK BOLEH lewat WhatsApp: bisa bocor, dan jawaban AI bisa mengulangnya.
+            # Tidak diproses, tidak masuk riwayat, tidak sampai ke AI, isinya tidak dicatat di log.
+            log.warning("WhatsApp: pesan berisi kunci rahasia ditolak (%s; isinya tidak dicatat).",
+                        "tamu" if guest else "pemilik")
+            if guest and not self._wa_guest_pace(jid):
+                return  # kuncinya tetap tidak diproses; hanya balasan penolakannya yang tidak diulang-ulang
+            await self._wa_say(jid, _WA_SECRET_GUEST if guest else _WA_SECRET_OWNER)
+            return
+        if guest:
+            await self._run_wa_guest(jid, text, media)
             return
         first = text.strip().split(maxsplit=1)[0].lower() if text.strip().startswith("/") else ""
+        if first in _WA_TELEGRAM_ONLY:
+            await self._wa_say(jid, _WA_TELEGRAM_ONLY_NOTE)
+            return
         if first in _WA_OWNER_COMMANDS:
             # Sama seperti di Telegram: perintah ini khusus pemilik, bukan tamu.
-            if guest:
-                await asyncio.to_thread(self.wa.send, jid, "Mode tamu: perintah itu hanya untuk pemilik.")
-                return
             if first == "/kirim":
                 await self._wa_kirim(jid, text.strip()[len("/kirim"):].strip())
                 return
@@ -889,6 +1560,21 @@ class App:
             # ikut terkirim ke mana-mana. (/deepseek tanpa key = ganti otak biasa.)
             await self._save_key(chat_id, message, force_kind="deepseek", then_use=True)
             return
+        if not guest and keys.only_keys(text):
+            # Pesan yang isinya HANYA key (ditempel tanpa /kunci): tetap dipasang dan pesannya dihapus,
+            # bukan dikirim ke otak AI, riwayat obrolan, atau komputer lain.
+            await self._save_key(chat_id, message)
+            return
+        handler = {
+            "/kunci_daftar": self._key_list, "/kunci_hapus": self._key_remove, "/kunci_tes": self._key_test,
+            "/model_daftar": self._model_list, "/model_pakai": self._model_use,
+            "/wa_tamu": self._wa_guest_mode, "/wa_blokir": self._wa_block, "/wa_buka": self._wa_unblock,
+            "/wa_info": self._wa_info,
+        }.get(first)
+        if handler:  # pengaturan Hub: kumpulan key, model, dan tamu WhatsApp
+            parts = text.split(maxsplit=1)
+            await handler(chat_id, parts[1].strip() if len(parts) > 1 else "")
+            return
         device = devices.get_target()
         if device and first not in _HUB_ONLY:
             if _attachment(message) or not text.strip():
@@ -930,7 +1616,7 @@ class App:
                 )
             return
 
-        if text.startswith("/kunci"):
+        if first == "/kunci":
             # Ditangani di sini, sebelum riwayat obrolan & otak AI: key tidak
             # boleh sampai ke model mana pun.
             await self._save_key(chat_id, message)
@@ -1649,6 +2335,7 @@ class App:
             finally:
                 await self.tg.close()
         brain.restore()
+        keypool.set_alert(self._pool_alert)  # key NusaGate yang mati dikabarkan ke pemilik (satu pesan)
         dashboard.start(self)
         self._start_quick_tunnel()
         if node.installed():
@@ -1682,6 +2369,7 @@ class App:
                 if await self._install(update):
                     return EXIT_UPDATED
         finally:
+            keypool.flush()  # hitungan pemakaian tiap key tersimpan walau menyala ulang
             if self.wa:
                 self.wa.stop()
             if getattr(self, "quick_tunnel", None):
@@ -1746,6 +2434,12 @@ class App:
                              "(tes: kirim \"halo\" ke chat \"Pesan ke diri sendiri\")")
         lines.append(f"- Node.js: {node_path or 'TIDAK ditemukan'}")
         lines.append(f"- Paket WhatsApp (npm install): {'terpasang' if has_modules else 'BELUM'}")
+        lines.append(f"- Mode tamu (orang lain dijawab AI): {'AKTIF' if config.WA_OPEN else 'mati'}"
+                     f" · diblokir {len(config.WA_BLOCK)} nomor (/wa_tamu)")
+        rows = keypool.snapshot()
+        if rows:
+            siap = sum(1 for r in rows if r["status"] in ("siap", "sibuk"))
+            lines.append(f"- Key NusaGate/DeepSeek: {len(rows)} key, {siap} siap (/kunci_daftar)")
 
         warns = [x for x in dashboard._logs(400).splitlines() if " WARNING " in x or " ERROR " in x]
         lines += ["", "Peringatan/galat terakhir di log:"]
