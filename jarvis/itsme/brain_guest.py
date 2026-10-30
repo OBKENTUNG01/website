@@ -8,7 +8,8 @@ asing (penjaga `guest` hanya ada di tools.py, sedangkan Claude Code memakai alat
 Urutan otak untuk tamu (yang pertama siap dipakai):
   1. Kumpulan key NusaGate/DeepSeek (hemat, dan beban tersebar merata di semua key; keypool.py)
   2. OpenRouter
-  3. Otak lokal (Ollama)
+  3. Otak lokal (Ollama) - HANYA kalau pemilik menyalakan ITSME_WA_GUEST_LOCAL=1: lambat dan bisa macet,
+     jadi bawaannya orang asing tidak diizinkan menyita komputer pemilik dengan model lokal.
 Kalau semuanya gagal, tamu mendapat permintaan maaf singkat - tidak pernah isi galat teknis.
 """
 
@@ -63,10 +64,11 @@ def reply(messages, ctx):
             return done(brain_openrouter.guest_chat(system, chat))
         except CloudUnavailable as exc:
             log.warning("tamu: OpenRouter tidak bisa menjawab (%s)", exc)
-    from . import brain_ollama
+    if config.WA_GUEST_LOCAL:
+        from . import brain_ollama
 
-    try:
-        return done(brain_ollama.guest_chat(system, chat))
-    except brain_ollama.LocalUnavailable as exc:
-        log.warning("tamu: otak lokal tidak bisa menjawab (%s)", exc)
+        try:
+            return done(brain_ollama.guest_chat(system, chat))
+        except brain_ollama.LocalUnavailable as exc:
+            log.warning("tamu: otak lokal tidak bisa menjawab (%s)", exc)
     return SORRY

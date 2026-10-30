@@ -485,12 +485,18 @@ class GuestModeCommandsTest(WaGuestBase):
         config.DEEPSEEK_API_KEYS = ["nsk_" + c * 32 for c in "abc"]
         with mock.patch.object(config, "OPENROUTER_API_KEY", "sk-or-v1-" + "y" * 40):
             out = await self.say("/wa_tamu")
-        self.assertIn("3 key NusaGate/DeepSeek bergiliran → OpenRouter → otak lokal", out)
+            self.assertIn("Otak untuk tamu: 3 key NusaGate/DeepSeek bergiliran → OpenRouter (", out)
+            self.assertNotIn("otak lokal", out)  # otak lokal hanya kalau pemilik menyalakannya
+            with mock.patch.object(config, "WA_GUEST_LOCAL", True):
+                out = await self.say("/wa_tamu")
+        self.assertIn("3 key NusaGate/DeepSeek bergiliran → OpenRouter → otak lokal (Ollama)", out)
 
     async def test_status_warns_when_open_without_any_cloud_brain(self):
         config.WA_OPEN = True
         out = await self.say("/wa_tamu")
         self.assertIn("Belum ada key NusaGate/OpenRouter", out)
+        self.assertIn("hanya menerima permintaan maaf", out)
+        self.assertNotIn("otak lokal", out)
 
     async def test_turning_on_needs_a_confirmation_the_owner_can_decline(self):
         with mock.patch.object(self.app, "_ask_confirm", return_value=False) as ask:

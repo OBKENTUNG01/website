@@ -555,6 +555,7 @@ nsk_cccc…
 | `ITSME_WA_GUEST_PER_MIN` | `6` | Pesan per menit per kontak yang dilayani (lebihnya diabaikan) |
 | `ITSME_GUEST_DAILY_MAX` | `50` | Pertanyaan per hari per tamu (Telegram & WhatsApp); `0` = tanpa batas |
 | `ITSME_WA_GUEST_TOTAL_MAX` | `500` | Jawaban per hari untuk SEMUA tamu WhatsApp digabung; `0` = tanpa batas |
+| `ITSME_WA_GUEST_LOCAL` | `0` | `1` = tamu boleh dijawab otak lokal (Ollama) kalau semua cloud gagal; bawaan mati karena lambat |
 | `ITSME_OLLAMA_MODEL` | `qwen3.5:9b` | Model lokal yang dipakai |
 | `ITSME_OLLAMA_NUM_CTX` | `16384` | Panjang konteks; turunkan kalau RAM penuh |
 | `ITSME_OLLAMA_NUM_GPU` | otomatis | Lapisan model di GPU; `0` = CPU saja (kalau driver GPU bermasalah) |
@@ -671,8 +672,10 @@ Yang dijaga untuk tamu:
 - **Hanya tanya-jawab.** Tamu tidak mendapat alat apa pun (shell, berkas, web, komputer lain),
   tidak membawa **memori** atau data pribadimu, dan tidak pernah sampai ke otak pilihanmu
   (termasuk "Claude di komputer", yang punya alat sendiri). Mereka dijawab lewat jalur khusus:
-  kumpulan key NusaGate (beban dibagi rata) → OpenRouter → otak lokal → permintaan maaf
-  singkat. Tamu tidak pernah melihat isi galat teknis.
+  kumpulan key NusaGate (beban dibagi rata) → OpenRouter → permintaan maaf singkat. Tamu tidak
+  pernah melihat isi galat teknis, dan paling lama menunggu 60 detik. **Otak lokal TIDAK dipakai
+  untuk tamu** kecuali kamu menyalakannya (`ITSME_WA_GUEST_LOCAL=1`): dicoba di komputer ini,
+  Ollama butuh 74 detik lalu macet, dan orang asing tidak boleh menyita komputermu selama itu.
 - **Lawan bicara diberi tahu itu AI.** Balasan pertama yang berhasil ke tiap kontak per hari
   diawali "🤖 Ini asisten AI yang membalas otomatis atas nama pemilik nomor ini…" (ubah dengan
   `ITSME_WA_GUEST_INTRO`, `off` = tanpa). Perkenalan ini dipasang oleh program, tidak bergantung

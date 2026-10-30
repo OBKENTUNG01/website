@@ -370,6 +370,10 @@ try:
     WA_GUEST_TOTAL_MAX = int(_get("ITSME_WA_GUEST_TOTAL_MAX", "500") or "500")
 except ValueError:
     WA_GUEST_TOTAL_MAX = 500
+# Boleh tamu dijawab otak lokal (Ollama) kalau semua cloud gagal? Bawaan MATI: otak lokal lambat (diukur di
+# komputer pemilik: 74 detik lalu macet), dan orang asing tidak boleh menyita komputer pemilik selama itu;
+# tanpa ini tamu cukup menerima permintaan maaf dalam hitungan detik.
+WA_GUEST_LOCAL = _bool("ITSME_WA_GUEST_LOCAL", False)
 # Batas ukuran berkas WhatsApp (MB), untuk terima maupun kirim.
 WA_MAX_MB = int(_get("ITSME_WA_MAX_MB", "100"))
 # Berkas yang dikirim ke bot WhatsApp disimpan di sini.

@@ -117,7 +117,7 @@ _WA_GUEST_QUOTA = "Kuota harian untuk asisten AI sudah habis. Coba lagi besok ya
 # menghabiskan thread dan membuat pemilik menunggu. Dan paling banyak sekian riwayat tamu disimpan.
 _WA_GUEST_PARALLEL = 4
 _WA_GUEST_HISTORIES = 200
-_WA_GUEST_TIMEOUT = 120  # detik menunggu jawaban AI untuk seorang tamu
+_WA_GUEST_TIMEOUT = 60  # detik paling lama tamu menunggu; lewat itu dia menerima permintaan maaf singkat
 _POOL_ALERT_WAIT = 3  # detik mengumpulkan kabar "key tidak bisa dipakai" jadi satu pesan
 _WA_OPEN_WARNING = (
     "Aktifkan balasan AI untuk SEMUA orang yang chat ke nomor WhatsApp-mu?\n\n"
@@ -1038,7 +1038,8 @@ class App:
             brains.append(f"{n} key NusaGate/DeepSeek bergiliran")
         if config.OPENROUTER_API_KEY:
             brains.append("OpenRouter")
-        brains.append("otak lokal (Ollama)")
+        if config.WA_GUEST_LOCAL:
+            brains.append("otak lokal (Ollama)")
         lines = [
             f"👥 Mode tamu WhatsApp: {'AKTIF ✅' if on else 'MATI ⛔'}",
             "",
@@ -1057,8 +1058,9 @@ class App:
             f"Diblokir: {len(config.WA_BLOCK)} nomor · info untuk tamu: {'ada' if brain_guest.read_info() else 'belum ada'}",
         ]
         if on and not keypool.has_keys() and not config.OPENROUTER_API_KEY:
-            lines += ["", "⚠️ Belum ada key NusaGate/OpenRouter: tamu hanya dijawab otak lokal (kalau Ollama menyala), "
-                          "kalau tidak mereka menerima permintaan maaf. Pasang key lewat /kunci <key>."]
+            lines += ["", "⚠️ Belum ada key NusaGate/OpenRouter: tamu hanya menerima permintaan maaf"
+                          + (" (atau jawaban otak lokal, kalau Ollama menyala)" if config.WA_GUEST_LOCAL else "")
+                          + ". Pasang key lewat /kunci <key>."]
         lines += ["", "Atur: /wa_tamu aktif · /wa_tamu mati · /wa_blokir <nomor> · /wa_buka <nomor> · /wa_info <teks>"]
         return "\n".join(lines)
 

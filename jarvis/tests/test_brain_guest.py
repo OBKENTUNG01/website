@@ -39,6 +39,7 @@ class GuestBase(unittest.TestCase):
             mock.patch.object(config, "NUSAGATE_MODELS", []),
             mock.patch.object(config, "DEEPSEEK_URL", ""),
             mock.patch.object(config, "OPENROUTER_API_KEY", None),
+            mock.patch.object(config, "WA_GUEST_LOCAL", True),  # rantai penuh; mati-bawaannya diuji terpisah
             mock.patch.object(brain_deepseek.time, "sleep"),
             mock.patch.dict(brain._state, {"backend": "claude_code"}),  # otak pilihan pemilik: yang berkuasa
         ):
@@ -229,6 +230,52 @@ class GuestFallbackOrderTest(GuestBase):
             reply, _ = self.ask()
         self.assertEqual(reply, "dari lokal")
         self.assertEqual({r["status"] for r in keypool.snapshot()}, {"balance"})
+
+
+class GuestLocalBrainIsOptInTest(GuestBase):
+    """Diukur di komputer pemilik: otak lokal butuh 74 detik lalu macet. Orang asing tidak boleh menyitanya."""
+
+    def test_by_default_a_stranger_never_reaches_the_local_model(self):
+        boom = AssertionError("tamu tidak boleh memakai otak lokal secara bawaan")
+        with mock.patch.object(config, "WA_GUEST_LOCAL", False), \
+             mock.patch.object(brain_deepseek, "guest_chat", side_effect=CloudUnavailable("habis", status=402)), \
+             mock.patch.object(brain_ollama, "guest_chat", side_effect=boom):
+            reply, messages = self.ask()
+        self.assertEqual(reply, brain_guest.SORRY)  # permintaan maaf, langsung
+        self.assertEqual(messages[-1]["role"], "user")
+
+    def test_the_owner_can_opt_in(self):
+        with mock.patch.object(config, "WA_GUEST_LOCAL", True), \
+             mock.patch.object(brain_deepseek, "guest_chat", side_effect=CloudUnavailable("habis", status=402)), \
+             mock.patch.object(brain_ollama, "guest_chat", return_value="dari lokal"):
+            reply, _ = self.ask()
+        self.assertEqual(reply, "dari lokal")
+
+    def test_with_local_off_only_the_cloud_steps_are_tried_in_order(self):
+        calls = []
+
+        def pool(*args):
+            calls.append("pool")
+            raise CloudUnavailable("habis", status=402)
+
+        def router(*args):
+            calls.append("openrouter")
+            raise CloudUnavailable("penuh", status=429)
+
+        with mock.patch.object(config, "WA_GUEST_LOCAL", False), \
+             mock.patch.object(config, "OPENROUTER_API_KEY", "sk-or-v1-" + "y" * 40), \
+             mock.patch.object(brain_deepseek, "guest_chat", side_effect=pool), \
+             mock.patch.object(brain_openrouter, "guest_chat", side_effect=router), \
+             mock.patch.object(brain_ollama, "guest_chat", side_effect=AssertionError("lokal tidak boleh")):
+            reply, _ = self.ask()
+        self.assertEqual(calls, ["pool", "openrouter"])
+        self.assertEqual(reply, brain_guest.SORRY)
+
+
+@unittest.skipIf(os.environ.get("ITSME_WA_GUEST_LOCAL"), "dinyalakan lewat variabel lingkungan komputer ini")
+class GuestLocalDefaultTest(unittest.TestCase):
+    def test_the_shipped_default_is_off(self):
+        self.assertIs(config.WA_GUEST_LOCAL, False)
 
 
 class GuestInfoTest(GuestBase):
