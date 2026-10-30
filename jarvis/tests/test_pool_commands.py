@@ -102,6 +102,7 @@ class InstallManyKeysTest(PoolCommandBase):
         self.assertIn("3 key NusaGate/DeepSeek baru ditambahkan", out)
         self.assertIn("nsk…aaaa", out)
         self.assertIn("Sekarang ada 3 key", out)
+        self.assertIn("hanya tersimpan di komputer ini", out)  # pemilik diberi tahu: tidak disalin ke komputer lain
         self.assertNoRawKeyShown(A, B, C)
         self.assertNotIn(7, self.app.histories)
 

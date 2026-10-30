@@ -233,6 +233,11 @@ _LOCAL_ONLY = {
     "ITSME_LOG_FILE", "ITSME_MEMORY_FILE", "ITSME_NODE_URL", "ITSME_OLLAMA_MODEL",
     "ITSME_OLLAMA_NUM_CTX", "ITSME_OLLAMA_NUM_GPU", "OLLAMA_URL", "WEBSITE_REPO_DIR",
 }
+# Rahasia yang HANYA hidup di komputer yang memegang bot (Hub), atas permintaan pemilik: key NusaGate/
+# DeepSeek tidak disalin ke komputer baru dan tidak diselaraskan ke perangkat. Perangkat yang sudah
+# terlanjur menyimpannya dikosongkan lewat penyelarasan (managed_keys menyebutnya tanpa nilai).
+# Akibatnya: komputer lain yang menjadi pemimpin (failover) harus dipasangi key sendiri lewat /kunci.
+HUB_ONLY_SECRETS = {"DEEPSEEK_API_KEY", "DEEPSEEK_API_KEYS"}
 _CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # tanpa huruf/angka yang mirip
 
 
@@ -244,11 +249,26 @@ def new_invite_code():
 
 
 def invite_env(env_file):
-    """Isi .env bot untuk komputer baru (token bot, pemilik, kunci otak, ...)."""
+    """Isi .env bot untuk komputer baru (token bot, pemilik, kunci otak, ...). Tanpa nilai khusus komputer
+    (_LOCAL_ONLY) dan tanpa rahasia khusus-Hub (HUB_ONLY_SECRETS: key NusaGate/DeepSeek)."""
     from dotenv import dotenv_values
 
     return {k: v for k, v in dotenv_values(env_file).items()
-            if v and k not in _LOCAL_ONLY and "\n" not in v}
+            if v and k not in _LOCAL_ONLY and k not in HUB_ONLY_SECRETS and "\n" not in v}
+
+
+def managed_keys(env_file):
+    """Nama kunci .env yang dikelola Hub (termasuk yang dikosongkan), untuk penyelarasan ke perangkat: perangkat
+    mengosongkan kunci yang disebut di sini tapi tidak ikut dikirim nilainya.
+
+    - Nilai khusus komputer (_LOCAL_ONLY) TIDAK disebut: perangkat tidak boleh mengosongkan miliknya sendiri
+      (nama komputer, alamat Hub, ...) hanya karena Hub kebetulan punya baris dengan nama yang sama.
+    - Rahasia khusus-Hub (HUB_ONLY_SECRETS) SELALU disebut, walau Hub tak punya barisnya: salinan lama di
+      perangkat (dari penyalinan seluruh .env di masa lalu) ikut dibersihkan."""
+    from dotenv import dotenv_values
+
+    names = {k for k, v in dotenv_values(env_file).items() if v is not None and k not in _LOCAL_ONLY}
+    return sorted(names | HUB_ONLY_SECRETS)
 
 
 def create_invite(code, env, ttl=INVITE_TTL, timeout=5, reusable=False):

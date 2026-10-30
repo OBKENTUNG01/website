@@ -628,7 +628,7 @@ class App:
             if kind == "deepseek":
                 total = len(keypool.all_keys())
                 head = (f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa dan ditambahkan; sekarang {total} key "
-                        "dipakai bergiliran." if added else
+                        "dipakai bergiliran (hanya tersimpan di komputer ini)." if added else
                         f"↩️ Key {name} ({keys.mask(key)}) sudah ada di daftar (tidak dobel); total {total} key.")
             else:
                 head = f"✅ Key {name} ({keys.mask(key)}) sudah diperiksa, disimpan, dan langsung aktif."
@@ -685,7 +685,8 @@ class App:
         pool_used = any(kind == "deepseek" for kind, _ in accepted)
         if pool_used:
             lines.append(f"\n🔑 Sekarang ada {len(keypool.all_keys())} key NusaGate/DeepSeek; semuanya dipakai "
-                         "bergiliran. Daftar & status: /kunci_daftar")
+                         "bergiliran, dan hanya tersimpan di komputer ini (tidak disalin ke komputer lain). "
+                         "Daftar & status: /kunci_daftar")
         for kind in list(singles) + (["deepseek"] if pool_used else []):
             lines.append(await self._key_usage(chat_id, kind, then_use and kind == force_kind))
         await self.tg.send(chat_id, "\n".join(lines) + note)

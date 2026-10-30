@@ -533,8 +533,14 @@ nsk_cccc…
   beberapa token per key), `/kunci_hapus 3` (keluarkan key nomor 3).
 - Batas lunak 50 permintaan/menit per key (`ITSME_POOL_RPM`) supaya key tidak mepet batas
   keras 60. Hitungan pemakaian disimpan di `data/keypool.json` (hanya id hash, bukan key).
-- Komputer lain yang bergabung ke bot ikut menerima key lewat penyelarasan `.env` dari
-  Hub; satu-satunya yang menjawab Telegram/WhatsApp tetap komputer pemimpin.
+- **Key NusaGate hanya ada di komputer yang memegang bot (Hub) — tidak disalin ke komputer
+  lain.** Komputer baru yang dipasang lewat `/pasang` tidak menerimanya, perangkat yang
+  terhubung tidak ikut menerimanya saat penyelarasan, dan salinan lama yang dulu sempat ikut
+  (dari penyalinan seluruh `.env`) dikosongkan di perangkat itu begitu mereka menyelaraskan diri.
+  Rahasia lain (token bot, OpenRouter, token akun Claude, GitHub) masih ikut disalin seperti
+  biasa. Akibatnya: kalau komputer lain menjadi pemimpin (Hub mati), ia belum punya key
+  NusaGate — kirim `/kunci …` lagi ke bot setelah itu. Sementara itu tamu WhatsApp dijawab
+  lewat OpenRouter kalau ada, atau menerima permintaan maaf.
 
 ## Pengaturan (opsional, di `.env`)
 
@@ -546,7 +552,7 @@ nsk_cccc…
 | `ITSME_OPENROUTER_FALLBACKS` | `openrouter/free` (untuk model `:free`) | Model cadangan kalau model utama penuh; `off` = matikan |
 | `ITSME_OPENROUTER_REASONING` | `medium` | Seberapa keras model cloud berpikir (`none` … `max`, atau `default`) |
 | `ITSME_FALLBACK_LOCAL` | `1` | Otak lokal menjawab kalau otak cloud gagal (`0` = matikan) |
-| `DEEPSEEK_API_KEYS` | — | Banyak key NusaGate/DeepSeek, dipisah koma; **semuanya dipakai bergiliran**. Diisi otomatis oleh `/kunci` (jangan lewat WhatsApp) |
+| `DEEPSEEK_API_KEYS` | — | Banyak key NusaGate/DeepSeek, dipisah koma; **semuanya dipakai bergiliran**. Diisi otomatis oleh `/kunci` (jangan lewat WhatsApp). Tidak pernah disalin ke komputer lain |
 | `ITSME_NUSAGATE_MODELS` | — | Model NusaGate yang diputar bergantian, dipisah koma (kosong = satu model bawaan). Atur dengan `/model_pakai` |
 | `ITSME_POOL_RPM` | `50` | Batas lunak permintaan per menit per key sebelum key lain didahulukan (NusaGate: 60) |
 | `ITSME_WA_OPEN` | `0` | `1` = orang lain yang chat ke nomor WhatsApp-mu dijawab AI (mode tamu). Atur dengan `/wa_tamu` |
