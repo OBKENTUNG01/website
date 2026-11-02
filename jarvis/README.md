@@ -253,7 +253,8 @@ disembunyikan dari pemilik atau antivirus.
 | `/cloud` | Pakai otak cloud (OpenRouter) |
 | `/claudepc` | Pakai Claude di komputer dengan akun Claude-mu, tanpa API key ([cara login](#memakai-akun-claude-mu-tanpa-api-key-claudepc)) |
 | `/claude` | Pakai otak Claude (Anthropic API, butuh `ANTHROPIC_API_KEY` di `.env`) |
-| `/lokal` | Pakai otak lokal (Ollama) |
+| `/lokal` | Pakai otak lokal (Ollama) di komputer ini |
+| `/bersama`, `/bersama_status` | Pakai otak lokal **bersama** — semua komputer yang bergabung ikut berpikir ([lihat di bawah](#otak-lokal-bersama-semua-komputer-ikut-berpikir-bersama)); `_status` = siapa yang berpikir, modelnya, kecepatannya, bebannya |
 | `/kunci <key>` | Simpan API key Claude (`sk-ant-…`), token akun Claude (`sk-ant-oat…`), key OpenRouter (`sk-or-…`), atau API key Tailscale (`tskey-api-…`, untuk `/pasang` tanpa login); pesannya langsung dihapus. Key NusaGate (`nsk_…`) boleh **banyak sekaligus** ([lihat di bawah](#banyak-key-nusagate-dipakai-semuanya-bergiliran)) |
 | `/kunci_daftar`, `/kunci_hapus <no>`, `/kunci_tes [chat]` | Lihat semua key NusaGate + statusnya, keluarkan satu, atau periksa semuanya |
 | `/model_daftar`, `/model_pakai <nama> …` | Lihat model NusaGate, atau putar beberapa model bergantian |
@@ -542,6 +543,64 @@ nsk_cccc…
   NusaGate — kirim `/kunci …` lagi ke bot setelah itu. Sementara itu tamu WhatsApp dijawab
   lewat OpenRouter kalau ada, atau menerima permintaan maaf.
 
+## Otak lokal bersama: semua komputer ikut berpikir (`/bersama`)
+
+Tanpa API key dan tanpa kuota: pekerjaan berpikir dibagi ke **semua komputer yang sudah bergabung**
+([It's Me Node](https://github.com/OBKENTUNG01/itsme-node)), masing-masing dengan model Ollama-nya sendiri.
+Pilih dengan `/bersama` (kembali dengan `/lokal`, `/cloud`, dst.); lihat siapa yang berpikir dengan
+`/bersama_status`. Tamu WhatsApp/Telegram juga dijawab otak ini (kalau pemilik memilih `/bersama`, ia yang
+**pertama**; kalau tidak, ia dipakai setelah kumpulan key NusaGate dan sebelum OpenRouter).
+
+Ini pembagian **per permintaan** untuk menambah throughput: satu permintaan dikerjakan utuh oleh satu
+komputer/model; modelnya tidak dipecah ke beberapa komputer. Ini bukan distributed inference; lihat
+[FAQ Ollama](https://docs.ollama.com/faq) dan contoh load-balancing horizontal [HOPS](https://github.com/leozqin/hops).
+Isi percakapan dikirim ke node terpilih untuk setiap langkah inferensi; hanya daftarkan komputer yang kamu
+percaya. Tanda tangan HMAC mengautentikasi/melindungi integritas permintaan, **bukan mengenkripsi**: koneksi
+antar-node memakai HTTP, sehingga pengamat jaringan lokal bisa membaca isi kecuali jaringan/tunnel yang
+dipakai sudah terenkripsi. Jangan buka port node ke internet publik.
+
+**Yang dibagi:** tiap permintaan memilih komputer yang *paling cocok dan lowong* — model terbesar yang tidak
+sedang sibuk untuk menjawab, yang tercepat untuk langkah bantu. Permintaan yang sedang berjalan ikut dihitung,
+jadi dua pesan serentak tidak menumpuk di satu komputer. Komputer yang gagal, sibuk, atau modelnya mati
+diistirahatkan sebentar dan permintaan yang *sama* langsung dicoba di komputer lain.
+
+**Tetap siap berpikir walau komputernya sedang dipakai:** It's Me Node menjaga Ollama tetap hidup (mati →
+dinyalakan lagi), menahan modelnya di memori, dan membuat riset latar mengalah. Di Windows, prioritas rendah
+hanya best-effort: itu bukan batas CPU/RAM dan pemindaian nama proses dapat menurunkan prioritas instance
+Ollama lain di komputer yang sama; beban tetap bisa memperlambat komputer atau menghabiskan RAM. Permintaan
+agar Windows tidak tidur otomatis aktif secara bawaan hanya selama ada permintaan berpikir; saat idle
+permintaan itu dilepas agar komputer boleh tidur. [Microsoft memperingatkan](https://learn.microsoft.com/en-us/windows/desktop/Power/system-sleep-criteria?redirectedfrom=MSDN)
+bahwa menahannya terus-menerus dapat menguras baterai Modern Standby. Matikan dengan
+`think_keep_awake: false` di `config.json` bila komputer perlu tidur bahkan saat bekerja. Rincian di README itsme-node.
+
+**Pemimpin mati:** semua komputer berhenti berpikir sampai pemimpin baru terpilih (±20 detik, rancangan
+It's Me Node), lalu lanjut sendiri. Selama itu bot menunggu, bukan menyerah.
+
+**Supaya tidak melenceng** (model lokal kecil gampang menjawab hal lain atau menulis penalarannya):
+
+1. *Memahami* — model cepat meringkas maksud pesan terakhir (tujuan, jenis, perlu alat atau tidak, bahasa).
+   Pesan yang benar-benar tidak jelas dijawab dengan pertanyaan balik, bukan tebakan.
+2. *Menjawab* — model terbaik menjawab dengan maksud itu terpasang di system prompt. Alat hanya ditawarkan
+   kalau memang perlu.
+3. *Memeriksa* — pemeriksaan murah (kosong? penalaran Inggris bocor? bahasa beda?), lalu komputer lain menilai
+   "apakah ini menjawab maksudnya?". Kalau tidak, dijawab ulang **sekali** di komputer lain; kalau tetap
+   tidak tepat, bot minta kamu mengulang pertanyaan — tidak mengirim jawaban yang melantur.
+
+**Batas kerja yang nyata (bukan tanpa batas):** bawaan 64 langkah alat, 60 pesan riwayat, 30 menit per
+panggilan model (langkah cepat 5 menit), dan paling lama 10 menit menunggu komputer lowong/pemimpin baru;
+setiap node menerima paling banyak 4 permintaan antrean. Tamu yang memakai kumpulan dibatasi 5 menit total.
+Jawaban dibatasi 8192 token (`ITSME_CLUSTER_MAX_TOKENS=0` mematikan batas token itu saja, bukan batas waktu,
+langkah, antrean, maupun beban CPU/RAM). Mode berpikir mendalam (`think`) otomatis dipakai untuk perintah/
+pertanyaan yang butuh alat pada model yang bisa dikendalikan (`ITSME_CLUSTER_THINK=deep` = selalu).
+Aturan keamanan (mode akses aman/penuh, berkas rahasia) **tidak** ikut dilonggarkan. Waktu 30 menit itu per
+panggilan model, bukan batas total satu giliran: pemilik tidak punya deadline keseluruhan, sehingga pekerjaan
+multi-langkah dapat berlangsung jauh lebih lama; batas jumlah langkah tetap 64 secara bawaan.
+
+**Batas jujur:** model lokal kecil (1,7–4 miliar parameter di CPU biasa, ±5–10 token/detik) tidak sepintar
+Claude atau DeepSeek, dan jawaban bisa makan setengah sampai beberapa menit; langkah memahami & memeriksa
+menambah waktu tetapi mengurangi lantur. Komputer dengan RAM < 6 GB tidak ikut berpikir. Kalau It's Me
+Node di komputer ini mati, `/bersama` jatuh ke Ollama langsung di komputer ini.
+
 ## Pengaturan (opsional, di `.env`)
 
 | Variabel | Bawaan | Fungsi |
@@ -561,7 +620,9 @@ nsk_cccc…
 | `ITSME_WA_GUEST_PER_MIN` | `6` | Pesan per menit per kontak yang dilayani (lebihnya diabaikan) |
 | `ITSME_GUEST_DAILY_MAX` | `50` | Pertanyaan per hari per tamu (Telegram & WhatsApp); `0` = tanpa batas |
 | `ITSME_WA_GUEST_TOTAL_MAX` | `500` | Jawaban per hari untuk SEMUA tamu WhatsApp digabung; `0` = tanpa batas |
-| `ITSME_WA_GUEST_LOCAL` | `0` | `1` = tamu boleh dijawab otak lokal (Ollama) kalau semua cloud gagal; bawaan mati karena lambat |
+| `ITSME_WA_GUEST_LOCAL` | `0` | `1` = izinkan Ollama di komputer pemegang bot menjawab tamu jika semua cloud gagal; terpisah dari cluster bersama |
+| `ITSME_GUEST_CLUSTER` | `1` | Izinkan tamu memakai otak lokal bersama; `0` = jangan gunakan komputer-komputer cluster untuk tamu |
+| `ITSME_CLUSTER_GUEST_TIMEOUT` | `300` | Anggaran waktu tamu untuk jalur cluster (detik; 300 = 5 menit) |
 | `ITSME_OLLAMA_MODEL` | `qwen3.5:9b` | Model lokal yang dipakai |
 | `ITSME_OLLAMA_NUM_CTX` | `16384` | Panjang konteks; turunkan kalau RAM penuh |
 | `ITSME_OLLAMA_NUM_GPU` | otomatis | Lapisan model di GPU; `0` = CPU saja (kalau driver GPU bermasalah) |
@@ -675,13 +736,15 @@ yang dijawab (aturan di bawah tetap berlaku untuk mereka).
 
 Yang dijaga untuk tamu:
 
-- **Hanya tanya-jawab.** Tamu tidak mendapat alat apa pun (shell, berkas, web, komputer lain),
-  tidak membawa **memori** atau data pribadimu, dan tidak pernah sampai ke otak pilihanmu
-  (termasuk "Claude di komputer", yang punya alat sendiri). Mereka dijawab lewat jalur khusus:
-  kumpulan key NusaGate (beban dibagi rata) → OpenRouter → permintaan maaf singkat. Tamu tidak
-  pernah melihat isi galat teknis, dan paling lama menunggu 60 detik. **Otak lokal TIDAK dipakai
-  untuk tamu** kecuali kamu menyalakannya (`ITSME_WA_GUEST_LOCAL=1`): dicoba di komputer ini,
-  Ollama butuh 74 detik lalu macet, dan orang asing tidak boleh menyita komputermu selama itu.
+- **Hanya tanya-jawab.** Tamu tidak mendapat alat apa pun (shell, berkas, web), tidak membawa
+  **memori** atau data pribadimu, dan tidak pernah sampai ke otak pilihanmu (termasuk "Claude di
+  komputer", yang punya alat sendiri). Jalurnya: kumpulan key NusaGate → otak lokal bersama
+  (jika `ITSME_GUEST_CLUSTER=1` dan Node terpasang; paling awal jika pemilik memilih `/bersama`)
+  → OpenRouter → permintaan maaf singkat. `ITSME_GUEST_CLUSTER=0` melarang pemakaian cluster oleh
+  semua tamu. Batas tunggu WhatsApp bawaan 60 detik menjadi sampai 5 menit bila jalur cluster
+  diaktifkan dan Node terpasang (`ITSME_CLUSTER_GUEST_TIMEOUT`, bawaan 300 detik); tanpa jalur itu
+  tetap 60 detik. Ollama lokal pada komputer pemegang bot adalah pilihan terpisah dan tetap mati
+  kecuali `ITSME_WA_GUEST_LOCAL=1`. Tamu tidak pernah melihat isi galat teknis.
 - **Lawan bicara diberi tahu itu AI.** Balasan pertama yang berhasil ke tiap kontak per hari
   diawali "🤖 Ini asisten AI yang membalas otomatis atas nama pemilik nomor ini…" (ubah dengan
   `ITSME_WA_GUEST_INTRO`, `off` = tanpa). Perkenalan ini dipasang oleh program, tidak bergantung

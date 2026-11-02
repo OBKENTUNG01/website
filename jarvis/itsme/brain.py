@@ -7,9 +7,12 @@
   deepseek   → model DeepSeek, murah & pintar. Jatuh ke otak lokal juga.
   claude     → Claude lewat Anthropic API.
   claude_code → Claude di komputer (Claude Code) dengan akun Claude-mu.
+  kumpulan   → otak lokal BERSAMA: semua komputer yang sudah bergabung (It's Me Node) ikut
+               berpikir, dibagi ke yang lowong (think_pool.py), dengan alur memahami →
+               menjawab → memeriksa agar tidak melenceng (thinking.py, brain_cluster.py).
 
 Otak awal diambil dari ITSME_BACKEND, lalu bisa diganti saat bot berjalan
-lewat perintah Telegram /lokal, /cloud, /deepseek, /claude, dan /claudepc.
+lewat perintah Telegram /lokal, /bersama, /cloud, /deepseek, /claude, dan /claudepc.
 Modul tiap otak di-import saat dipakai, jadi pemakai satu otak tidak butuh
 perlengkapan otak lainnya.
 """
@@ -17,10 +20,10 @@ perlengkapan otak lainnya.
 import json
 import os
 
-from . import config, keypool, keys
+from . import config, keypool, keys, think_pool
 from .agentutil import text_only
 
-BACKENDS = ("ollama", "openrouter", "deepseek", "claude", "claude_code")
+BACKENDS = ("ollama", "openrouter", "deepseek", "claude", "claude_code", "kumpulan")
 
 _state = {"backend": config.BACKEND}
 
@@ -71,6 +74,13 @@ def set_backend(name, remember=True):
         from .brain_claude_code import LOGIN_HINT
 
         raise ValueError(LOGIN_HINT)
+    if name == "kumpulan" and not think_pool.installed():
+        # Hanya diperiksa TERPASANG-nya (bukan siap-nya): setelah menyala ulang, node kadang belum menjawab
+        # saat pilihan otak dipulihkan (restore), dan pilihan pemilik tidak boleh hilang karena itu.
+        raise ValueError(
+            "It's Me Node belum terpasang di komputer ini, jadi belum ada komputer yang bisa diajak berpikir. "
+            "Pasang dulu lewat /pasang (komputer pertama: jalankan install.ps1 dari repo itsme-node)."
+        )
     _state["backend"] = name
     if remember:
         try:
@@ -110,6 +120,8 @@ def describe(name=None):
     if name == "claude_code":
         model = config.CLAUDE_CODE_MODEL or "model bawaan akunmu"
         return f"Claude di komputer ({model}, akun Claude-mu, tanpa API key)"
+    if name == "kumpulan":
+        return think_pool.describe()
     return f"lokal {config.OLLAMA_MODEL} (Ollama)"
 
 
@@ -130,6 +142,26 @@ def run_agent(messages, ctx):
         from .brain_claude_code import run_agent as run
 
         return run(messages, ctx)
+
+    if backend == "kumpulan":
+        from .brain_cluster import ClusterUnavailable
+        from .brain_cluster import run_agent as cluster
+
+        try:
+            return cluster(messages, ctx, raise_errors=True)
+        except ClusterUnavailable as exc:
+            if not config.FALLBACK_LOCAL:
+                return f"⚠️ {exc}"
+            from .brain_ollama import LocalUnavailable
+            from .brain_ollama import run_agent as local
+
+            # Tak ada komputer yang bisa berpikir (mis. node di sini mati): Ollama di komputer ini langsung.
+            try:
+                reply = local(text_only(messages), ctx, raise_errors=True)
+            except LocalUnavailable as local_exc:
+                return f"⚠️ {exc}\n\nOtak lokal (cadangan) juga belum bisa menjawab: {local_exc}"
+            messages.append({"role": "assistant", "content": reply})
+            return f"⚠️ {exc} Kujawab pakai otak lokal di komputer ini.\n\n{reply}"
 
     if backend in ("openrouter", "deepseek"):
         from .brain_openrouter import CloudUnavailable

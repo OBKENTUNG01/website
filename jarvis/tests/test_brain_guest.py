@@ -40,6 +40,9 @@ class GuestBase(unittest.TestCase):
             mock.patch.object(config, "DEEPSEEK_URL", ""),
             mock.patch.object(config, "OPENROUTER_API_KEY", None),
             mock.patch.object(config, "WA_GUEST_LOCAL", True),  # rantai penuh; mati-bawaannya diuji terpisah
+            # Urutan tanpa otak lokal bersama; yang ikut di rantai itu diuji di test_cluster_commands.GuestOrderTest
+            # (dan hasilnya tidak boleh bergantung pada It's Me Node yang kebetulan terpasang di komputer ini).
+            mock.patch.object(config, "GUEST_CLUSTER", False),
             mock.patch.object(brain_deepseek.time, "sleep"),
             mock.patch.dict(brain._state, {"backend": "claude_code"}),  # otak pilihan pemilik: yang berkuasa
         ):

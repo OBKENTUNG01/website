@@ -128,7 +128,7 @@ def wake(name, timeout=10):
     return res
 
 
-# Komputer yang sudah bergabung SEBELUM perbaikan "seed" di invite()/enroll()
+# Komputer yang sudah bergabung SEBELUM perbaikan "seed" di invite()
 # tidak punya titik awal gosip sama sekali - diam-diam gagal-pindah-pemimpin,
 # sinkron memori/otak/akses, dan pembagian riset tidak pernah jalan di antara
 # mereka. Titipkan alamat LAN node ini lewat jembatan yang SUDAH tersambung

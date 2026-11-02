@@ -33,7 +33,8 @@ from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from urllib.parse import urlparse
 
-from . import access, brain, brain_guest, config, dashboard, devices, keypool, keys, launch, lock, node, quota, updater
+from . import (access, brain, brain_guest, config, dashboard, devices, keypool, keys, launch, lock, node, quota,
+               think_pool, updater)
 from .brain import run_agent
 from .memory import Memory
 from .telegram import Telegram, confirm_keyboard
@@ -56,7 +57,10 @@ HELP = (
     "/deepseek — pakai otak DeepSeek (murah & pintar); /deepseek <key> untuk simpan key-nya\n"
     "/claudepc — pakai Claude di komputer (akun Claude-mu, tanpa API key)\n"
     "/claude — pakai otak Claude (Anthropic API, paling pintar)\n"
-    "/lokal — pakai otak lokal (gratis, privat)\n"
+    "/lokal — pakai otak lokal di komputer ini (gratis, privat)\n"
+    "/bersama — pakai otak lokal BERSAMA: semua komputer yang sudah bergabung ikut berpikir, dijaga tetap "
+    "hidup walau sedang dipakai, dan jawabannya dipahami-dijawab-diperiksa supaya tidak melenceng; "
+    "/bersama_status — lihat siapa yang berpikir, modelnya, kecepatannya, dan bebannya\n"
     "/kunci <key> — simpan API key atau token akun Claude (pesannya langsung kuhapus). Key NusaGate boleh "
     "banyak sekaligus (satu per baris): SEMUANYA dipakai bergiliran. Key hanya dipasang lewat Telegram, "
     "tidak pernah lewat WhatsApp\n"
@@ -92,7 +96,7 @@ _HUB_ONLY = {
     "/memori", "/hapus_memori", "/perangkat", "/pakai", "/pasang", "/pasang_tetap", "/id",
     "/lock", "/komputer", "/layar", "/nyalakan", "/wa", "/wa_ulang", "/alamat", "/diagnosa",
     "/kunci_daftar", "/kunci_hapus", "/kunci_tes", "/model_daftar", "/model_pakai",
-    "/wa_tamu", "/wa_blokir", "/wa_buka", "/wa_info",
+    "/wa_tamu", "/wa_blokir", "/wa_buka", "/wa_info", "/bersama_status",
 }
 # Perintah pengaturan yang hanya jalan lewat Telegram (key dan pengaturan tamu tidak boleh diurus dari
 # WhatsApp). Kalau pemilik mengetiknya di WhatsApp, dia diberi tahu ke mana harus pergi.
@@ -186,6 +190,7 @@ ACCESS_WARNING = (
 # Perintah Telegram untuk mengganti otak, dan perintah yang memakai tiap jenis key.
 _BRAIN_COMMANDS = {
     "/lokal": "ollama",
+    "/bersama": "kumpulan",
     "/cloud": "openrouter",
     "/deepseek": "deepseek",
     "/claude": "claude",
@@ -369,9 +374,22 @@ class App:
         else:
             await asyncio.to_thread(devices.send_message, text)
 
+    @staticmethod
+    def _cluster_status():
+        """Teks /bersama_status: siapa yang ikut berpikir dan keadaannya."""
+        lines = ["🧠 Otak lokal bersama", *think_pool.report()]
+        if brain.current_backend() == "kumpulan":
+            lines += ["", "Otak yang sedang dipakai: ini."]
+        else:
+            lines += ["", "Pakai dengan /bersama (sekarang: " + brain.describe(brain.current_backend()) + ")."]
+        lines.append("Tamu WhatsApp/Telegram juga dijawab otak ini" + (
+            "." if config.GUEST_CLUSTER else " (dimatikan: ITSME_GUEST_CLUSTER=0)."))
+        return "\n".join(lines)
+
     def _brain_status(self):
         lines = [f"Otak sekarang: {brain.describe()}", ""]
         lines.append(f"/lokal — {brain.describe('ollama')}")
+        lines.append(f"/bersama — {brain.describe('kumpulan')} (detailnya: /bersama_status)")
         if config.OPENROUTER_API_KEY:
             lines.append(f"/cloud — {brain.describe('openrouter')}")
         else:
@@ -1220,8 +1238,10 @@ class App:
                 history = list(self.histories.get(key, []))
                 history.append({"role": "user", "content": _stamped(text)})
                 try:
+                    # Otak lokal bersama (komputer-komputer yang berpikir) butuh waktu lebih lega daripada cloud.
                     reply = await asyncio.wait_for(
-                        asyncio.to_thread(run_agent, history, self._guest_ctx(key)), _WA_GUEST_TIMEOUT)
+                        asyncio.to_thread(run_agent, history, self._guest_ctx(key)),
+                        brain_guest.wait_cap(_WA_GUEST_TIMEOUT))
                 except Exception as exc:  # noqa: BLE001 - tamu tidak pernah melihat isi galat
                     log.warning("tamu WhatsApp: AI tidak bisa menjawab (%s)", type(exc).__name__)
                     return _WA_GUEST_BUSY, False
@@ -1656,6 +1676,10 @@ class App:
         if text.startswith("/otak"):
             # Sisa kuota ditanyakan ke OpenRouter; jangan tahan bot selama menunggu.
             await self.tg.send(chat_id, await asyncio.to_thread(self._brain_status))
+            return
+        if command == "/bersama_status":
+            # Status dibaca dari node (HTTP): jangan tahan bot selama menunggu.
+            await self.tg.send(chat_id, await asyncio.to_thread(self._cluster_status))
             return
         if command == "/wa":
             # Nomor WA pemilik diatur dari sini supaya .env tak perlu disunting manual.

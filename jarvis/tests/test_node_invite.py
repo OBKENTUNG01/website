@@ -1,5 +1,4 @@
-"""Uji ingress gabung node tanpa Tailscale: dashboard publik meneruskan tukar
-undangan / sidik jari ke It's Me Node di komputer ini, lalu menambah token jembatan."""
+"""Uji ingress publik undangan sekali-pakai dan penolakan rejoin via sidik jari."""
 
 import json
 import os
@@ -56,14 +55,18 @@ class NodeInviteIngressTest(unittest.TestCase):
         self.assertEqual(post.call_args[0][0], "/invite")
         self.assertEqual(post.call_args[0][1], {"code": "ABCD-EFGH-JKMN", "name": "PC-2"})
 
-    def test_enroll_forwarded_to_node(self):
-        node_reply = (200, json.dumps({"join_code": "JC", "from": "Hub", "env": {}}).encode())
+
+    def test_public_enroll_ingress_refuses_fingerprint_and_does_not_query_node(self):
+        node_reply = (200, json.dumps({"join_code": "JC", "from": "Hub",
+                                      "env": {"TELEGRAM_BOT_TOKEN": "secret"}}).encode())
         with mock.patch.object(dashboard, "_node_post", return_value=node_reply) as post:
             r = httpx.post(self.base + "/api/node/enroll",
                            json={"fingerprint": "ab12", "name": "PC-2"}, timeout=5)
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(post.call_args[0][0], "/enroll")
-        self.assertIn("bridge_token", r.json())
+        self.assertEqual(r.status_code, 410)
+        self.assertFalse(post.called)
+        self.assertNotIn("join_code", r.json())
+        self.assertNotIn("env", r.json())
+        self.assertNotIn("bridge_token", r.json())
 
     def test_bad_invite_passthrough(self):
         with mock.patch.object(dashboard, "_node_post",

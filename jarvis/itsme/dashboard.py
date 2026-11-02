@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from . import access, brain, config, hp, keypool, keys, node, tools, updater
+from . import access, brain, config, hp, keypool, keys, node, think_pool, tools, updater
 
 log = logging.getLogger("itsme")
 
@@ -89,9 +89,9 @@ _REDACT = re.compile(r"(sk-[a-z]+-[A-Za-z0-9_-]{6,}|\d{6,}:[A-Za-z0-9_-]{20,})")
 _GUARD_HEADER = "x-itsme-dashboard"
 # Jalur dari aplikasi HP (long-poll): auth pakai token HP, tanpa header/sesi dashboard.
 _HP_INGRESS = {"/api/hp/poll", "/api/hp/result", "/api/hp/frame"}
-# Jalur komputer baru bergabung TANPA Tailscale: menukar kode undangan / sidik jari
-# di dashboard publik ini, yang meneruskannya ke It's Me Node di komputer ini. Auth-nya
-# adalah kode undangan sekali pakai itu sendiri (divalidasi node), bukan sesi dashboard.
+# Jalur komputer baru bergabung TANPA Tailscale: menukar kode undangan satu-kali
+# (divalidasi node). Gabung ulang berbasis sidik jari telah dinonaktifkan karena
+# sidik jari dapat disadap dari gossip HTTP dan bukan bukti rahasia.
 _NODE_INGRESS = {"/api/node/invite", "/api/node/enroll"}
 # Jalur yang dipakai perangkat lain untuk berbicara dengan Hub (lihat devices.py).
 _DEVICE_PATHS = {
@@ -134,6 +134,8 @@ def status(app):
             "deepseek": {"label": "DeepSeek", **_brain_entry("deepseek", keypool.has_keys())},
             "claude": {"label": "Claude (API key)", **_brain_entry("claude", bool(config.ANTHROPIC_API_KEY))},
             "claude_code": {"label": "Claude di komputer", **_brain_entry("claude_code", brain.claude_code_ready())},
+            # Otak lokal bersama: semua komputer yang bergabung ikut berpikir (butuh It's Me Node terpasang).
+            "kumpulan": {"label": "Lokal bersama (semua komputer)", **_brain_entry("kumpulan", think_pool.installed())},
         },
         "access": "full" if access.full() else "safe",
         "version": (updater.installed_version() or "")[:7],
@@ -809,28 +811,23 @@ def _make_handler(app, token):
                 return self._json({"ok": True})
             return self._json({"error": "not found"}, 404)
 
-        # -- komputer baru bergabung TANPA Tailscale: tukar undangan / sidik jari --
+        # -- komputer baru bergabung TANPA Tailscale: tukar undangan --
         # Diteruskan ke It's Me Node di komputer ini (127.0.0.1), yang memvalidasi
-        # kodenya; token jembatan ditambahkan supaya komputer baru bisa menyambung balik.
+        # kode sekali-pakai; token jembatan ditambahkan supaya komputer baru bisa menyambung balik.
         def _node_join_ingress(self, path):
             if not self._host_ok():
                 return self._json({"error": "domain tidak diizinkan"}, 403)
             if config.AGENT_MODE:
                 return self._json({"error": "komputer ini perangkat, bukan Hub"}, 404)
+            if path == "/api/node/enroll":
+                return self._json({"error": "gabung ulang via sidik jari dinonaktifkan; gunakan kode undangan sekali pakai (/pasang)"}, 410)
             data = self._body()
             name = str(data.get("name") or "")[:60]
-            if path == "/api/node/invite":
-                code = str(data.get("code") or "").strip()
-                if not code:
-                    return self._json({"error": "kode undangan kosong"}, 400)
-                status, body = _node_post("/invite", {"code": code, "name": name},
-                                          self._client_ip())
-            else:  # /api/node/enroll: gabung-ulang pakai sidik jari perangkat keras
-                fp = str(data.get("fingerprint") or "").strip()
-                if not fp:
-                    return self._json({"error": "sidik jari kosong"}, 400)
-                status, body = _node_post("/enroll", {"fingerprint": fp, "name": name},
-                                          self._client_ip())
+            code = str(data.get("code") or "").strip()
+            if not code:
+                return self._json({"error": "kode undangan kosong"}, 400)
+            status, body = _node_post("/invite", {"code": code, "name": name},
+                                      self._client_ip())
             if status != 200:
                 return self._send(status, body)
             try:
