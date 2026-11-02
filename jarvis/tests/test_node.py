@@ -177,8 +177,8 @@ class WakeTest(unittest.TestCase):
 
         srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
-        self.addCleanup(srv.shutdown)
         self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
         return srv
 
     def test_not_installed_returns_none(self):
@@ -218,7 +218,7 @@ class WakeTest(unittest.TestCase):
 
 class PushSeedTest(unittest.TestCase):
     """node.push_seed_to_bridges(): komputer yang bergabung SEBELUM perbaikan
-    "seed" di invite()/enroll() tidak punya titik awal gosip sama sekali -
+    "seed" di invite() tidak punya titik awal gosip sama sekali -
     dititipi alamat node ini lewat jembatan yang sudah tersambung, tanpa
     pemiliknya harus /pasang ulang manual (lihat itsme-node bridge.py)."""
 
@@ -240,8 +240,8 @@ class PushSeedTest(unittest.TestCase):
 
         srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
-        self.addCleanup(srv.shutdown)
         self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
         return srv
 
     def test_not_installed_does_nothing(self):

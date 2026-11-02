@@ -73,6 +73,9 @@ class WaGuestBase(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(config, "DEEPSEEK_API_KEYS", []),
             mock.patch.object(config, "NUSAGATE_MODELS", []),
             mock.patch.object(config, "OPENROUTER_API_KEY", None),
+            # Uji ini tentang batas & keamanan tamu, bukan tentang komputer yang kebetulan menjalankannya:
+            # komputer dengan It's Me Node terpasang (mis. Hub) tidak boleh mengubah hasilnya.
+            mock.patch.object(config, "GUEST_CLUSTER", False),
             mock.patch.object(keys, "ENV_FILE", self.env),
             mock.patch.object(main, "Telegram", FakeTelegram),
             mock.patch.dict(brain._state, {"backend": "claude_code"}),

@@ -7,16 +7,19 @@ asing (penjaga `guest` hanya ada di tools.py, sedangkan Claude Code memakai alat
 
 Urutan otak untuk tamu (yang pertama siap dipakai):
   1. Kumpulan key NusaGate/DeepSeek (hemat, dan beban tersebar merata di semua key; keypool.py)
-  2. OpenRouter
-  3. Otak lokal (Ollama) - HANYA kalau pemilik menyalakan ITSME_WA_GUEST_LOCAL=1: lambat dan bisa macet,
-     jadi bawaannya orang asing tidak diizinkan menyita komputer pemilik dengan model lokal.
+  2. Otak lokal BERSAMA: semua komputer yang bergabung ikut berpikir (brain_cluster.py), lengkap dengan
+     alur memahami -> menjawab -> memeriksa. Kalau pemilik memilih /bersama, ini yang PERTAMA.
+     Dimatikan dengan ITSME_GUEST_CLUSTER=0.
+  3. OpenRouter
+  4. Otak lokal satu komputer (Ollama) - HANYA kalau pemilik menyalakan ITSME_WA_GUEST_LOCAL=1: lambat dan
+     bisa macet, jadi bawaannya orang asing tidak diizinkan menyita komputer pemilik dengan model lokal.
 Kalau semuanya gagal, tamu mendapat permintaan maaf singkat - tidak pernah isi galat teknis.
 """
 
 import logging
 import os
 
-from . import config, keypool, persona
+from . import config, keypool, persona, think_pool
 from .agentutil import text_only, trim_history
 
 log = logging.getLogger("itsme")
@@ -38,8 +41,31 @@ def read_info():
         return ""
 
 
+def cluster_enabled():
+    """Otak lokal bersama ikut menjawab tamu? (diizinkan, dan It's Me Node terpasang)"""
+    return config.GUEST_CLUSTER and think_pool.installed()
+
+
+def wait_cap(base):
+    """Paling lama tamu menunggu satu jawaban (detik): `base` untuk cloud, lebih lega bila otak lokal bersama ikut."""
+    return max(base, config.CLUSTER_GUEST_TIMEOUT) if cluster_enabled() else base
+
+
+def _cluster_reply(system, chat):
+    from . import brain_cluster
+
+    try:
+        # Anggaran waktu: tamu yang sudah tak menunggu tidak boleh terus menyita komputer-komputer.
+        with think_pool.budget(max(10.0, config.CLUSTER_GUEST_TIMEOUT - 10.0)):
+            return brain_cluster.guest_chat(system, chat)
+    except brain_cluster.ClusterUnavailable as exc:
+        log.warning("tamu: otak lokal bersama tidak bisa menjawab (%s)", exc)
+        return None
+
+
 def reply(messages, ctx):
     """Jawab tamu. `messages` = riwayat chat tamu itu (diubah di tempat: jawaban ikut dicatat)."""
+    from . import brain
     from .brain_openrouter import CloudUnavailable
 
     trim_history(messages, GUEST_HISTORY)
@@ -50,6 +76,12 @@ def reply(messages, ctx):
         messages.append({"role": "assistant", "content": text})
         return text
 
+    use_cluster = cluster_enabled()
+    cluster_first = use_cluster and brain.current_backend() == "kumpulan"
+    if cluster_first:
+        text = _cluster_reply(system, chat)
+        if text:
+            return done(text)
     if keypool.has_keys():
         from . import brain_deepseek
 
@@ -57,6 +89,10 @@ def reply(messages, ctx):
             return done(brain_deepseek.guest_chat(system, chat))
         except CloudUnavailable as exc:
             log.warning("tamu: kumpulan key tidak bisa menjawab (%s)", exc)
+    if use_cluster and not cluster_first:
+        text = _cluster_reply(system, chat)
+        if text:
+            return done(text)
     if config.OPENROUTER_API_KEY:
         from . import brain_openrouter
 

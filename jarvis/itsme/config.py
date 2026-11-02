@@ -179,6 +179,44 @@ OLLAMA_TIMEOUT = float(_get("ITSME_OLLAMA_TIMEOUT", "600"))
 # Jumlah pesan riwayat yang dikirim ke model tiap giliran, supaya muat di konteks.
 HISTORY_MESSAGES = int(_get("ITSME_HISTORY_MESSAGES", "24"))
 
+
+def _num(name, default, cast=float):
+    """Angka dari environment; isian yang bukan angka memakai nilai bawaan."""
+    try:
+        return cast(_get(name, str(default)) or default)
+    except ValueError:
+        return cast(default)
+
+
+def _flag(name, default=True):
+    return (_get(name, "1" if default else "0") or "").strip().lower() not in ("0", "false", "no", "off")
+
+
+# --- Otak lokal bersama (semua komputer yang sudah bergabung ikut berpikir) ------
+# Dipilih dengan /bersama. Tiap permintaan berpikir diarahkan ke satu komputer bermodel lokal lewat
+# It's Me Node (think_pool.py); ini pembagian beban per permintaan, bukan pemecahan satu model lintas mesin.
+# Anggarannya lebih besar daripada otak lokal biasa, tetapi tetap dibatasi agar tidak menunggu/berputar
+# tanpa akhir atau menghabiskan memori.
+CLUSTER_MAX_STEPS = _num("ITSME_CLUSTER_MAX_STEPS", 64, int)      # langkah alat per giliran (otak lokal biasa: 16)
+CLUSTER_HISTORY = _num("ITSME_CLUSTER_HISTORY", 60, int)          # pesan riwayat per giliran (otak lokal biasa: 24)
+CLUSTER_TIMEOUT = _num("ITSME_CLUSTER_TIMEOUT", 1800)             # detik sampai satu komputer menjawab satu panggilan
+CLUSTER_FAST_TIMEOUT = _num("ITSME_CLUSTER_FAST_TIMEOUT", 300)    # idem untuk langkah cepat (memahami, memeriksa)
+CLUSTER_WAIT = _num("ITSME_CLUSTER_WAIT", 600)                    # sabar menunggu komputer lowong / pemimpin baru (detik)
+# Batas token keluaran per jawaban; 0 = jangan tetapkan num_predict (batas langkah/waktu tetap berlaku).
+CLUSTER_MAX_TOKENS = _num("ITSME_CLUSTER_MAX_TOKENS", 8192, int)
+# Langkah "memahami" sebelum menjawab dan "memeriksa" sesudahnya: inilah yang menjaga jawaban tetap nyambung
+# dengan maksud pesan, bukan melenceng (model lokal kecil gampang melenceng tanpa ini).
+CLUSTER_UNDERSTAND = _flag("ITSME_CLUSTER_UNDERSTAND", True)
+CLUSTER_VERIFY = _flag("ITSME_CLUSTER_VERIFY", True)
+# Mode berpikir model: auto (berpikir mendalam untuk pertanyaan/perintah bila modelnya bisa dikendalikan dan
+# cukup cepat), deep (selalu, kecuali obrolan ringan), off (jawab langsung).
+_ct = (_get("ITSME_CLUSTER_THINK", "auto") or "auto").strip().lower()
+CLUSTER_THINK = _ct if _ct in ("auto", "deep", "off") else "auto"
+# Tamu WhatsApp/Telegram juga dijawab otak lokal bersama (urutan: lihat brain_guest.py).
+GUEST_CLUSTER = _flag("ITSME_GUEST_CLUSTER", True)
+# Paling lama tamu menunggu satu jawaban dari otak lokal bersama (detik).
+CLUSTER_GUEST_TIMEOUT = _num("ITSME_CLUSTER_GUEST_TIMEOUT", 300)
+
 # --- Otak Claude (opsional) ---------------------------------------------------
 ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY")
 MODEL = _get("ITSME_MODEL", "claude-opus-5-5")
