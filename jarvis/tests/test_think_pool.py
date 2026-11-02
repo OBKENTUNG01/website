@@ -276,8 +276,8 @@ class AskTest(Base):
         self.assertEqual(len(self.posts), 1)
 
     def test_http_timeout_tidak_melebihi_budget_yang_tersisa(self):
-        self.clock.advance(8.0)
         with think_pool.budget(10.0):
+            self.clock.advance(8.0)
             think_pool.ask([{"role": "user", "content": "x"}])
         self.assertLessEqual(self.posts[0][1], 2.0)
 
@@ -302,6 +302,7 @@ class BudgetTest(Base):
         with think_pool.budget(120.0):
             think_pool.ask([{"role": "user", "content": "x"}])
         self.assertEqual(self.posts[0][0]["timeout"], 120.0)    # bukan 600 detik bawaan
+        self.assertEqual(self.posts[0][1], 120.0)                # anggaran total juga membatasi HTTP
 
     def test_menunggu_dibatasi_anggaran(self):
         self.st = status(row("A", ok=True), phase="electing")
