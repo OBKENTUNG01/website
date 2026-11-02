@@ -280,6 +280,7 @@ class AskTest(Base):
             self.clock.advance(8.0)
             think_pool.ask([{"role": "user", "content": "x"}])
         self.assertLessEqual(self.posts[0][1], 2.0)
+        self.assertEqual(self.posts[0][0]["timeout"], 2.0)
 
     def test_pemesanan_dilepas_walau_gagal(self):
         self.script["a"] = [{"ok": False, "kind": "crashed", "error": "x"}]
