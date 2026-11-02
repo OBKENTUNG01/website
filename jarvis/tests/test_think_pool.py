@@ -275,6 +275,12 @@ class AskTest(Base):
         self.assertLessEqual(self.clock.now, 1004.0)
         self.assertEqual(len(self.posts), 1)
 
+    def test_http_timeout_tidak_melebihi_budget_yang_tersisa(self):
+        self.clock.advance(8.0)
+        with think_pool.budget(10.0):
+            think_pool.ask([{"role": "user", "content": "x"}])
+        self.assertLessEqual(self.posts[0][1], 2.0)
+
     def test_pemesanan_dilepas_walau_gagal(self):
         self.script["a"] = [{"ok": False, "kind": "crashed", "error": "x"}]
         with self.assertRaises(think_pool.ClusterUnavailable):

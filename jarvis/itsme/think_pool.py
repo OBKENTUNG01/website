@@ -210,7 +210,8 @@ def _try(row, messages, think, options, tools, fmt, timeout):
         payload["format"] = fmt
     started = _clock()
     try:
-        res = _post(payload, timeout + 30)
+        left = _remaining()
+        res = _post(payload, min(timeout + 30, left) if left is not None else timeout + 30)
     except httpx.HTTPStatusError as exc:
         kind = "paused" if exc.response.status_code == 503 else "error"
         _last_error[row["id"]] = f"HTTP {exc.response.status_code}"
