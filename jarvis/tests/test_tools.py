@@ -421,5 +421,101 @@ class ExecTest(unittest.TestCase):
         self.assertRegex(out.strip(), r"^\d{4}$")
 
 
+class ReaToolDispatchTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.exe = os.path.join(self.dir, "app.exe")
+        with open(self.exe, "wb") as f:
+            f.write(b"MZ")
+
+    def test_missing_target(self):
+        ctx = FakeCtx()
+        out = tools.handle_tool("analisis_rea", {"path_atau_url": ""}, ctx)
+        self.assertIn("kosong", out)
+
+    def test_file_not_found(self):
+        ctx = FakeCtx()
+        out = tools.handle_tool("analisis_rea", {"path_atau_url": os.path.join(self.dir, "nope.exe")}, ctx)
+        self.assertIn("tidak ditemukan", out)
+
+    def test_secret_path_refused(self):
+        env = os.path.join(self.dir, ".env")
+        open(env, "w", encoding="utf-8").close()
+        ctx = FakeCtx()
+        out = tools.handle_tool("analisis_rea", {"path_atau_url": env}, ctx)
+        self.assertIn("rahasia", out)
+
+    def test_runs_with_auto_command_after_confirmation(self):
+        from itsme import rea as rea_mod
+        ctx = FakeCtx()
+        with mock.patch.object(rea_mod, "analyze", return_value=(True, "hasil REA")) as analyze:
+            out = tools.handle_tool("analisis_rea", {"path_atau_url": self.exe}, ctx)
+        self.assertEqual(out, "hasil REA")
+        self.assertIn("inspect-pe-resources", ctx.asked[0])
+        analyze.assert_called_once_with(self.exe, None)
+
+    def test_explicit_rea_command_is_passed_through(self):
+        from itsme import rea as rea_mod
+        ctx = FakeCtx()
+        with mock.patch.object(rea_mod, "analyze", return_value=(True, "ok")) as analyze:
+            tools.handle_tool("analisis_rea", {"path_atau_url": self.exe, "rea_command": "inspect-with-objdump"}, ctx)
+        analyze.assert_called_once_with(self.exe, "inspect-with-objdump")
+
+    def test_declined_does_not_run(self):
+        from itsme import rea as rea_mod
+        ctx = FakeCtx(answer=False)
+        with mock.patch.object(rea_mod, "analyze") as analyze:
+            out = tools.handle_tool("analisis_rea", {"path_atau_url": self.exe}, ctx)
+        self.assertEqual(out, "Dibatalkan oleh pemilik.")
+        analyze.assert_not_called()
+
+    def test_full_access_still_asks_confirmation(self):
+        """Seperti zip/ekstrak/hapus-drive: analisis REA selalu tanya, juga di akses penuh."""
+        from itsme import rea as rea_mod
+        ctx = FakeCtx(full_access=True)
+        with mock.patch.object(rea_mod, "analyze", return_value=(True, "hasil REA")):
+            out = tools.handle_tool("analisis_rea", {"path_atau_url": self.exe}, ctx)
+        self.assertTrue(ctx.asked)
+        self.assertEqual(out, "hasil REA")
+
+    def test_url_target_bypasses_file_checks(self):
+        from itsme import rea as rea_mod
+        ctx = FakeCtx()
+        with mock.patch.object(rea_mod, "analyze", return_value=(True, "ok")) as analyze:
+            tools.handle_tool("analisis_rea", {"path_atau_url": "https://example.com",
+                                               "rea_command": "capture-browser-scenario"}, ctx)
+        analyze.assert_called_once_with("https://example.com", "capture-browser-scenario")
+
+
+class OllamaUninstallToolDispatchTest(unittest.TestCase):
+    def test_not_installed_skips_confirmation(self):
+        from itsme import ollama_admin
+        ctx = FakeCtx()
+        with mock.patch.object(ollama_admin, "installed", return_value=False):
+            out = tools.handle_tool("copot_ollama", {}, ctx)
+        self.assertIn("tidak terpasang", out)
+        self.assertEqual(ctx.asked, [])
+
+    def test_confirms_then_uninstalls(self):
+        from itsme import ollama_admin
+        ctx = FakeCtx()
+        with mock.patch.object(ollama_admin, "installed", return_value=True), \
+             mock.patch.object(ollama_admin, "uninstall", return_value=(True, "sudah dicopot")) as uninst:
+            out = tools.handle_tool("copot_ollama", {}, ctx)
+        self.assertTrue(ctx.asked)
+        self.assertEqual(out, "sudah dicopot")
+        uninst.assert_called_once()
+
+    def test_declined_does_not_uninstall(self):
+        from itsme import ollama_admin
+        ctx = FakeCtx(answer=False)
+        with mock.patch.object(ollama_admin, "installed", return_value=True), \
+             mock.patch.object(ollama_admin, "uninstall") as uninst:
+            out = tools.handle_tool("copot_ollama", {}, ctx)
+        self.assertEqual(out, "Dibatalkan oleh pemilik.")
+        uninst.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

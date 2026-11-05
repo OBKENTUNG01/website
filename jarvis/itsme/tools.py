@@ -238,6 +238,47 @@ CLIENT_TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "analisis_rea",
+        "description": (
+            "Analisis sebuah berkas atau alamat web dengan REA (Reverse Engineer Anything, "
+            "sudah terpasang di komputer ini lewat 'npx rea-agents'). Dipakai untuk memeriksa "
+            "cara kerja program/APK/aplikasi: resource, tanda tangan, strings, dst. HANYA untuk "
+            "software milik pemilik sendiri atau yang pemilik berwenang memeriksanya (riset "
+            "keamanan, CTF, debug aplikasi sendiri) - bukan membongkar punya orang lain tanpa "
+            "izin. REA bukan sandbox: hanya analisis target yang dipercaya. path_atau_url = path "
+            "berkas lokal (.exe, .apk, dll.) atau alamat http(s). rea_command opsional = nama "
+            "perintah REA kebab-case (mis. 'inspect-pe-resources'); kalau kosong dipilih otomatis "
+            "untuk .exe/.dll/.apk saja, selain itu wajib disebut (lihat `rea --help` lewat "
+            "jalankan_perintah atau https://rea.tools/guides). Minta konfirmasi dulu (juga saat "
+            "akses penuh)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path_atau_url": {"type": "string"},
+                "rea_command": {"type": "string"},
+            },
+            "required": ["path_atau_url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "copot_ollama",
+        "description": (
+            "Copot (uninstall) Ollama dari komputer ini, tanpa dialog apa pun. Dipakai kalau "
+            "pemilik ingin berhenti memakai otak lokal dan membersihkan Ollama dari komputer "
+            "(mis. ganti ke otak cloud saja). Selalu minta konfirmasi dulu (juga saat akses "
+            "penuh) - ini menghapus program, bukan cuma mematikannya, dan otak lokal "
+            "(brain_ollama) tidak bisa dipakai lagi sampai Ollama dipasang ulang."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 # --- Alat web lokal (pengganti web_search/web_fetch untuk otak Ollama) -------
@@ -970,6 +1011,48 @@ def handle_tool(name, tool_input, ctx):
 
         if name in _DRIVE_TOOLS:
             return handle_drive_tool(name, tool_input, ctx)
+
+        if name == "analisis_rea":
+            from . import rea
+
+            target_in = (tool_input.get("path_atau_url") or "").strip()
+            if not target_in:
+                return "path_atau_url kosong."
+            command = (tool_input.get("rea_command") or "").strip() or None
+            if target_in.startswith(("http://", "https://")):
+                target = target_in
+            else:
+                target = _resolve(ctx, target_in)
+                if is_secret_path(target):
+                    return "Ditolak: path ini terlihat seperti berkas rahasia (token, kunci, password)."
+                if not os.path.exists(target):
+                    return f"Berkas/folder tidak ditemukan: {target}"
+            cmd_display = command or rea.pick_command(target) or "(REA akan menolak - sebut rea_command)"
+            teks = (
+                f"Jalankan REA ({cmd_display}) pada:\n\n{target}\n\n"
+                "Hanya untuk software milik sendiri / riset keamanan yang sah - REA bukan sandbox."
+            )
+            if not approve(ctx, teks, always_ask=True):
+                return "Dibatalkan oleh pemilik."
+            try:
+                _ok, out = rea.analyze(target, command)
+            except rea.ReaError as exc:
+                return str(exc)
+            return out
+
+        if name == "copot_ollama":
+            from . import ollama_admin
+
+            if not ollama_admin.installed():
+                return "Ollama memang tidak terpasang di komputer ini - tidak ada yang perlu dicopot."
+            if not approve(
+                ctx,
+                "Copot Ollama dari komputer ini? Otak lokal tidak akan bisa dipakai lagi sampai dipasang ulang.",
+                always_ask=True,
+            ):
+                return "Dibatalkan oleh pemilik."
+            _ok, msg = ollama_admin.uninstall()
+            return msg
 
         return f"Alat tidak dikenal: {name}"
     except FileNotFoundError:
