@@ -457,6 +457,93 @@ class DashboardDevicesTest(unittest.TestCase):
         with mock.patch.object(config, "AGENT_MODE", True):
             self.assertFalse(self.get("/api/devices").json()["is_hub"])
 
+    # --- REA (panel web, bukan cuma lewat bot) ----------------------------------
+    def test_rea_missing_target(self):
+        r = self.post("/api/rea/analyze", {"path_atau_url": ""})
+        self.assertIn("kosong", r.json()["message"])
+
+    def test_rea_file_not_found(self):
+        r = self.post("/api/rea/analyze", {"path_atau_url": os.path.join(self.dir, "nope.exe")})
+        self.assertIn("tidak ditemukan", r.json()["message"])
+
+    def test_rea_secret_path_refused(self):
+        env = os.path.join(self.dir, ".env")
+        open(env, "w", encoding="utf-8").close()
+        r = self.post("/api/rea/analyze", {"path_atau_url": env})
+        self.assertIn("rahasia", r.json()["message"])
+
+    def test_rea_runs_after_confirmation(self):
+        exe = os.path.join(self.dir, "app.exe")
+        open(exe, "wb").close()
+        from itsme import rea as rea_mod
+        with mock.patch.object(rea_mod, "analyze", return_value=(True, "hasil REA")) as analyze:
+            r = self.post("/api/rea/analyze", {"path_atau_url": exe}).json()
+        self.assertEqual(r["message"], "hasil REA")
+        self.assertEqual(len(self.app.confirmed), 1)
+        analyze.assert_called_once_with(exe, None)
+
+    def test_rea_declined_not_run(self):
+        exe = os.path.join(self.dir, "app.exe")
+        open(exe, "wb").close()
+        self.app.confirm_answer = False
+        from itsme import rea as rea_mod
+        with mock.patch.object(rea_mod, "analyze") as analyze:
+            r = self.post("/api/rea/analyze", {"path_atau_url": exe}).json()
+        self.assertIn("Dibatalkan", r["message"])
+        analyze.assert_not_called()
+
+    def test_rea_needs_guard_header(self):
+        self.assertEqual(self.post("/api/rea/analyze", {"path_atau_url": "x"}, guard=False).status_code, 403)
+
+    # --- Ollama uninstall (panel web) -------------------------------------------
+    def test_ollama_uninstall_not_installed(self):
+        from itsme import ollama_admin
+        with mock.patch.object(ollama_admin, "installed", return_value=False):
+            r = self.post("/api/ollama/uninstall", {}).json()
+        self.assertIn("tidak terpasang", r["message"])
+        self.assertEqual(self.app.confirmed, [])
+
+    def test_ollama_uninstall_runs_after_confirmation(self):
+        from itsme import ollama_admin
+        with mock.patch.object(ollama_admin, "installed", return_value=True), \
+             mock.patch.object(ollama_admin, "uninstall", return_value=(True, "sudah dicopot")) as uninst:
+            r = self.post("/api/ollama/uninstall", {}).json()
+        self.assertEqual(r["message"], "sudah dicopot")
+        self.assertEqual(len(self.app.confirmed), 1)
+        uninst.assert_called_once()
+
+    def test_ollama_uninstall_declined(self):
+        from itsme import ollama_admin
+        self.app.confirm_answer = False
+        with mock.patch.object(ollama_admin, "installed", return_value=True), \
+             mock.patch.object(ollama_admin, "uninstall") as uninst:
+            r = self.post("/api/ollama/uninstall", {}).json()
+        self.assertIn("Dibatalkan", r["message"])
+        uninst.assert_not_called()
+
+    # --- Matikan/nyalakan ulang komputer (tab Komputer) -------------------------
+    def test_power_unknown_action_rejected(self):
+        r = self.post("/api/node/power", {"node": "x", "action": "reboot-now"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_power_asks_then_relays_to_node(self):
+        with mock.patch.object(dashboard, "_node_post", return_value=(200, b'{"ok": true, "message": "Komputer akan nyala ulang dalam 5 detik."}')) as post:
+            r = self.post("/api/node/power", {"node": "abc123", "action": "restart"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        self.assertEqual(len(self.app.confirmed), 1)
+        post.assert_called_once_with("/power", {"node": "abc123", "action": "restart"})
+
+    def test_power_declined_does_not_relay(self):
+        self.app.confirm_answer = False
+        with mock.patch.object(dashboard, "_node_post") as post:
+            r = self.post("/api/node/power", {"node": "abc123", "action": "shutdown"})
+        self.assertFalse(r.json()["ok"])
+        post.assert_not_called()
+
+    def test_power_needs_guard_header(self):
+        self.assertEqual(self.post("/api/node/power", {"node": "x", "action": "restart"}, guard=False).status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()
