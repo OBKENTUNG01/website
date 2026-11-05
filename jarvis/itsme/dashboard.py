@@ -1294,6 +1294,7 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
     <div id="kompScreen">
       <div class="row" style="gap:10px;flex-wrap:wrap;margin:8px 0;align-items:center">
         <label><input type="checkbox" id="kompCtrl"> Kendalikan (sentuh / mouse)</label>
+        <label><input type="checkbox" id="kompTrackpad"> Mode trackpad (sentuh)</label>
         <label>Lebar <select id="kompW"><option>800</option><option selected>1280</option><option>1600</option><option>1920</option></select></label>
         <label>Jeda <select id="kompRate"><option value="250">cepat</option><option value="500" selected>sedang</option><option value="1000">hemat</option></select></label>
         <button onclick="kompSnap()">Ambil sekali</button>
@@ -1325,6 +1326,9 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
       <div class="sub" style="margin-top:8px">
         <b>Di HP (sentuh):</b> ketuk = klik, ketuk 2× = klik ganda, tahan = klik kanan, seret = seret, dua jari = gulir.
         Ketik lewat kotak di atas. <b>Di komputer:</b> mouse &amp; keyboard biasa. Gambar diperbarui berkala (ada sedikit jeda).
+        <br><b>Mode trackpad:</b> jari menggeser kursor RELATIF (seperti trackpad laptop, bukan lompat ke titik
+        yang disentuh) — lebih presisi untuk target kecil di layar yang diperkecil/lambat. Ketuk = klik, tahan =
+        klik kanan, dua jari tetap gulir; mode ini tidak bisa dipakai untuk seret (pakai mode biasa untuk itu).
       </div>
     </div>
     <div id="kompFiles" hidden>
@@ -1875,26 +1879,51 @@ function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClie
     if(kompCtrlOn()){ wrap.focus(); img.style.touchAction='none'; } else { img.style.touchAction='auto'; }
   });
   // --- Sentuh (HP): ketuk=klik, seret=seret, tahan=klik kanan, dua jari=gulir ---
-  let tS=null, tLast=null, tMoved=false, tDrag=false, tLong=null, tTwo=false, tLastY=0;
+  // Mode trackpad (kompTrackpadOn()): jari menggeser kursor RELATIF terhadap posisi
+  // sekarang (move_rel di remote.py), bukan lompat ke titik yang disentuh - lebih
+  // presisi untuk target kecil di layar yang diperkecil/lag. Tidak mendukung seret;
+  // dua jari (gulir) tetap sama di kedua mode.
+  function kompTrackpadOn(){ return document.getElementById('kompTrackpad').checked; }
+  const TRACKPAD_GAIN = 1.6; // px sentuhan -> unit gerak relatif; disetel manual (bukan diukur)
+  let tS=null, tLast=null, tMoved=false, tDrag=false, tLong=null, tTwo=false, tLastY=0, tpLast=null;
   function tPt(t){ const r=img.getBoundingClientRect();
     return {x:Math.min(1,Math.max(0,(t.clientX-r.left)/r.width)), y:Math.min(1,Math.max(0,(t.clientY-r.top)/r.height))}; }
+  function tCss(t){ return {x:t.clientX, y:t.clientY}; }
   img.addEventListener('touchstart',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); wrap.focus();
     if(ev.touches.length>=2){ tTwo=true; tS=null; clearTimeout(tLong); tLastY=ev.touches[0].clientY; return; }
-    tTwo=false; tMoved=false; tDrag=false; const p=tPt(ev.touches[0]); tS={x:p.x,y:p.y,t:Date.now()}; tLast=p;
+    tTwo=false; tMoved=false; tDrag=false;
+    if(kompTrackpadOn()){
+      tpLast=tCss(ev.touches[0]); tS={t:Date.now()};
+      tLong=setTimeout(()=>{ if(tS&&!tMoved){ kompSend([{t:'down',button:'right'},{t:'up',button:'right'}]); tS=null; } },550);
+      return;
+    }
+    const p=tPt(ev.touches[0]); tS={x:p.x,y:p.y,t:Date.now()}; tLast=p;
     kompSend([{t:'move',x:p.x,y:p.y}]);
     tLong=setTimeout(()=>{ if(tS&&!tMoved){ kompSend([{t:'down',button:'right',x:tS.x,y:tS.y},{t:'up',button:'right',x:tS.x,y:tS.y}]); tS=null; } },550);
   },{passive:false});
   img.addEventListener('touchmove',ev=>{ if(!kompCtrlOn())return; ev.preventDefault();
     if(tTwo && ev.touches.length>=2){ const y=ev.touches[0].clientY, dy=y-tLastY;
       if(Math.abs(dy)>3){ tLastY=y; kompSend([{t:'scroll',dy: dy>0?-120:120}]); } return; }
-    if(!tS) return; const p=tPt(ev.touches[0]); tLast=p;
+    if(!tS) return;
+    if(kompTrackpadOn()){
+      const p=tCss(ev.touches[0]), dx=p.x-tpLast.x, dy=p.y-tpLast.y; tpLast=p;
+      if(!tMoved && Math.hypot(dx,dy)>2){ tMoved=true; clearTimeout(tLong); }
+      if(dx||dy) kompSend([{t:'move_rel',dx:dx*TRACKPAD_GAIN,dy:dy*TRACKPAD_GAIN}]);
+      return;
+    }
+    const p=tPt(ev.touches[0]); tLast=p;
     if(!tMoved && Math.hypot(p.x-tS.x,p.y-tS.y)>0.02){ tMoved=true; clearTimeout(tLong);
       kompSend([{t:'down',button:'left',x:tS.x,y:tS.y}]); tDrag=true; }
     if(tDrag) kompSend([{t:'move',x:p.x,y:p.y}]);
   },{passive:false});
   img.addEventListener('touchend',ev=>{ if(!kompCtrlOn())return; clearTimeout(tLong);
     if(tTwo){ if(ev.touches.length===0) tTwo=false; return; }
-    if(!tS) return; const dt=Date.now()-tS.t, e=tLast||tS;
+    if(!tS) return; const dt=Date.now()-tS.t;
+    if(kompTrackpadOn()){
+      if(!tMoved && dt<500) kompSend([{t:'down',button:'left'},{t:'up',button:'left'}]); // ketuk = klik di posisi kursor sekarang
+      tS=null; tMoved=false; return;
+    }
+    const e=tLast||tS;
     if(tDrag){ kompSend([{t:'up',button:'left',x:e.x,y:e.y}]); }
     else if(!tMoved && dt<500){ kompSend([{t:'move',x:tS.x,y:tS.y},{t:'down',button:'left',x:tS.x,y:tS.y},{t:'up',button:'left',x:tS.x,y:tS.y}]); }
     tS=null; tMoved=false; tDrag=false;
