@@ -292,6 +292,48 @@ def ctx_cwd(app):
     return config.WEBSITE_REPO_DIR or None
 
 
+# --- REA & Ollama (panel web, bukan cuma lewat bot - lihat tools.py untuk tool Telegram-nya) ---
+def _rea_analyze(app, target_in, command):
+    from . import rea
+
+    target_in = (target_in or "").strip()
+    command = (command or "").strip() or None
+    if not target_in:
+        return False, "path_atau_url kosong."
+    if target_in.startswith(("http://", "https://")):
+        target = target_in
+    else:
+        target = os.path.normpath(os.path.abspath(target_in))
+        if tools.is_secret_path(target):
+            return False, "Ditolak: path ini terlihat seperti berkas rahasia (token, kunci, password)."
+        if not os.path.exists(target):
+            return False, f"Berkas/folder tidak ditemukan: {target}"
+    cmd_display = command or rea.pick_command(target) or "(REA akan menolak - sebut rea_command)"
+    teks = (
+        f"Jalankan REA ({cmd_display}) pada:\n\n{target}\n\n"
+        "Hanya untuk software milik sendiri / riset keamanan yang sah - REA bukan sandbox."
+    )
+    # Selalu minta konfirmasi (muncul sebagai tombol Telegram saat akses aman) - juga di akses penuh.
+    if not tools.approve(app.owner_ctx(), teks, always_ask=True):
+        return False, "Dibatalkan oleh pemilik."
+    try:
+        _ok, out = rea.analyze(target, command)
+    except rea.ReaError as exc:
+        return False, str(exc)
+    return True, out
+
+
+def _ollama_uninstall(app):
+    from . import ollama_admin
+
+    if not ollama_admin.installed():
+        return False, "Ollama memang tidak terpasang di komputer ini - tidak ada yang perlu dicopot."
+    teks = "Copot Ollama dari komputer ini? Otak lokal tidak akan bisa dipakai lagi sampai dipasang ulang."
+    if not tools.approve(app.owner_ctx(), teks, always_ask=True):
+        return False, "Dibatalkan oleh pemilik."
+    return ollama_admin.uninstall()
+
+
 def _zip(app, sumber, tujuan):
     sources = [os.path.normpath(s.strip()) for s in (sumber or "").splitlines() if s.strip()]
     if not sources:
@@ -884,6 +926,10 @@ def _make_handler(app, token):
                 ok, msg = _open_path(app, data.get("path", ""))
             elif path == "/api/fs/run":
                 ok, msg = _run_command(app, data.get("command", ""))
+            elif path == "/api/rea/analyze":
+                ok, msg = _rea_analyze(app, data.get("path_atau_url", ""), data.get("rea_command", ""))
+            elif path == "/api/ollama/uninstall":
+                ok, msg = _ollama_uninstall(app)
             elif path == "/api/fs/zip":
                 return self._json({"ok": True, "message": _zip(app, data.get("sumber", ""), data.get("tujuan", ""))})
             elif path == "/api/fs/extract":
@@ -909,6 +955,19 @@ def _make_handler(app, token):
                 if res is None:
                     return self._json({"ok": False, "error": "It's Me Node belum terpasang di komputer ini"}, 400)
                 return self._json(res, 200 if res.get("ok") else 404)
+            elif path == "/api/node/power":
+                action = str(data.get("action") or "").strip()
+                if action not in ("shutdown", "restart"):
+                    return self._json({"ok": False, "error": "aksi tidak dikenal"}, 400)
+                label = "Matikan" if action == "shutdown" else "Nyalakan ulang"
+                teks = f"{label} komputer tujuan SEKARANG (lewat 5 detik)? Tidak bisa dibatalkan dari sini."
+                if not tools.approve(app.owner_ctx(), teks, always_ask=True):
+                    return self._json({"ok": False, "error": "Dibatalkan oleh pemilik."})
+                bn = _bridge_name(data.get("node", ""))
+                if bn is not None:
+                    return self._json({"error": "komputer (jembatan) belum mendukung matikan/nyalakan ulang jarak jauh"}, 400)
+                code, body = _node_post("/power", {"node": data.get("node", ""), "action": action})
+                return self._send(code, body)
             elif path == "/api/node/input":
                 bn = _bridge_name(data.get("node", ""))
                 if bn is not None:
@@ -1243,6 +1302,31 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
     </div>
   </div>
 
+  <div class="card">
+    <h2>REA (analisis file/APK/aplikasi)</h2>
+    <div class="sub">Memeriksa berkas .exe/.dll/.apk atau alamat web dengan REA (sudah terpasang lewat
+      <code>npx rea-agents</code>). Langsung di sini - tidak perlu lewat Telegram. Hanya untuk software
+      milik sendiri atau riset keamanan yang sah; REA bukan sandbox. Pemilik tetap diminta konfirmasi
+      lewat Telegram sebelum jalan.</div>
+    <div class="row" style="margin-top:8px">
+      <input id="reaTarget" style="flex:1" placeholder="path berkas (C:\...app.exe) atau https://..." autocomplete="off">
+    </div>
+    <div class="row" style="margin-top:6px">
+      <input id="reaCmd" style="flex:1" placeholder="rea_command (opsional - kosongkan untuk .exe/.dll/.apk)" autocomplete="off">
+      <button class="primary" onclick="reaRun()">Jalankan</button>
+    </div>
+    <pre id="reaOut" hidden></pre>
+  </div>
+
+  <div class="card">
+    <h2>Ollama</h2>
+    <div class="sub">Copot Ollama dari komputer ini (uninstaller resmi, tanpa dialog). Otak lokal
+      (brain_ollama) tidak bisa dipakai lagi sampai dipasang ulang.</div>
+    <div class="row" style="margin-top:8px">
+      <button onclick="ollamaUninstall()">Copot Ollama</button>
+    </div>
+  </div>
+
   </section>
   <section data-panel="files" class="panel">
   <div class="card">
@@ -1298,6 +1382,8 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
         <label>Lebar <select id="kompW"><option>800</option><option selected>1280</option><option>1600</option><option>1920</option></select></label>
         <label>Jeda <select id="kompRate"><option value="250">cepat</option><option value="500" selected>sedang</option><option value="1000">hemat</option></select></label>
         <button onclick="kompSnap()">Ambil sekali</button>
+        <button onclick="kompPower('restart')" title="Nyalakan ulang komputer yang sedang dipilih">🔄 Restart</button>
+        <button onclick="kompPower('shutdown')" title="Matikan komputer yang sedang dipilih">⏻ Matikan</button>
         <span class="sub" id="kompInfo"></span>
       </div>
       <div id="kompWrap" tabindex="0" style="position:relative;background:#000;border:1px solid var(--line,#2a2f3a);border-radius:10px;overflow:hidden;outline:none">
@@ -1326,9 +1412,14 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
       <div class="sub" style="margin-top:8px">
         <b>Di HP (sentuh):</b> ketuk = klik, ketuk 2× = klik ganda, tahan = klik kanan, seret = seret, dua jari = gulir.
         Ketik lewat kotak di atas. <b>Di komputer:</b> mouse &amp; keyboard biasa. Gambar diperbarui berkala (ada sedikit jeda).
-        <br><b>Mode trackpad:</b> jari menggeser kursor RELATIF (seperti trackpad laptop, bukan lompat ke titik
-        yang disentuh) — lebih presisi untuk target kecil di layar yang diperkecil/lambat. Ketuk = klik, tahan =
-        klik kanan, dua jari tetap gulir; mode ini tidak bisa dipakai untuk seret (pakai mode biasa untuk itu).
+        <br><b>Mode trackpad (HP, sentuh):</b> jari menggeser kursor RELATIF (seperti trackpad laptop, bukan
+        lompat ke titik yang disentuh) — lebih presisi untuk target kecil di layar yang diperkecil/lambat.
+        Ketuk = klik, tahan = klik kanan, dua jari tetap gulir; tidak bisa dipakai untuk seret (pakai mode biasa).
+        <br><b>Mode trackpad (komputer, mouse):</b> klik sekali di gambar untuk mengunci kursor (Pointer Lock,
+        cara yang sama dipakai Chrome Remote Desktop) — gambar jadi bingkai biru, lalu gerak mouse dikirim
+        relatif persis seperti di HP. Tekan <b>Esc</b>, atau matikan "Kendalikan"/"Mode trackpad", untuk lepas
+        kuncinya. Kalau dashboard dibuka lewat alamat LAN biasa (bukan https/localhost), sebagian browser
+        menolak Pointer Lock — pakai mode biasa di komputer tersebut.
       </div>
     </div>
     <div id="kompFiles" hidden>
@@ -1660,6 +1751,21 @@ function runCmd(){
 document.getElementById('fsPath').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); fsGo(); } });
 document.getElementById('cmd').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); runCmd(); } });
 
+function reaRun(){
+  const target = document.getElementById('reaTarget').value.trim(); if(!target) return;
+  const cmd = document.getElementById('reaCmd').value.trim();
+  const out = document.getElementById('reaOut'); out.hidden = false; out.textContent = 'Menjalankan REA… (bisa minta konfirmasi di Telegram dulu)';
+  api('/api/rea/analyze', {method:'POST', body:JSON.stringify({path_atau_url:target, rea_command:cmd})})
+    .then(d => out.textContent = d.message || '(selesai, tanpa keluaran)')
+    .catch(e => out.textContent = '⚠️ ' + e.message);
+}
+function ollamaUninstall(){
+  if(!confirm('Copot Ollama dari komputer ini sekarang?\n\nOtak lokal tidak bisa dipakai lagi sampai dipasang ulang. '
+    + 'Pemilik akan diminta konfirmasi lagi lewat Telegram.')) return;
+  api('/api/ollama/uninstall', {method:'POST', body:JSON.stringify({})})
+    .then(d => toast(d.message)).catch(e => toast('Gagal: ' + e.message));
+}
+
 // --- Google Drive ---
 let drvFolder = 'root', drvSel = null, drvSelName = '', drvSelFolder = false;
 function drvStatus(){
@@ -1806,6 +1912,17 @@ async function kompWake(name, btn){
   }catch(e){ toast('Gagal: '+e.message); }
   finally{ btn.disabled = prevDisabled; btn.textContent = old; }
 }
+async function kompPower(action){
+  if(!kompSel){ toast('Pilih komputernya dulu.'); return; }
+  const nama = (kompNodes.find(n=>n.id===kompSel)||{}).name || kompSel;
+  const label = action==='shutdown' ? 'MATIKAN' : 'NYALAKAN ULANG';
+  if(!confirm(label+' komputer "'+nama+'" sekarang?\n\nTidak bisa dibatalkan dari sini begitu dikirim. '
+    +'Pemilik akan diminta konfirmasi lagi lewat Telegram.')) return;
+  try{
+    const d = await api('/api/node/power', {method:'POST', body: JSON.stringify({node: kompSel, action})});
+    toast(d.message || d.error || 'Terkirim.');
+  }catch(e){ toast('Gagal: '+e.message); }
+}
 function kompShow(v){ kompView=v;
   document.getElementById('kompScreen').hidden = v!=='screen';
   document.getElementById('kompFiles').hidden = v!=='files';
@@ -1837,15 +1954,49 @@ function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClie
   const img=document.getElementById('kompImg'), wrap=document.getElementById('kompWrap');
   // Kursor: simpan posisi terakhir, kirim sekali per frame. Sebelumnya dibatasi
   // 1 per 60 ms sehingga gerak mouse terasa patah-patah dibanding remote desktop.
-  let pendingMove=null, moveQueued=false;
-  function flushMove(){ moveQueued=false; if(!pendingMove)return; const p=pendingMove; pendingMove=null;
+  //
+  // Mode trackpad + mouse (desktop): dipakai lewat Pointer Lock API (standar browser,
+  // dipakai juga oleh Chrome Remote Desktop) - klik gambar sekali untuk mengunci
+  // kursor, lalu gerak mouse dikirim RELATIF (movementX/Y) persis seperti sentuhan
+  // di HP, bukan posisi absolut. Esc (browser, otomatis) atau klik "Kendalikan"/
+  // "Mode trackpad" melepas kunci.
+  let pendingMove=null, pendingRel=null, moveQueued=false, mouseLocked=false;
+  function flushMove(){ moveQueued=false;
+    if(pendingRel){ const p=pendingRel; pendingRel=null;
+      if(p.dx||p.dy) kompSend([{t:'move_rel',dx:p.dx,dy:p.dy}]); return; }
+    if(!pendingMove)return; const p=pendingMove; pendingMove=null;
     kompSend([{t:'move',x:p.x,y:p.y}]); }
-  img.addEventListener('mousemove',ev=>{ if(!kompCtrlOn())return; pendingMove=kompRel(ev);
-    if(!moveQueued){ moveQueued=true; requestAnimationFrame(flushMove); } });
-  img.addEventListener('mousedown',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); wrap.focus(); const b=['left','middle','right'][ev.button]||'left'; kompSend([{t:'down',button:b,...kompRel(ev)}]); });
-  img.addEventListener('mouseup',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); const b=['left','middle','right'][ev.button]||'left'; kompSend([{t:'up',button:b,...kompRel(ev)}]); });
-  img.addEventListener('dblclick',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); kompSend([{t:'dblclick',...kompRel(ev)}]); });
+  function queueFlush(){ if(!moveQueued){ moveQueued=true; requestAnimationFrame(flushMove); } }
+  function releaseLock(){ if(document.pointerLockElement===img && document.exitPointerLock) document.exitPointerLock(); }
+  document.addEventListener('pointerlockchange',()=>{
+    mouseLocked = (document.pointerLockElement===img);
+    wrap.style.outline = mouseLocked ? '2px solid var(--acc,#4f8cff)' : 'none'; });
+  img.addEventListener('mousemove',ev=>{ if(!kompCtrlOn())return;
+    if(kompTrackpadOn()){
+      if(!mouseLocked) return;  // belum terkunci: klik dulu untuk mengaktifkan trackpad
+      pendingRel = {dx:(pendingRel?pendingRel.dx:0)+(ev.movementX||0), dy:(pendingRel?pendingRel.dy:0)+(ev.movementY||0)};
+      queueFlush(); return;
+    }
+    pendingMove=kompRel(ev); queueFlush(); });
+  img.addEventListener('mousedown',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); wrap.focus();
+    if(kompTrackpadOn()){
+      if(!mouseLocked){
+        const req=img.requestPointerLock||img.mozRequestPointerLock;
+        const res=req?req.call(img):null;
+        if(res&&res.catch) res.catch(()=>toast('Browser ini menolak Pointer Lock - coba Chrome/Edge biasa di tab penuh, atau pakai Mode trackpad di HP.'));
+        return;
+      }
+      kompSend([{t:'down',button:['left','middle','right'][ev.button]||'left'}]); return;
+    }
+    kompSend([{t:'down',button:['left','middle','right'][ev.button]||'left',...kompRel(ev)}]); });
+  img.addEventListener('mouseup',ev=>{ if(!kompCtrlOn())return; ev.preventDefault();
+    if(kompTrackpadOn()){ if(mouseLocked) kompSend([{t:'up',button:['left','middle','right'][ev.button]||'left'}]); return; }
+    kompSend([{t:'up',button:['left','middle','right'][ev.button]||'left',...kompRel(ev)}]); });
+  img.addEventListener('dblclick',ev=>{ if(!kompCtrlOn())return; ev.preventDefault();
+    if(kompTrackpadOn()){ if(mouseLocked) kompSend([{t:'dblclick'}]); return; }
+    kompSend([{t:'dblclick',...kompRel(ev)}]); });
   img.addEventListener('contextmenu',ev=>{ if(kompCtrlOn()) ev.preventDefault(); });
+  document.getElementById('kompTrackpad').addEventListener('change',()=>{ if(!kompTrackpadOn()) releaseLock(); });
   wrap.addEventListener('wheel',ev=>{ if(!kompCtrlOn())return; ev.preventDefault(); kompSend([{t:'scroll',dy:ev.deltaY<0?120:-120}]); },{passive:false});
   // Keyboard ditangkap di tingkat dokumen supaya jalan walau fokus tidak di gambar,
   // tapi hanya saat tab Komputer + Kendalikan aktif dan fokus bukan di kotak isian.
@@ -1876,7 +2027,7 @@ function kompRel(ev){ const r=document.getElementById('kompImg').getBoundingClie
     if(t){ ev.preventDefault(); kompSend([{t:'text',text:t.slice(0,2000)}]); }
   });
   document.getElementById('kompCtrl').addEventListener('change',()=>{
-    if(kompCtrlOn()){ wrap.focus(); img.style.touchAction='none'; } else { img.style.touchAction='auto'; }
+    if(kompCtrlOn()){ wrap.focus(); img.style.touchAction='none'; } else { img.style.touchAction='auto'; releaseLock(); }
   });
   // --- Sentuh (HP): ketuk=klik, seret=seret, tahan=klik kanan, dua jari=gulir ---
   // Mode trackpad (kompTrackpadOn()): jari menggeser kursor RELATIF terhadap posisi
