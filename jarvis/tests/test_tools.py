@@ -452,15 +452,15 @@ class ReaToolDispatchTest(unittest.TestCase):
         with mock.patch.object(rea_mod, "analyze", return_value=(True, "hasil REA")) as analyze:
             out = tools.handle_tool("analisis_rea", {"path_atau_url": self.exe}, ctx)
         self.assertEqual(out, "hasil REA")
-        self.assertIn("inspect-pe-resources", ctx.asked[0])
+        self.assertIn("inspect-artifact", ctx.asked[0])
         analyze.assert_called_once_with(self.exe, None)
 
     def test_explicit_rea_command_is_passed_through(self):
         from itsme import rea as rea_mod
         ctx = FakeCtx()
         with mock.patch.object(rea_mod, "analyze", return_value=(True, "ok")) as analyze:
-            tools.handle_tool("analisis_rea", {"path_atau_url": self.exe, "rea_command": "inspect-with-objdump"}, ctx)
-        analyze.assert_called_once_with(self.exe, "inspect-with-objdump")
+            tools.handle_tool("analisis_rea", {"path_atau_url": self.exe, "rea_command": "inspect-pe-resources"}, ctx)
+        analyze.assert_called_once_with(self.exe, "inspect-pe-resources")
 
     def test_declined_does_not_run(self):
         from itsme import rea as rea_mod
@@ -479,16 +479,58 @@ class ReaToolDispatchTest(unittest.TestCase):
         self.assertTrue(ctx.asked)
         self.assertEqual(out, "hasil REA")
 
-    def test_url_target_bypasses_file_checks(self):
+    def test_web_address_is_refused_before_asking_the_owner(self):
+        """REA 6.7.0 tak punya perintah untuk URL: jangan minta persetujuan lalu gagal."""
         from itsme import rea as rea_mod
         ctx = FakeCtx()
-        with mock.patch.object(rea_mod, "analyze", return_value=(True, "ok")) as analyze:
-            tools.handle_tool("analisis_rea", {"path_atau_url": "https://example.com",
-                                               "rea_command": "capture-browser-scenario"}, ctx)
-        analyze.assert_called_once_with("https://example.com", "capture-browser-scenario")
+        with mock.patch.object(rea_mod, "analyze") as analyze:
+            out = tools.handle_tool("analisis_rea", {"path_atau_url": "https://example.com/app.exe"}, ctx)
+        self.assertIn("alamat web", out)
+        self.assertEqual(ctx.asked, [])
+        analyze.assert_not_called()
+
+    def test_module_refusal_is_returned_as_text(self):
+        from itsme import rea as rea_mod
+        ctx = FakeCtx()
+        with mock.patch.object(rea_mod, "analyze", side_effect=rea_mod.ReaError("Node.js belum terpasang")):
+            out = tools.handle_tool("analisis_rea", {"path_atau_url": self.exe}, ctx)
+        self.assertIn("Node.js", out)
+
+    def test_still_running_answer_is_passed_on_with_the_job_id(self):
+        from itsme import rea as rea_mod
+        ctx = FakeCtx()
+        text = "REA masih berjalan (id ab12cd34, perintah analyze-javascript-application)"
+        with mock.patch.object(rea_mod, "analyze", return_value=(True, text)):
+            out = tools.handle_tool("analisis_rea", {"path_atau_url": self.exe}, ctx)
+        self.assertIn("ab12cd34", out)
+
+    def test_hasil_rea_reads_a_job_without_asking(self):
+        from itsme import rea as rea_mod
+        ctx = FakeCtx()
+        with mock.patch.object(rea_mod, "hasil", return_value=(True, "ringkasan job")) as hasil:
+            out = tools.handle_tool("hasil_rea", {"id": "ab12cd34"}, ctx)
+        self.assertEqual(out, "ringkasan job")
+        self.assertEqual(ctx.asked, [])
+        hasil.assert_called_once_with("ab12cd34")
+
+    def test_tool_definitions_mention_commands_and_that_rea_has_no_brain(self):
+        names = {t["name"]: t for t in tools.CLIENT_TOOLS}
+        self.assertIn("hasil_rea", names)
+        desc = names["analisis_rea"]["description"]
+        self.assertIn("inspect-artifact", desc)
+        self.assertIn("TIDAK punya otak", desc)
+        self.assertIn("alamat web TIDAK didukung", desc)
 
 
 class OllamaUninstallToolDispatchTest(unittest.TestCase):
+    """copot_ollama TANPA It's Me Node: jalur lama lewat ollama_admin (node ditiru tidak terjangkau)."""
+
+    def setUp(self):
+        from itsme import node
+        patch = mock.patch.object(node, "ollama_overview", return_value=(None, []))
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_not_installed_skips_confirmation(self):
         from itsme import ollama_admin
         ctx = FakeCtx()
@@ -515,6 +557,372 @@ class OllamaUninstallToolDispatchTest(unittest.TestCase):
             out = tools.handle_tool("copot_ollama", {}, ctx)
         self.assertEqual(out, "Dibatalkan oleh pemilik.")
         uninst.assert_not_called()
+
+    def test_full_access_still_asks(self):
+        from itsme import ollama_admin
+        ctx = FakeCtx(full_access=True)
+        with mock.patch.object(ollama_admin, "installed", return_value=True), \
+             mock.patch.object(ollama_admin, "uninstall", return_value=(True, "ok")):
+            tools.handle_tool("copot_ollama", {}, ctx)
+        self.assertEqual(len(ctx.asked), 1)
+
+    def test_other_computer_cannot_be_reached_without_the_node(self):
+        from itsme import ollama_admin
+        ctx = FakeCtx()
+        with mock.patch.object(ollama_admin, "installed", return_value=True), \
+             mock.patch.object(ollama_admin, "uninstall") as uninst:
+            out = tools.handle_tool("copot_ollama", {"komputer": "Laptop-Entah-Mana"}, ctx)
+        self.assertIn("tidak bisa dijangkau", out)
+        self.assertEqual(ctx.asked, [])
+        uninst.assert_not_called()
+
+    def test_install_and_list_without_the_node(self):
+        from itsme import ollama_admin
+        ctx = FakeCtx()
+        with mock.patch.object(ollama_admin, "installed", return_value=False):
+            self.assertIn("butuh It's Me Node", tools.handle_tool("pasang_ollama", {}, ctx))
+            self.assertIn("hanya komputer ini", tools.handle_tool("daftar_ollama", {}, ctx))
+        self.assertEqual(ctx.asked, [])
+
+
+class OllamaToolRegistryTest(unittest.TestCase):
+    NAMES = ("copot_ollama", "pasang_ollama", "daftar_ollama")
+
+    def test_registered_for_every_brain(self):
+        client = [t["name"] for t in tools.CLIENT_TOOLS]
+        claude = [t["name"] for t in tools.CLAUDE_TOOLS]
+        function = [t["function"]["name"] for t in tools.FUNCTION_TOOLS]
+        for name in self.NAMES:
+            self.assertEqual(client.count(name), 1, name)
+            self.assertEqual(claude.count(name), 1, name)
+            self.assertEqual(function.count(name), 1, name)
+        self.assertEqual(len(client), len(set(client)))
+
+    def test_schemas(self):
+        by_name = {t["name"]: t["input_schema"] for t in tools.CLIENT_TOOLS}
+        for name in ("copot_ollama", "pasang_ollama"):
+            schema = by_name[name]
+            self.assertEqual(schema["properties"]["komputer"]["type"], "string")
+            self.assertEqual(schema["required"], [])
+            self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(by_name["daftar_ollama"]["properties"], {})
+        self.assertEqual(by_name["daftar_ollama"]["required"], [])
+
+    def test_descriptions_tell_the_model_not_to_guess_the_computer(self):
+        desc = {t["name"]: t["description"] for t in tools.CLIENT_TOOLS}
+        for name in ("copot_ollama", "pasang_ollama"):
+            self.assertIn("jangan menebak", desc[name])
+            self.assertIn("semua", desc[name])
+            self.assertIn("konfirmasi", desc[name])
+        self.assertIn("tidak minta konfirmasi", desc["daftar_ollama"])
+
+    def test_input_validation(self):
+        for name in ("copot_ollama", "pasang_ollama"):
+            self.assertIsNone(tools.validate_input(name, {}))
+            self.assertIsNone(tools.validate_input(name, {"komputer": "Laptop"}))
+            self.assertIsNotNone(tools.validate_input(name, {"komputer": 3}))
+            self.assertIsNotNone(tools.validate_input(name, {"komputer": None}))
+            self.assertIsNotNone(tools.validate_input(name, {"nama": "Laptop"}))
+        self.assertIsNone(tools.validate_input("daftar_ollama", {}))
+        self.assertIsNotNone(tools.validate_input("daftar_ollama", {"komputer": "Laptop"}))
+
+    def test_guests_get_none_of_them_and_the_node_is_not_even_asked(self):
+        from itsme import node
+        ctx = FakeCtx(guest=True)
+        with mock.patch.object(node, "ollama_overview", side_effect=AssertionError("node tidak boleh dihubungi")):
+            for name in self.NAMES:
+                self.assertIn("Mode tamu", tools.handle_tool(name, {}, ctx))
+        self.assertEqual(ctx.asked, [])
+
+
+def _comp(name, installed=True, version="0.40.1", online=True, job=None, cid=None):
+    """Satu elemen node.ollama_fleet()."""
+    return {"id": cid or name.lower().replace(" ", "-"), "name": name, "online": online, "asleep": not online,
+            "installed": installed if online else None,
+            "version": version if (installed and online) else None, "job": job}
+
+
+class FakeOllamaApi:
+    """Pengganti node.ollama_overview/status/start/wait: yang diuji keputusan alatnya, bukan jaringannya."""
+
+    def __init__(self, *computers, me=None):
+        self.fleet = list(computers)
+        self.me = me or computers[0]["id"]
+        self.started = []       # (id, aksi)
+        self.waited = []        # (id, batas waktu)
+        self.start_result = {}  # id -> (kode, dict) atau Exception
+        self.wait_result = {}   # id -> dict pekerjaan
+        self.fresh = {}         # id -> dict status segar atau None (menimpa yang diturunkan dari fleet)
+        self.action = {}
+
+    def overview(self, timeout=3):
+        return {"me": self.me}, [dict(c) for c in self.fleet]
+
+    def status(self, node_id=None, timeout=30):
+        if node_id in self.fresh:
+            return self.fresh[node_id]
+        c = next((c for c in self.fleet if c["id"] == node_id), None)
+        if c is None or not c["online"] or c["installed"] is None:
+            return None
+        return {"supported": True, "installed": c["installed"], "version": c["version"], "path": None,
+                "leftover": False, "job": c["job"]}
+
+    def start(self, node_id, action, timeout=30):
+        self.started.append((node_id, action))
+        self.action[node_id] = action
+        res = self.start_result.get(node_id, (200, {"ok": True, "job": {"action": action, "state": "running"}}))
+        if isinstance(res, Exception):
+            raise res
+        return res
+
+    def wait(self, node_id, timeout=150.0, every=2.0):
+        self.waited.append((node_id, timeout))
+        done = {"action": self.action.get(node_id), "state": "done",
+                "message": "Ollama sudah dicopot. Model yang sudah diunduh tetap tersimpan di ~/.ollama."
+                if self.action.get(node_id) == "uninstall" else "Ollama 0.40.1 terpasang lewat winget."}
+        return self.wait_result.get(node_id, done)
+
+
+class OllamaToolRunTest(unittest.TestCase):
+    """copot_ollama / pasang_ollama / daftar_ollama dengan It's Me Node ditiru (tanpa jaringan)."""
+
+    def use(self, *computers, me=None):
+        from itsme import node
+        self.api = FakeOllamaApi(*computers, me=me)
+        for name, replacement in (("ollama_overview", self.api.overview), ("ollama_status", self.api.status),
+                                  ("ollama_start", self.api.start), ("ollama_wait", self.api.wait)):
+            patch = mock.patch.object(node, name, replacement)
+            patch.start()
+            self.addCleanup(patch.stop)
+        return self.api
+
+    def run_tool(self, name, args=None, **ctx_kwargs):
+        ctx = FakeCtx(**ctx_kwargs)
+        return tools.handle_tool(name, args or {}, ctx), ctx
+
+    # --- persetujuan: sekali untuk seluruh batch, menyebut semua komputernya -----------------
+    def test_one_approval_for_the_batch_names_every_computer(self):
+        api = self.use(_comp("PC-1"), _comp("PC-2"), _comp("PC-3"))
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "semua"})
+        self.assertEqual(len(ctx.asked), 1)
+        self.assertIn("PC-1, PC-2, dan PC-3", ctx.asked[0])
+        self.assertIn("Copot Ollama dari", ctx.asked[0])
+        self.assertIn("Model yang sudah diunduh tetap tersimpan", ctx.asked[0])
+        self.assertEqual(sorted(api.started), [("pc-1", "uninstall"), ("pc-2", "uninstall"), ("pc-3", "uninstall")])
+
+    def test_install_approval_wording(self):
+        self.use(_comp("Laptop", installed=False))
+        out, ctx = self.run_tool("pasang_ollama")
+        self.assertIn("Pasang Ollama di Laptop", ctx.asked[0])
+        self.assertIn("1,7 GB", ctx.asked[0])
+
+    def test_declined_starts_nothing(self):
+        api = self.use(_comp("PC-1"), _comp("PC-2"))
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "semua"}, answer=False)
+        self.assertEqual(out, "Dibatalkan oleh pemilik.")
+        self.assertEqual(api.started, [])
+
+    def test_full_access_never_skips_the_question(self):
+        self.use(_comp("PC-1"))
+        for name in ("copot_ollama",):
+            out, ctx = self.run_tool(name, full_access=True)
+            self.assertEqual(len(ctx.asked), 1)
+        self.use(_comp("PC-1", installed=False))
+        out, ctx = self.run_tool("pasang_ollama", full_access=True)
+        self.assertEqual(len(ctx.asked), 1)
+
+    # --- memilih komputer -------------------------------------------------------------------
+    def test_blank_name_with_one_online_computer_uses_it_even_if_others_sleep(self):
+        api = self.use(_comp("PC-Utama"), _comp("Dapur", online=False, cid="dapur"))
+        for blank in (None, "", "   "):
+            api.started.clear()
+            args = {} if blank is None else {"komputer": blank}
+            out, ctx = self.run_tool("copot_ollama", args)
+            self.assertEqual(api.started, [("pc-utama", "uninstall")], blank)
+
+    def test_blank_name_with_several_online_computers_lists_them_and_does_not_guess(self):
+        api = self.use(_comp("PC-1"), _comp("PC-2", installed=False), _comp("PC-3", installed=None),
+                       _comp("Dapur", online=False, cid="dapur"))
+        out, ctx = self.run_tool("pasang_ollama")
+        for fragment in ("PC-1: Ollama terpasang v0.40.1", "PC-2: Ollama belum terpasang",
+                         "PC-3: status Ollama tidak diketahui", "Dapur: sedang tidur/mati", "'semua'"):
+            self.assertIn(fragment, out)
+        self.assertIn("mau dipasang Ollama-nya", out)
+        self.assertEqual(ctx.asked, [])
+        self.assertEqual(api.started, [])
+
+    def test_nobody_online(self):
+        api = self.use(_comp("Dapur", online=False, cid="dapur"))
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "semua"})
+        self.assertIn("Tidak ada komputer yang terhubung", out)
+        self.assertEqual(api.started, [])
+
+    def test_ini_is_the_node_of_this_computer(self):
+        api = self.use(_comp("PC-1"), _comp("PC-2"), me="pc-2")
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "Komputer Ini"})
+        self.assertEqual(api.started, [("pc-2", "uninstall")])
+
+    def test_ini_when_this_computer_is_not_in_the_node_list(self):
+        api = self.use(_comp("PC-1"), _comp("PC-2"), me="tidak-ada")
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "ini"})
+        self.assertIn("belum terdaftar", out)
+        self.assertEqual(api.started, [])
+
+    def test_name_matching_exact_prefix_ambiguous_missing_asleep(self):
+        api = self.use(_comp("Laptop-Budi"), _comp("Laptop-Ani"), _comp("PC-Utama"),
+                       _comp("Dapur", online=False, cid="dapur"))
+        self.run_tool("copot_ollama", {"komputer": "pc"})
+        self.assertEqual(api.started, [("pc-utama", "uninstall")])
+        api.started.clear()
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "laptop"})
+        self.assertIn("cocok dengan beberapa komputer: Laptop-Budi dan Laptop-Ani", out)
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "Meja-Makan"})
+        self.assertIn("'Meja-Makan' tidak ketemu", out)
+        self.assertIn("Laptop-Budi, Laptop-Ani, PC-Utama, Dapur", out)
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "dapur"})
+        self.assertIn("Dapur sedang tidur/mati", out)
+        self.assertIn("/nyalakan Dapur", out)
+        self.assertEqual(api.started, [])
+        self.assertEqual(ctx.asked, [])
+
+    # --- 'semua' -----------------------------------------------------------------------------
+    def test_semua_skips_and_explains(self):
+        busy = {"action": "install", "state": "running", "step": "mengunduh"}
+        api = self.use(_comp("Ada"), _comp("Belum", installed=False), _comp("Lama", installed=None),
+                       _comp("Sibuk", job=busy), _comp("Tidur", online=False, cid="tidur"))
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "semua"})
+        self.assertEqual(api.started, [("ada", "uninstall")])
+        for fragment in ("Belum: Ollama belum terpasang", "Lama: status Ollama tidak diketahui",
+                         "Sibuk: masih ada pekerjaan pasang yang berjalan"):
+            self.assertIn(fragment, out)
+        self.assertNotIn("Tidur", out)
+
+    def test_semua_install_skips_computers_that_already_have_it(self):
+        api = self.use(_comp("Ada"), _comp("Belum", installed=False))
+        out, ctx = self.run_tool("pasang_ollama", {"komputer": "semua"})
+        self.assertEqual(api.started, [("belum", "install")])
+        self.assertIn("Ada: Ollama sudah terpasang v0.40.1", out)
+
+    def test_semua_with_nothing_qualifying(self):
+        api = self.use(_comp("Ada"), _comp("Juga"))
+        out, ctx = self.run_tool("pasang_ollama", {"komputer": "semua"})
+        self.assertIn("Tidak ada komputer online yang perlu dipasangi Ollama", out)
+        self.assertIn("Ada: Ollama sudah terpasang", out)
+        self.assertEqual(api.started, [])
+        self.assertEqual(ctx.asked, [])
+
+    # --- satu komputer: keadaan SEGAR menentukan --------------------------------------------
+    def test_fresh_status_beats_stale_gossip(self):
+        api = self.use(_comp("PC-1", installed=True))
+        api.fresh["pc-1"] = {"supported": True, "installed": False, "version": None, "job": None}
+        out, ctx = self.run_tool("copot_ollama")
+        self.assertIn("memang tidak terpasang di PC-1", out)
+        self.assertEqual((api.started, ctx.asked), ([], []))
+
+    def test_computer_that_cannot_be_controlled(self):
+        api = self.use(_comp("PC-1", installed=None))
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "pc-1"})
+        self.assertIn("belum bisa dikontrol", out)
+        self.assertEqual((api.started, ctx.asked), ([], []))
+
+    def test_busy_computer_is_not_started_twice(self):
+        api = self.use(_comp("PC-1", job={"action": "uninstall", "state": "running", "step": "menunggu"}))
+        out, ctx = self.run_tool("copot_ollama")
+        self.assertIn("Masih ada pekerjaan copot yang berjalan di PC-1 (menunggu)", out)
+        self.assertEqual((api.started, ctx.asked), ([], []))
+
+    def test_leftover_files_are_explained(self):
+        api = self.use(_comp("PC-1", installed=False))
+        api.fresh["pc-1"] = {"supported": True, "installed": False, "version": None, "job": None,
+                             "leftover": True, "path": r"C:\Ollama\ollama.exe"}
+        out, ctx = self.run_tool("copot_ollama")
+        self.assertIn(r"C:\Ollama\ollama.exe", out)
+        self.assertIn("tanpa uninstaller", out)
+
+    # --- laporan hasil -----------------------------------------------------------------------
+    def test_every_started_computer_is_waited_for_with_the_configured_limit(self):
+        api = self.use(_comp("PC-1"), _comp("PC-2"))
+        self.run_tool("copot_ollama", {"komputer": "semua"})
+        self.assertEqual(sorted(api.waited), [("pc-1", tools._OLLAMA_WAIT), ("pc-2", tools._OLLAMA_WAIT)])
+        self.assertEqual(tools._OLLAMA_WAIT, 150)
+
+    def test_final_states_are_reported_per_computer(self):
+        api = self.use(_comp("A"), _comp("B"), _comp("C"), _comp("D"), _comp("E"))
+        api.wait_result["b"] = {"action": "uninstall", "state": "failed", "message": "Uninstall belum tuntas"}
+        api.wait_result["c"] = {"action": "uninstall", "state": "running", "step": "menunggu uninstall selesai"}
+        api.wait_result["d"] = {"state": "unknown", "message": "komputer itu tidak melaporkan pekerjaan apa pun"}
+        api.wait_result["e"] = {"action": "uninstall", "state": "done", "message": ""}
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "semua"})
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "Hasil copot Ollama:")
+        self.assertIn("- A: Ollama sudah dicopot. Model yang sudah diunduh tetap tersimpan di ~/.ollama.", lines)
+        self.assertIn("- B: gagal - Uninstall belum tuntas", lines)
+        self.assertTrue(any(line.startswith("- C: masih berjalan (menunggu uninstall selesai)") and
+                            line.endswith("cek lagi dengan daftar_ollama.") for line in lines), out)
+        self.assertTrue(any(line.startswith("- D: hasilnya belum bisa dipastikan - komputer itu tidak melaporkan")
+                            and "daftar_ollama" in line for line in lines), out)
+        self.assertIn("- E: sudah dicopot, model tetap tersimpan", lines)    # node tak memberi pesan: kalimat bawaan
+
+    def test_install_without_a_message_still_says_installed(self):
+        api = self.use(_comp("A", installed=False))
+        api.wait_result["a"] = {"action": "install", "state": "done", "message": ""}
+        out, ctx = self.run_tool("pasang_ollama")
+        self.assertIn("- A: terpasang", out)
+        self.assertTrue(out.startswith("Hasil pasang Ollama:"))
+
+    def test_refused_start_is_reported_and_the_others_continue(self):
+        api = self.use(_comp("A"), _comp("B"), _comp("C"))
+        api.start_result["b"] = (502, {"ok": False, "error": "masih ada pekerjaan 'install' yang berjalan di komputer itu"})
+        api.start_result["c"] = (0, {"ok": False})
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "semua"})
+        self.assertIn("- A: Ollama sudah dicopot", out)
+        self.assertIn("- B: gagal dimulai - masih ada pekerjaan 'install' yang berjalan di komputer itu", out)
+        self.assertIn("- C: gagal dimulai - HTTP 0", out)
+        self.assertEqual([w[0] for w in api.waited], ["a"])        # yang gagal dimulai tidak ditunggu
+
+    def test_an_error_on_one_computer_does_not_lose_the_other_reports(self):
+        api = self.use(_comp("A"), _comp("B"))
+        api.start_result["a"] = RuntimeError("meledak")
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "semua"})
+        self.assertIn("- A: gagal - RuntimeError: meledak", out)
+        self.assertIn("- B: Ollama sudah dicopot", out)
+
+    def test_skipped_computers_are_listed_after_the_results(self):
+        self.use(_comp("A"), _comp("B", installed=False))
+        out, ctx = self.run_tool("copot_ollama", {"komputer": "semua"})
+        head, _, tail = out.partition("Dilewati:")
+        self.assertIn("A:", head)
+        self.assertIn("- B: Ollama belum terpasang", tail)
+
+    # --- daftar_ollama -----------------------------------------------------------------------
+    def test_list_shows_state_version_jobs_and_marks_this_computer(self):
+        busy = {"action": "install", "state": "running", "step": "mengunduh"}
+        failed = {"action": "uninstall", "state": "failed", "step": "selesai"}
+        done = {"action": "install", "state": "done", "step": "selesai"}
+        api = self.use(_comp("PC-1", job=failed), _comp("PC-2", installed=False, job=busy),
+                       _comp("PC-3", job=done), _comp("PC-4", installed=None),
+                       _comp("Dapur", online=False, cid="dapur"), me="pc-1")
+        out, ctx = self.run_tool("daftar_ollama")
+        self.assertIn("(4 online, 1 tidur/mati)", out)
+        self.assertIn("- PC-1 (komputer ini): Ollama terpasang v0.40.1; percobaan copot terakhir gagal", out)
+        self.assertIn("- PC-2: Ollama belum terpasang; sedang pasang (mengunduh)", out)
+        self.assertIn("- PC-3: Ollama terpasang v0.40.1\n", out + "\n")     # pekerjaan yang sudah selesai tidak disebut
+        self.assertNotIn("PC-3: Ollama terpasang v0.40.1;", out)
+        self.assertIn("- PC-4: status Ollama tidak diketahui", out)
+        self.assertIn("- Dapur: sedang tidur/mati", out)
+        self.assertIn("versi lama", out)
+        self.assertEqual((ctx.asked, api.started), ([], []))
+
+    def test_list_without_unknown_computers_has_no_update_hint(self):
+        self.use(_comp("PC-1"), _comp("PC-2", installed=False))
+        out, ctx = self.run_tool("daftar_ollama")
+        self.assertNotIn("versi lama", out)
+        self.assertNotIn("Dilewati", out)
+
+    def test_list_is_read_only_even_when_full_access_is_off(self):
+        api = self.use(_comp("PC-1"))
+        out, ctx = self.run_tool("daftar_ollama", {})
+        self.assertEqual((ctx.asked, api.started, api.waited), ([], [], []))
 
 
 if __name__ == "__main__":

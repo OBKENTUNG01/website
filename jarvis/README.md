@@ -372,9 +372,74 @@ tanpa aplikasi tambahan, dan tetap jalan walau komputernya di jaringan/lokasi la
 > kendali paling berguna untuk komputer **lain**. Halaman node `http://localhost:7171/`
 > tetap ada sebagai cadangan untuk komputer yang tidak menjalankan dashboard.
 
+**Kursor terlihat & mode trackpad (seperti Chrome Remote Desktop).** Tangkapan layar Windows
+tidak pernah memuat kursor mouse, jadi dashboard **menggambar kursor komputer tujuan sendiri**
+di atas gambar layar — posisinya, terlihat/tidaknya, dan **bentuknya** (panah, I-beam, tangan,
+ubah-ukuran, tunggu, dst.) dibaca dari node. Centang **Mode trackpad** untuk menggeser kursor
+dengan jari secara relatif, seperti trackpad laptop:
+
+| Gestur (HP) | Hasil |
+|---|---|
+| 1 jari geser | gerakkan kursor |
+| ketuk | klik kiri (ketuk-ketuk = klik ganda) |
+| ketuk 2 jari / 3 jari | klik kanan / klik tengah |
+| tahan sebentar lalu geser | seret (muncul lingkaran abu-abu) |
+| 2 jari geser | gulir vertikal & horizontal (kotak **Gulir alami** membalik arah) |
+| cubit | perbesar/kecilkan; tampilan mengikuti kursor (tombol 🔍＋ 🔍－ ⤢ Pas juga ada) |
+| 3 jari geser | geser tampilan yang diperbesar |
+
+Posisi kursor dipegang browser dan dikirim sebagai gerak **absolut**, jadi tidak terpengaruh
+kecepatan/akselerasi pointer Windows; saat tidak dipakai kursor mengikuti posisi asli komputer
+tujuan lagi. Di komputer (mouse), mode trackpad memakai Pointer Lock (klik gambar sekali; Esc
+untuk lepas), dan tanpa trackpad kursor lokalmu berubah bentuk mengikuti kursor komputer tujuan.
+
+**Matikan / Restart komputer tujuan** ada di tab yang sama (🔄 Restart, ⏻ Matikan). Selalu minta
+konfirmasi pemilik lewat Telegram dulu, dan komputer baru bertindak 5 detik sesudahnya.
+
+**Ollama per komputer.** Dashboard → **Pengaturan → Ollama per komputer** menampilkan semua
+komputer yang terhubung dan mana yang **sudah** / **belum** punya Ollama, dengan tombol
+**Pasang** / **Copot** per komputer dan **Pasang di semua yang belum terpasang**. Komputer
+baru yang bergabung lewat `/pasang` **wajib** memasang Ollama (otomatis oleh pemasangnya); kalau
+Ollama dicopot dari sebuah komputer, pasang lagi dari sini. Model yang sudah diunduh tetap
+tersimpan saat dicopot. Lewat bot: `daftar_ollama`, `pasang_ollama`, `copot_ollama` (semuanya
+dengan nama komputer; tanpa nama dan ada beberapa komputer, bot bertanya dulu — tidak menebak).
+Rincian & batas jujurnya ada di README It's Me Node.
+
 Berkas rahasia (`.env`, kunci, token, login browser/aplikasi, `.ssh`, `.claude`)
 ditandai dan **tidak bisa dibuka/diunduh**. Karena akses ini mengendalikan komputer,
 jaringan Tailscale-mu (dan kode gabung node) adalah kuncinya — jangan dibagikan.
+
+### Bedah berkas / APK / aplikasi dengan REA (dari web atau bot)
+
+[REA](https://github.com/morluto/rea) ("Reverse Engineer Anything", paket npm `rea-agents`) memeriksa
+cara kerja program **tanpa menjalankannya**. Pakai dari dashboard → **Pengaturan → REA**, atau lewat
+bot (`analisis_rea`, hasilnya diambil dengan `hasil_rea <id>`). Butuh **Node.js** di komputer ini.
+
+- **Yang bisa diperiksa:** berkas lokal (`.exe .dll .sys .apk .jar .zip .asar .so .dylib .msi`, dst.)
+  dan **folder** aplikasi (JavaScript/Electron). **Alamat web (URL) belum didukung REA 6.7.0** —
+  unduh dulu berkasnya, lalu isi path-nya (dashboard & bot menolaknya sebelum minta persetujuan).
+- **Perintah:** dipilih otomatis (berkas → `inspect-artifact`, folder → `analyze-javascript-application`),
+  atau pilih sendiri dari daftar putih yang diambil dari `rea --help` nyata: `inspect-artifact`,
+  `inspect-pe-resources` (ikon/manifest/versi produk), `inspect-managed-artifact` (.NET),
+  `inspect-managed-native-boundaries`, `inspect-go-binary`, `inspect-rust-binary`,
+  `inspect-electron-fuses`, `analyze-javascript-application` (LAMBAT: belasan menit, hasil ratusan MB),
+  `identify-flutter-build`, `inspect-android-package` (butuh JADX), `decode-android-resources` (butuh apktool).
+  Setelah selesai, dashboard menawarkan **pemeriksaan lanjutan** yang cocok untuk jenis berkasnya.
+- **Berjalan di latar:** kemajuan hidup (persen + tahap), tombol **Batalkan** (seluruh proses anak
+  dimatikan), batas waktu per perintah (15 menit; JS 45 menit). Hasil LENGKAP disimpan di
+  `data/rea-jobs/<id>/result.json` (20 terakhir; tetap terbaca sesudah It's Me menyala ulang) dan bisa
+  diunduh utuh; hasil raksasa dibaca sebagai aliran, bukan dimuat penuh ke memori.
+- **Ringkasan Indonesia** dari hasil nyata: format, hash, ukuran, isi paket; sumber daya Windows
+  (produk/perusahaan/versi); versi Go & dependensi; fuse Electron; dst. Galat REA dijelaskan ramah
+  (mis. "butuh JADX: setel `REA_JADX_MCP_JAR`"), bukan traceback.
+- **Otaknya?** **REA tidak punya otak/AI sendiri** — ia alat analisis biasa; ringkasannya disusun
+  program. Untuk penjelasan bahasa manusia, tombol **🧠 Jelaskan dengan otak aktif** mengirim ringkasan ke
+  otak yang sedang aktif (Ollama/OpenRouter/DeepSeek/Claude — yang tampil di kartu); lewat bot, otak
+  yang sedang aktif itulah yang menafsirkan keluaran alatnya; lewat Claude (MCP), Claude-lah.
+- **Aman:** pemilik SELALU diminta konfirmasi lewat Telegram (juga saat akses penuh); berkas rahasia
+  (`.env`, kunci, token) ditolak; tanpa shell (argumen dikirim sebagai daftar — nama berkas berisi `&`
+  tidak bisa menyisipkan perintah); target berawalan `-` dan perintah di luar daftar putih ditolak.
+  REA **bukan sandbox**: hanya untuk software milik sendiri / riset keamanan yang sah.
 
 ### Kata sandi (lapisan kedua, dengan pengecoh)
 
@@ -638,6 +703,9 @@ Node di komputer ini mati, `/bersama` jatuh ke Ollama langsung di komputer ini.
 | `ITSME_UPDATE_BRANCH` | `main` | Cabang yang diikuti |
 | `ITSME_FOLLOW_NODE` | `1` | Kalau It's Me Node terpasang, bot hanya aktif di komputer pemimpin (`0` = abaikan node) |
 | `ITSME_NODE_URL` | `http://127.0.0.1:7171` | Alamat API node di komputer ini |
+| `ITSME_REA_VERSION` | `6.7.0` | Versi paket `rea-agents` yang dijalankan (`latest` boleh). Dipatok karena `latest` pernah menarik 6.8.0 yang butuh Node >= 22.23.4 |
+| `ITSME_REA_TIMEOUT` / `ITSME_REA_TIMEOUT_JS` | `15` / `45` | Batas waktu analisis REA (menit): umum / analisis aplikasi JavaScript |
+| `ITSME_REA_NODE` / `ITSME_REA_NPX_CLI` | — | Path `node` / `npx-cli.js` kalau tidak ketemu otomatis (REA dijalankan tanpa shell) |
 | `ITSME_PUBLIC_URL` | — | Alamat publik dashboard ini (mis. `https://domainku.com`), dipakai `/pasang` agar komputer baru menyambung keluar ke sini **tanpa Tailscale**. Kosong = diambil dari domain pertama `ITSME_DASHBOARD_DOMAINS` |
 | `ITSME_TG_WEBHOOK` | `0` | `1` = pesan Telegram diterima lewat webhook ke alamat tunnel dashboard (bukan polling); lihat catatan di bawah tabel |
 | `ITSME_PASSPHRASE` | — | Kata sandi lapisan kedua sebelum bot bisa dipakai; salah selalu dibalas "minimal 20 karakter" (pengecoh). Kosong = mati |
