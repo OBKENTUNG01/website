@@ -472,25 +472,105 @@ class DashboardDevicesTest(unittest.TestCase):
         r = self.post("/api/rea/analyze", {"path_atau_url": env})
         self.assertIn("rahasia", r.json()["message"])
 
-    def test_rea_runs_after_confirmation(self):
+    def test_rea_starts_background_job_after_confirmation(self):
         exe = os.path.join(self.dir, "app.exe")
         open(exe, "wb").close()
         from itsme import rea as rea_mod
-        with mock.patch.object(rea_mod, "analyze", return_value=(True, "hasil REA")) as analyze:
-            r = self.post("/api/rea/analyze", {"path_atau_url": exe}).json()
-        self.assertEqual(r["message"], "hasil REA")
+        job = {"id": "ab12cd34", "state": "running", "command": "inspect-artifact", "target": exe}
+        with mock.patch.object(rea_mod, "start", return_value=job) as start:
+            r = self.post("/api/rea/analyze", {"path_atau_url": exe})
+        j = r.json()
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["job"]["id"], "ab12cd34")
+        self.assertIn("inspect-artifact", j["message"])
         self.assertEqual(len(self.app.confirmed), 1)
-        analyze.assert_called_once_with(exe, None)
+        start.assert_called_once_with(exe, None)
+
+    def test_rea_route_still_asks_the_owner_when_full_access_is_on(self):
+        """always_ask=True: akses penuh tidak boleh melewati persetujuan REA (jaminan terpenting rute web)."""
+        exe = os.path.join(self.dir, "app.exe")
+        open(exe, "wb").close()
+        from itsme import rea as rea_mod
+        self.app.full_access = True
+        with mock.patch.object(rea_mod, "start", return_value={"id": "ab12cd34", "state": "running",
+                                                                "command": "inspect-artifact", "target": exe}):
+            self.post("/api/rea/analyze", {"path_atau_url": exe})
+        self.assertEqual(len(self.app.confirmed), 1)
 
     def test_rea_declined_not_run(self):
         exe = os.path.join(self.dir, "app.exe")
         open(exe, "wb").close()
         self.app.confirm_answer = False
         from itsme import rea as rea_mod
-        with mock.patch.object(rea_mod, "analyze") as analyze:
-            r = self.post("/api/rea/analyze", {"path_atau_url": exe}).json()
-        self.assertIn("Dibatalkan", r["message"])
-        analyze.assert_not_called()
+        with mock.patch.object(rea_mod, "start") as start:
+            r = self.post("/api/rea/analyze", {"path_atau_url": exe})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Dibatalkan", r.json()["message"])
+        self.assertIn("Dibatalkan", r.json()["error"])  # halaman hanya menampilkan field 'error' untuk status != 200
+        start.assert_not_called()
+
+    def test_rea_module_refusal_is_reported_with_error_field(self):
+        exe = os.path.join(self.dir, "app.exe")
+        open(exe, "wb").close()
+        from itsme import rea as rea_mod
+        with mock.patch.object(rea_mod, "start", side_effect=rea_mod.ReaError("Node.js belum terpasang")):
+            r = self.post("/api/rea/analyze", {"path_atau_url": exe, "rea_command": "inspect-artifact"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Node.js", r.json()["error"])
+
+    def test_rea_failure_messages_use_error_field_so_the_page_shows_them(self):
+        """api() di halaman melempar 'HTTP 400' kalau tak ada field error - pesan aslinya hilang."""
+        r = self.post("/api/rea/analyze", {"path_atau_url": os.path.join(self.dir, "nope.exe")})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("tidak ditemukan", r.json()["error"])
+
+    def test_rea_info_lists_version_commands_brain_and_recent_jobs(self):
+        from itsme import rea as rea_mod
+        with mock.patch.object(rea_mod, "list_jobs", return_value=[{"id": "ab12cd34", "state": "done"}]):
+            j = self.get("/api/rea/info").json()
+        self.assertEqual(j["version"], rea_mod.REA_VERSION)
+        self.assertIn("inspect-artifact", j["commands"])
+        self.assertIn("brain_desc", j)           # REA tak punya otak; halaman menyebut otak aktif untuk penjelasan
+        self.assertEqual(j["jobs"][0]["id"], "ab12cd34")
+
+    def test_rea_job_poll_and_unknown_job(self):
+        from itsme import rea as rea_mod
+        fake = {"id": "ab12cd34", "state": "done", "command": "inspect-artifact", "summary_text": "ringkasan"}
+        with mock.patch.object(rea_mod, "job", side_effect=lambda i: fake if i == "ab12cd34" else None):
+            self.assertEqual(self.get("/api/rea/job?id=ab12cd34").json()["summary_text"], "ringkasan")
+            self.assertEqual(self.get("/api/rea/job?id=zzzz").status_code, 404)
+
+    def test_rea_result_streams_full_json_file(self):
+        from itsme import rea as rea_mod
+        path = os.path.join(self.dir, "out.json")
+        payload = b'{"subject": {"name": "x"}, "pad": "' + b"a" * 300_000 + b'"}'
+        with open(path, "wb") as f:
+            f.write(payload)
+        with mock.patch.object(rea_mod, "result_path", side_effect=lambda i: path if i == "ab12cd34" else None):
+            r = self.get("/api/rea/result?id=ab12cd34")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.content, payload)
+            self.assertIn("attachment", r.headers["content-disposition"])
+            self.assertIn("rea-ab12cd34.json", r.headers["content-disposition"])
+            self.assertEqual(self.get("/api/rea/result?id=bukan-job").status_code, 404)
+
+    def test_rea_result_filename_cannot_inject_headers(self):
+        from itsme import rea as rea_mod
+        path = os.path.join(self.dir, "out.json")
+        open(path, "wb").write(b"{}")
+        with mock.patch.object(rea_mod, "result_path", return_value=path):
+            r = self.get("/api/rea/result?id=ab12%22%0d%0aX-Evil:%201")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("x-evil", {k.lower() for k in r.headers})
+        self.assertNotIn('"', r.headers["content-disposition"].split("filename=")[1].strip('"'))
+
+    def test_rea_cancel_relays_to_module(self):
+        from itsme import rea as rea_mod
+        with mock.patch.object(rea_mod, "cancel", return_value=True) as cancel:
+            self.assertTrue(self.post("/api/rea/cancel", {"id": "ab12cd34"}).json()["ok"])
+        cancel.assert_called_once_with("ab12cd34")
+        self.assertEqual(self.post("/api/rea/cancel", {"id": "ab12cd34"}, guard=False).status_code, 403)
 
     def test_rea_needs_guard_header(self):
         self.assertEqual(self.post("/api/rea/analyze", {"path_atau_url": "x"}, guard=False).status_code, 403)
@@ -543,6 +623,122 @@ class DashboardDevicesTest(unittest.TestCase):
 
     def test_power_needs_guard_header(self):
         self.assertEqual(self.post("/api/node/power", {"node": "x", "action": "restart"}, guard=False).status_code, 403)
+
+    # --- Ollama per komputer (kartu Pengaturan) ----------------------------------
+    NODES_JSON = b'{"me": "aaa", "nodes": [{"id": "aaa", "name": "PC-Ruang"}, {"id": "bbb", "name": "Laptop"}]}'
+
+    def _node_post_ok(self):
+        return mock.patch.object(dashboard, "_node_post",
+                                 return_value=(200, b'{"ok": true, "job": {"action": "install", "state": "running"}}'))
+
+    def test_ollama_node_bad_action_rejected(self):
+        r = self.post("/api/node/ollama", {"node": "aaa", "action": "format-c"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_ollama_node_needs_a_computer(self):
+        self.assertEqual(self.post("/api/node/ollama", {"action": "install"}).status_code, 400)
+        self.assertEqual(self.post("/api/node/ollama", {"nodes": [], "action": "install"}).status_code, 400)
+
+    def test_ollama_node_asks_once_then_relays_each_computer(self):
+        with mock.patch.object(dashboard, "_node_get", return_value=(200, "application/json", self.NODES_JSON, "")), \
+             self._node_post_ok() as post:
+            r = self.post("/api/node/ollama", {"nodes": ["aaa", "bbb", "aaa"], "action": "install"})
+        j = r.json()
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(j["ok"])
+        self.assertEqual(len(self.app.confirmed), 1)            # satu persetujuan untuk seluruh kumpulan
+        self.assertIn("PC-Ruang", self.app.confirmed[0])        # nama komputer, bukan id
+        self.assertIn("Laptop", self.app.confirmed[0])
+        self.assertEqual([c.args for c in post.call_args_list],
+                         [("/ollama", {"node": "aaa", "action": "install"}),
+                          ("/ollama", {"node": "bbb", "action": "install"})])  # duplikat dibuang
+        self.assertEqual([x["name"] for x in j["results"]], ["PC-Ruang", "Laptop"])
+
+    def test_ollama_node_route_still_asks_the_owner_when_full_access_is_on(self):
+        self.app.full_access = True
+        with mock.patch.object(dashboard, "_node_get", return_value=(200, "application/json", self.NODES_JSON, "")), \
+             self._node_post_ok():
+            self.post("/api/node/ollama", {"node": "aaa", "action": "uninstall"})
+        self.assertEqual(len(self.app.confirmed), 1)
+
+    def test_ollama_node_names_from_gossip_cannot_forge_approval_lines(self):
+        evil = b'{"me": "aaa", "nodes": [{"id": "aaa", "name": "PC\\nSetuju: ya, hapus semua"}]}'
+        with mock.patch.object(dashboard, "_node_get", return_value=(200, "application/json", evil, "")), \
+             self._node_post_ok():
+            self.post("/api/node/ollama", {"node": "aaa", "action": "uninstall"})
+        self.assertNotIn("\n", self.app.confirmed[0].split("komputer: ", 1)[1].split("?")[0])
+
+    def test_ollama_node_uninstall_single_node(self):
+        with mock.patch.object(dashboard, "_node_get", return_value=(200, "application/json", self.NODES_JSON, "")), \
+             self._node_post_ok() as post:
+            r = self.post("/api/node/ollama", {"node": "bbb", "action": "uninstall"})
+        self.assertTrue(r.json()["ok"])
+        self.assertIn("Copot", self.app.confirmed[0])
+        post.assert_called_once_with("/ollama", {"node": "bbb", "action": "uninstall"})
+
+    def test_ollama_node_declined_does_not_relay(self):
+        self.app.confirm_answer = False
+        with mock.patch.object(dashboard, "_node_get", return_value=(200, "application/json", self.NODES_JSON, "")), \
+             mock.patch.object(dashboard, "_node_post") as post:
+            r = self.post("/api/node/ollama", {"node": "aaa", "action": "uninstall"})
+        self.assertFalse(r.json()["ok"])
+        self.assertIn("Dibatalkan", r.json()["error"])
+        post.assert_not_called()
+
+    def test_ollama_node_reports_failure_per_computer(self):
+        replies = iter([(200, b'{"ok": true}'), (409, b'{"ok": false, "error": "masih ada pekerjaan"}')])
+        with mock.patch.object(dashboard, "_node_get", return_value=(200, "application/json", self.NODES_JSON, "")), \
+             mock.patch.object(dashboard, "_node_post", side_effect=lambda *a, **k: next(replies)):
+            r = self.post("/api/node/ollama", {"nodes": ["aaa", "bbb"], "action": "install"})
+        j = r.json()
+        self.assertFalse(j["ok"])
+        self.assertEqual([x["ok"] for x in j["results"]], [True, False])
+        self.assertIn("masih ada pekerjaan", j["message"])
+
+    def test_ollama_node_unreachable_node_is_a_failure_not_a_crash(self):
+        with mock.patch.object(dashboard, "_node_get", return_value=(502, "application/json", b"{}", "")), \
+             mock.patch.object(dashboard, "_node_post", return_value=(502, b"bukan json")):
+            r = self.post("/api/node/ollama", {"node": "zzz", "action": "install"})
+        self.assertFalse(r.json()["ok"])
+        self.assertIn("gagal", r.json()["message"])
+
+    def test_ollama_node_bridge_computer_rejected(self):
+        with mock.patch.object(dashboard, "_node_post") as post:
+            r = self.post("/api/node/ollama", {"node": "bridge:Laptop", "action": "install"})
+        self.assertEqual(r.status_code, 400)
+        post.assert_not_called()
+        self.assertEqual(self.app.confirmed, [])
+
+    def test_ollama_node_needs_guard_header(self):
+        self.assertEqual(self.post("/api/node/ollama", {"node": "aaa", "action": "install"}, guard=False).status_code, 403)
+
+    def test_ollama_node_status_get_proxies_to_node(self):
+        body = b'{"installed": true, "version": "0.40.13", "job": null}'
+        with mock.patch.object(dashboard, "_node_get", return_value=(200, "application/json", body, "")) as get:
+            r = self.get("/api/node/ollama?node=bbb")
+        self.assertEqual(r.json()["version"], "0.40.13")
+        get.assert_called_once_with("/ollama", {"node": "bbb"})
+
+    def test_ollama_node_status_get_bridge_rejected(self):
+        self.assertEqual(self.get("/api/node/ollama?node=bridge:Laptop").status_code, 400)
+
+    def test_cursor_get_proxies_to_node_and_rejects_bridge(self):
+        body = b'{"x": 10, "y": 20, "w": 1920, "h": 1080, "nx": 0.005, "ny": 0.019, "visible": true, "kind": "text"}'
+        with mock.patch.object(dashboard, "_node_get", return_value=(200, "application/json", body, "")) as get:
+            r = self.get("/api/node/cursor?node=bbb")
+        self.assertEqual(r.json()["kind"], "text")
+        get.assert_called_once_with("/cursor", {"node": "bbb"})
+        self.assertEqual(self.get("/api/node/cursor?node=bridge:Laptop").status_code, 404)
+
+    def test_page_has_remote_cursor_overlay_and_trackpad_gestures(self):
+        """Halaman memuat kursor jarak jauh (tangkapan layar tak memuat kursor) + gestur CRD."""
+        html = self.get("/").text
+        for needle in ("id=\"kompCur\"", "id=\"kompStage\"", "id=\"kompDot\"", "id=\"kompNat\"",
+                       "/api/node/cursor", "kompOnCursor", "kompZoom", "ollamaLoad", "/api/node/ollama"):
+            self.assertIn(needle, html, needle)
+        # klik ganda = dua pasang tekan/lepas; mengirim dblclick lagi akan jadi empat klik
+        komp = html.split("Layar jarak jauh: kursor yang terlihat")[1].split("img.addEventListener('load',applyView)")[0]
+        self.assertNotIn("'dblclick'", komp)
 
 
 if __name__ == "__main__":

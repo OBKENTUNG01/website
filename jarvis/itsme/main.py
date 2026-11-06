@@ -1902,6 +1902,9 @@ class App:
             "Komputer itu menyambung ke Hub lewat alamat publiknya. Token bot, pemilik, "
             "kunci otak, memori, dan kode jaringan disalin sendiri dari komputer ini. "
             "Tidak ada yang perlu diketik atau login.\n\n"
+            "Ollama (otak lokal) WAJIB ikut terpasang di komputer itu (unduhan sekitar 1,7 GB, "
+            "beberapa menit). Kalau gagal, komputernya tetap bergabung: pasang dari dashboard → "
+            "Pengaturan → Ollama per komputer, atau lewat bot (pasang_ollama).\n\n"
             f"{pasang_lagi}" + note,
         )
         await self.tg.send(chat_id, node.install_command(code, hub_url))
@@ -2659,6 +2662,12 @@ def _restart(lock, listener):
         print("[itsme] Menyala ulang...")
         return
     _stop_listener(listener)  # atexit tidak dijalankan oleh exec
+    try:
+        from . import rea
+
+        rea._shutdown()  # exec juga melewatkan atexit: hentikan analisis REA yang berjalan (tanpa proses yatim)
+    except Exception:  # noqa: BLE001 - nyala ulang tidak boleh gagal karena ini
+        pass
     lock.close()
     os.chdir(updater.APP_DIR)
     os.execv(sys.executable, [sys.executable, "-m", "itsme.main"])
