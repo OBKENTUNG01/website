@@ -471,7 +471,11 @@ bot (`analisis_rea`, hasilnya diambil dengan `hasil_rea <id>`). Butuh **Node.js*
     tidak pernah berkasnya (Claude Code menambah keterangan biasa seperti sistem operasi). Satu penjelasan
     sekaligus (kuota dihemat), batas 150 detik, galat kuota/login/filter keamanan dijelaskan. Variabel lingkungan
     komputer yang bisa mengalihkan penagihan (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
-    Bedrock/Vertex/Foundry) ditimpa kosong, jadi yang dipakai pasti akun Claude-mu. *Aplikasi Claude Desktop sendiri
+    Bedrock/Vertex/Foundry) ditimpa kosong, jadi yang dipakai pasti akun Claude-mu. Teks dari berkas dibersihkan
+    sebelum dikirim (karakter tak terlihat, termasuk tulisan tersembunyi "tag Unicode", dibuang; `<` dan `>` diganti
+    `‹` dan `›` sehingga pembatas data tak bisa dipalsukan), dan paket `claude-agent-sdk` yang terlalu lama (tak
+    mengenal opsi tanpa-alat) DITOLAK dengan petunjuk `pip install -U claude-agent-sdk`, bukan dipakai dengan opsi
+    yang dibuang diam-diam. *Aplikasi Claude Desktop sendiri
     tidak menyediakan cara bagi program lain memakai loginnya (dokumentasi Anthropic: Desktop memakai OAuth-nya
     sendiri), jadi yang dipakai adalah AKUN yang sama lewat token resmi `claude setup-token` di Claude Code.*
     Aturan Anthropic (code.claude.com/docs/en/legal-and-compliance): token langganan untuk pemakaian pribadi di

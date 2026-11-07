@@ -138,6 +138,25 @@ class ExplainRoutesTest(Base):
         self.assertEqual(first.status_code, 200)
         self.assertEqual((second.status_code, second.json()["code"]), (409, "busy"))
 
+    def test_job_poll_also_reports_the_run_still_in_progress(self):
+        """Kembali ke job yang masih dijelaskan: halaman melanjutkan pemantauan, bukan menawarkan penjelasan kedua."""
+        gate = threading.Event()
+
+        def slow(prompt):
+            gate.wait(10)
+            return {"text": "ok", "model": None, "seconds": 1}
+
+        with mock.patch.object(rea_explain, "_ask_claude", side_effect=slow):
+            eid = self.post("/api/rea/explain", {"id": "0123abcd"}).json()["explain"]["id"]
+            body = self.get("/api/rea/explain?job=0123abcd").json()
+            self.assertEqual((body["running"]["id"], body["saved"]), (eid, None))
+            self.assertIsNone(self.get("/api/rea/explain?job=ffffffff").json()["running"])
+            gate.set()
+            self.wait_done(eid)
+        body = self.get("/api/rea/explain?job=0123abcd").json()
+        self.assertIsNone(body["running"])
+        self.assertEqual(body["saved"]["text"], "ok")
+
     def test_info_reports_whether_claude_is_ready_and_how_to_log_in(self):
         info = self.get("/api/rea/info").json()["explain"]["claude_code"]
         self.assertEqual((info["ready"], info["hint"]), (True, ""))
@@ -187,7 +206,15 @@ class PageTest(Base):
     def test_page_has_the_claude_buttons_and_box(self):
         html = self.get("/").text
         for needle in ("reaExplainClaude", "/api/rea/explain", "Jelaskan dengan Claude-ku", "Salin untuk Claude Desktop",
-                       "Bahas di Ngobrol", 'id="reaExplain"', "reaCopyForDesktop"):
+                       "Bahas di Ngobrol", 'id="reaExplain"', "reaCopyForDesktop", 'id="reaPromptBox"',
+                       'id="reaPromptText"', "reaPromptHide"):
+            self.assertIn(needle, html, needle)
+
+    def test_help_text_describes_the_current_buttons_not_the_old_one(self):
+        html = self.get("/").text
+        self.assertNotIn('klik "Jelaskan dengan otak aktif"', html)            # tombol itu sudah diganti namanya
+        for needle in ("tiga tombol di bawah hasil", "Jelaskan dengan Claude-ku</b> (satu jawaban dari akun Claude-mu",
+                       'id="reaBrain"'):
             self.assertIn(needle, html, needle)
 
     def test_explanation_text_only_goes_through_textcontent(self):
@@ -196,6 +223,24 @@ class PageTest(Base):
         block = page[page.index("// --- REA: penjelasan oleh Claude"):page.index("function reaExplain(){")]
         for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
             self.assertNotIn(bad, block, bad)
+
+    def test_starting_a_new_analysis_forgets_the_previous_job_so_a_late_info_reply_cannot_redraw_its_buttons(self):
+        page = dashboard._PAGE
+        run_fn = page[page.index("async function reaRun("):page.index("function reaWatch(")]
+        for needle in ("reaLast=null", "reaExpHide()", "reaPromptHide()", "reaClaudeNote"):
+            self.assertIn(needle, run_fn, needle)
+
+    def test_claude_buttons_only_for_finished_jobs_and_the_copy_text_has_its_own_box(self):
+        page = dashboard._PAGE
+        buttons = page[page.index("function reaRenderButtons("):page.index("function reaExpHide(")]
+        self.assertIn("j.state==='done'||j.state==='failed'", buttons)          # dibatalkan / melebihi waktu: ditolak server
+        copy_fn = page[page.index("async function reaCopyForDesktop("):page.index("function reaExplain(){")]
+        self.assertNotIn("reaExpShow(", copy_fn)                                 # tidak menimpa penjelasan yang sedang dibaca
+        self.assertIn("reaPromptBox", copy_fn)
+        watch = page[page.index("function reaExpWatch("):page.index("function reaLoadSaved(")]
+        self.assertIn("miss", watch)                                             # satu gagal-ambil tidak langsung final
+        load = page[page.index("function reaLoadSaved("):page.index("function reaPromptHide(")]
+        self.assertIn("d.running", load)                                         # lanjutkan memantau penjelasan yang berjalan
 
     def test_page_script_is_still_valid_javascript(self):
         import re
