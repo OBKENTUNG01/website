@@ -1033,11 +1033,27 @@ def _make_handler(app, token):
                 return self._send(code, body, ctype, headers={"Content-Disposition": disp} if disp else None)
             # -- REA: info, job (kemajuan + ringkasan), unduh JSON lengkap --
             if path == "/api/rea/info":
-                from . import rea, rea_upload
+                from . import rea, rea_explain, rea_upload
                 return self._json({"version": rea.REA_VERSION, "commands": rea.COMMANDS, "labels": rea._LABELS,
                                    "brain": brain.current_backend(), "brain_desc": brain.describe(),
                                    "jobs": rea.list_jobs(8), "uploads": rea_upload.list_uploads(),
-                                   "limits": rea_upload.limits()})
+                                   "limits": rea_upload.limits(), "explain": rea_explain.availability()})
+            if path == "/api/rea/explain":   # ?id=<penjelasan> (polling) atau ?job=<job REA> (yang tersimpan / sedang berjalan)
+                from . import rea_explain
+                q = self._query()
+                if q.get("id"):
+                    run = rea_explain.get(q["id"][0])
+                    return self._json(run) if run else self._json({"error": "penjelasan tidak ditemukan"}, 404)
+                jid = (q.get("job") or [""])[0]
+                return self._json({"saved": rea_explain.saved(jid), "running": rea_explain.running(jid)})
+            if path == "/api/rea/explain-prompt":   # teks siap tempel untuk Claude Desktop / aplikasi Claude
+                from . import rea, rea_explain
+                view = rea.job((self._query().get("id") or [""])[0])
+                if view is None:
+                    return self._json({"error": "job REA tidak ditemukan"}, 404)
+                if view.get("state") not in ("done", "failed") or not view.get("summary_text"):
+                    return self._json({"error": "analisis REA ini belum selesai atau tidak punya ringkasan"}, 409)
+                return self._json({"prompt": rea_explain.desktop_prompt(view)})
             if path == "/api/rea/upload":   # keadaan satu unggahan (untuk melanjutkan yang terputus)
                 from . import rea_upload
                 try:
@@ -1238,6 +1254,13 @@ def _make_handler(app, token):
             elif path == "/api/rea/cancel":
                 from . import rea
                 return self._json({"ok": bool(rea.cancel(str(data.get("id") or "")))})
+            elif path == "/api/rea/explain":   # Claude (akun pemilik, tanpa API key) menjelaskan hasil, tanpa alat
+                from . import rea_explain
+                try:
+                    run = rea_explain.start(str(data.get("id") or ""), str(data.get("via") or rea_explain.VIA_CLAUDE))
+                except rea_explain.ExplainError as exc:
+                    return self._json({"ok": False, "error": exc.message, "code": exc.code}, exc.status)
+                return self._json({"ok": True, "explain": run})
             elif path == "/api/ollama/uninstall":
                 ok, msg = _ollama_uninstall(app)
             elif path == "/api/fs/zip":
@@ -1578,6 +1601,10 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
 .upRow.ok .upBar>i{background:var(--ok)}
 .upRow.err .upBar>i{background:var(--danger)}
 .upRow.err .meta{color:var(--danger)}
+.reaExplain{margin-top:10px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:12px;padding:12px 14px;background:var(--bg2)}
+.reaExplain.err{border-left-color:var(--danger)}
+.reaExplainText{white-space:pre-wrap;word-break:break-word;margin-top:6px;font-size:.92rem;line-height:1.55}
+.reaExplain.err .reaExplainText{color:var(--danger)}
 </style>
 </head>
 <body>
@@ -1643,8 +1670,10 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
       bukan sandbox dan berkas unggahan tidak pernah dijalankan. Pemilik tetap diminta konfirmasi lewat Telegram
       sebelum jalan.</div>
     <div class="sub"><b>Otaknya?</b> REA <b>tidak punya otak/AI</b> - ia alat analisis biasa; ringkasan di bawah
-      disusun program (tanpa AI). Kalau mau penjelasan dalam bahasa manusia, klik "Jelaskan dengan otak aktif":
-      yang menafsirkan adalah otak yang sedang aktif sekarang (<b id="reaBrain">…</b>).</div>
+      disusun program (tanpa AI). Untuk penjelasan dalam bahasa manusia ada tiga tombol di bawah hasil:
+      <b>Jelaskan dengan Claude-ku</b> (satu jawaban dari akun Claude-mu, bukan API key berbayar; tanpa alat),
+      <b>Salin untuk Claude Desktop</b> (tempel di aplikasi Claude) atau <b>Bahas di Ngobrol</b>
+      (otak yang sedang aktif sekarang: <b id="reaBrain">…</b>).</div>
     <div id="reaDrop" class="reaDrop" role="button" tabindex="0"
          aria-label="Seret berkas atau folder aplikasi ke sini, atau tekan untuk memilih dari perangkat ini">
       <div class="reaDropIcon" aria-hidden="true">📦</div>
@@ -1682,6 +1711,19 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
       <ul id="reaNotes" class="sub" style="margin:6px 0 0 18px"></ul>
       <div id="reaErrs" class="sub" style="color:var(--danger);margin-top:6px"></div>
       <div class="row" id="reaBtns" style="margin-top:8px;gap:6px"></div>
+      <div class="sub" id="reaClaudeNote" hidden style="margin-top:6px;white-space:pre-wrap"></div>
+      <div id="reaExplain" class="reaExplain" hidden>
+        <div class="spread"><b id="reaExplainTitle"></b><span class="sub" id="reaExplainMeta" style="margin:0"></span></div>
+        <div id="reaExplainText" class="reaExplainText"></div>
+        <div class="row" style="margin-top:8px"><button type="button" id="reaExplainCopy" hidden>Salin</button></div>
+        <div class="sub" id="reaExplainNote"></div>
+      </div>
+      <div id="reaPromptBox" class="reaExplain" hidden>
+        <div class="spread"><b>Teks untuk Claude Desktop</b><button type="button" id="reaPromptClose">Tutup</button></div>
+        <div id="reaPromptText" class="reaExplainText"></div>
+        <div class="row" style="margin-top:8px"><button type="button" id="reaPromptCopy">Salin</button></div>
+        <div class="sub">Tempel di Claude Desktop atau Claude di HP-mu; aplikasi itu memakai langgananmu sendiri.</div>
+      </div>
       <div class="sub" id="reaSuggestLbl" hidden style="margin-top:8px">Pemeriksaan lanjutan:</div>
       <div class="row" id="reaSuggest" style="gap:6px"></div>
     </div>
@@ -2151,6 +2193,10 @@ async function reaInfo(){
     document.getElementById('reaVer').textContent='rea-agents '+d.version;
     document.getElementById('reaBrain').textContent=d.brain_desc||d.brain||'?';
     if(d.limits){ reaUp.limits=d.limits; reaLimitsText(); }
+    if(d.explain && d.explain.claude_code){
+      const cc=d.explain.claude_code; reaClaude={ready:!!cc.ready,hint:cc.hint||'',model:cc.model||null};
+      if(reaLast && reaLast.state!=='running') reaRenderButtons(reaLast);   // kesiapan baru diketahui: segarkan tombolnya
+    }
     reaRenderUploads(d.uploads||[]);
     const sel=document.getElementById('reaCmd'), keep=sel.value;
     sel.innerHTML=''; sel.appendChild(reaEl('option','(otomatis sesuai jenis berkas)')).value='';
@@ -2181,6 +2227,8 @@ async function reaRun(cmdOverride, targetOverride){
   ['reaProg','reaErrs'].forEach(i=>document.getElementById(i).textContent='');
   ['reaFacts','reaNotes','reaBtns','reaSuggest'].forEach(i=>document.getElementById(i).textContent='');
   document.getElementById('reaSuggestLbl').hidden=true;
+  reaLast=null; reaPrevJob=null; reaSavedFor=null; reaExpHide(); reaPromptHide();   // job baru: lupakan yang lama (tombol, penjelasan, teks salinan)
+  { const n=document.getElementById('reaClaudeNote'); n.hidden=true; n.textContent=''; }
   document.getElementById('reaGo').disabled=true;
   try{
     const d=await api('/api/rea/analyze',{method:'POST',body:JSON.stringify(body)});
@@ -2211,17 +2259,89 @@ function reaRender(j){
   ((sm&&sm.notes)||[]).forEach(n=>ul.appendChild(reaEl('li',n)));
   const errs=((sm&&sm.errors)||[]).concat(j.error?[j.error]:[]);
   document.getElementById('reaErrs').textContent=errs.join('\n');
-  const bt=document.getElementById('reaBtns'); bt.textContent='';
-  if(j.state==='running'){ const b=reaEl('button','Batalkan'); b.onclick=()=>api('/api/rea/cancel',{method:'POST',body:JSON.stringify({id:j.id})}).then(()=>reaWatch()).catch(e=>toast(e.message)); bt.appendChild(b); }
-  else {
-    if(j.result_bytes){ const a=reaEl('a','⬇ Unduh JSON lengkap ('+fmtBytes(j.result_bytes)+')'); a.href='/api/rea/result?id='+encodeURIComponent(j.id)+tok(); a.className='btn'; a.style.cssText='padding:7px 13px;border:1px solid var(--border);border-radius:9px;text-decoration:none'; bt.appendChild(a); }
-    if(j.summary_text){ const b=reaEl('button','🧠 Jelaskan dengan otak aktif'); b.className='primary'; b.onclick=reaExplain; bt.appendChild(b); }
-  }
+  if(reaPrevJob!==j.id){ reaPrevJob=j.id; reaSavedFor=null; reaExpHide(); reaPromptHide(); }   // job lain: sembunyikan penjelasan job sebelumnya
+  reaRenderButtons(j);
+  if((j.state==='done'||j.state==='failed') && j.summary_text && reaSavedFor!==j.id){ reaSavedFor=j.id; reaLoadSaved(j); }
   const sg=document.getElementById('reaSuggest'); sg.textContent='';
   const sugg=(j.state==='done'?(j.suggest||[]):[]);
   document.getElementById('reaSuggestLbl').hidden=!sugg.length;
   sugg.forEach(s=>{ const b=reaEl('button',s.label||s.command); b.title=s.command;
     b.onclick=()=>reaRun(s.command, j.upload ? {upload:j.upload.id, file:j.upload.file} : j.target); sg.appendChild(b); });
+}
+// --- REA: penjelasan oleh Claude (akun Claude-mu, tanpa API key berbayar; satu jawaban TANPA alat) ---
+// Yang dikirim ke Claude hanya ringkasan hasil (teks), bukan berkasnya. Tombol "Bahas di Ngobrol" (di bawah) tetap ada
+// untuk membahas lanjut dengan otak aktif, yang memakai alatnya sendiri.
+let reaClaude={ready:false,hint:'',model:null}, reaPrevJob=null, reaSavedFor=null, reaExpTimer=null;
+function reaRenderButtons(j){
+  const bt=document.getElementById('reaBtns'), note=document.getElementById('reaClaudeNote');
+  bt.textContent=''; note.hidden=true; note.textContent='';
+  if(j.state==='running'){
+    const b=reaEl('button','Batalkan');
+    b.onclick=()=>api('/api/rea/cancel',{method:'POST',body:JSON.stringify({id:j.id})}).then(()=>reaWatch()).catch(e=>toast(e.message));
+    bt.appendChild(b); return;
+  }
+  if(j.result_bytes){ const a=reaEl('a','⬇ Unduh JSON lengkap ('+fmtBytes(j.result_bytes)+')'); a.href='/api/rea/result?id='+encodeURIComponent(j.id)+tok(); a.className='btn'; a.style.cssText='padding:7px 13px;border:1px solid var(--border);border-radius:9px;text-decoration:none'; bt.appendChild(a); }
+  if(!j.summary_text) return;
+  const explainable=(j.state==='done'||j.state==='failed');   // yang dibatalkan / melebihi batas waktu ditolak server (409)
+  const c=reaEl('button','🧠 Jelaskan dengan Claude-ku'); c.className='primary'; c.disabled=!reaClaude.ready;
+  c.title=reaClaude.ready?'Memakai akun Claude-mu (kuota langganan, bukan API key berbayar). Satu jawaban tanpa alat; yang dikirim hanya ringkasan hasil, bukan berkasnya.':'Claude belum login di bot ini (lihat catatan di bawah).';
+  c.onclick=()=>reaExplainClaude(j); if(explainable) bt.appendChild(c);
+  const d=reaEl('button','📋 Salin untuk Claude Desktop'); d.title='Menyalin teks siap tempel untuk aplikasi Claude Desktop atau Claude di HP-mu'; d.onclick=()=>reaCopyForDesktop(j); if(explainable) bt.appendChild(d);
+  const b=reaEl('button','💬 Bahas di Ngobrol (otak aktif)'); b.title='Mengirim ringkasan ke tab Ngobrol; otak yang sedang aktif memakai alatnya sendiri'; b.onclick=reaExplain; bt.appendChild(b);
+  if(explainable && !reaClaude.ready && reaClaude.hint){ note.textContent='Untuk "Jelaskan dengan Claude-ku": '+reaClaude.hint; note.hidden=false; }
+}
+function reaExpHide(){ clearTimeout(reaExpTimer); document.getElementById('reaExplain').hidden=true; }
+function reaExpShow(jid,mode,text,meta){
+  if(!reaLast||reaLast.id!==jid) return;   // pengguna sudah pindah ke job lain
+  const box=document.getElementById('reaExplain'); box.hidden=false; box.className='reaExplain'+(mode==='error'?' err':'');
+  document.getElementById('reaExplainTitle').textContent=mode==='error'?'Penjelasan gagal':mode==='running'?'⏳ Claude sedang menjelaskan…':'🧠 Penjelasan Claude';
+  document.getElementById('reaExplainText').textContent=text||'';
+  const m=[]; if(meta&&meta.model) m.push(meta.model); if(meta&&meta.seconds) m.push(meta.seconds+' dtk'); if(mode==='done') m.push('dari kuota akun Claude-mu');
+  document.getElementById('reaExplainMeta').textContent=m.join(' · ');
+  document.getElementById('reaExplainNote').textContent=mode==='done'?'Dibuat AI dari ringkasan REA; bisa keliru. Analisis statis tidak membuktikan sebuah berkas aman atau berbahaya.':'';
+  const cp=document.getElementById('reaExplainCopy'); cp.hidden=mode!=='done'; cp.onclick=()=>reaCopyText(text, document.getElementById('reaExplainText'));
+}
+async function reaCopyText(text, el){
+  try{ await navigator.clipboard.writeText(text); toast('Tersalin.'); }
+  catch(_){ const r=document.createRange(), s=getSelection();
+    r.selectNodeContents(el); s.removeAllRanges(); s.addRange(r); toast('Teks dipilih - tekan Ctrl+C / Salin.'); }
+}
+async function reaExplainClaude(j){
+  reaExpShow(j.id,'running','Meminta Claude di komputer…');
+  try{ const d=await api('/api/rea/explain',{method:'POST',body:JSON.stringify({id:j.id,via:'claude_code'})}); reaExpWatch(d.explain.id,j.id); }
+  catch(e){ reaExpShow(j.id,'error',e.message); }
+}
+function reaExpWatch(eid,jid,miss){
+  clearTimeout(reaExpTimer);
+  api('/api/rea/explain?id='+encodeURIComponent(eid)).then(e=>{
+    if(!reaLast||reaLast.id!==jid) return;
+    if(e.state==='running'){ reaExpShow(jid,'running','Claude sedang menjelaskan… '+reaFmtSec(e.elapsed)); reaExpTimer=setTimeout(()=>reaExpWatch(eid,jid),1500); }
+    else if(e.state==='done') reaExpShow(jid,'done',e.text,e);
+    else reaExpShow(jid,'error',e.error||'Claude gagal menjelaskan.');
+  }).catch(err=>{
+    if(!reaLast||reaLast.id!==jid) return;
+    if((miss||0)<3) reaExpTimer=setTimeout(()=>reaExpWatch(eid,jid,(miss||0)+1),2500);   // jaringan putus sesaat: coba lagi, jangan menyerah
+    else reaExpShow(jid,'error',err.message+' (penjelasan mungkin masih berjalan di komputer; buka lagi job ini untuk melihatnya)');
+  });
+}
+function reaLoadSaved(j){
+  api('/api/rea/explain?job='+encodeURIComponent(j.id)).then(d=>{
+    if(d.running){ reaExpShow(j.id,'running','Claude sedang menjelaskan… '+reaFmtSec(d.running.elapsed)); reaExpWatch(d.running.id,j.id); }   // kembali ke job yang masih dijelaskan: lanjutkan memantau
+    else if(d.saved) reaExpShow(j.id,'done',d.saved.text,d.saved);
+  }).catch(()=>{});
+}
+function reaPromptHide(){ document.getElementById('reaPromptBox').hidden=true; }
+async function reaCopyForDesktop(j){
+  try{
+    const d=await api('/api/rea/explain-prompt?id='+encodeURIComponent(j.id));
+    if(!reaLast||reaLast.id!==j.id) return;   // pindah job selagi menunggu
+    const tx=document.getElementById('reaPromptText');
+    tx.textContent=d.prompt; document.getElementById('reaPromptBox').hidden=false;   // kotak sendiri: tidak menimpa penjelasan yang sedang dibaca
+    document.getElementById('reaPromptCopy').onclick=()=>reaCopyText(d.prompt, tx);
+    document.getElementById('reaPromptClose').onclick=reaPromptHide;
+    try{ await navigator.clipboard.writeText(d.prompt); toast('Tersalin. Tempel di Claude Desktop (atau Claude di HP).'); }
+    catch(_){ toast('Pilih teks di bawah lalu salin (browser tidak mengizinkan menyalin otomatis di sini).'); }
+  }catch(e){ toast(e.message); }
 }
 function reaExplain(){
   if(!reaLast||!reaLast.summary_text) return;
