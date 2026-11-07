@@ -405,6 +405,24 @@ class ErrorExplainTest(unittest.TestCase):
         self.assertIn("JADX", title)
         self.assertIn("REA_JADX_MCP_JAR", title)
 
+    def test_rejected_file_format_is_not_reported_as_missing_file(self):
+        """Keluaran REA 6.7.0 NYATA untuk '.exe' yang bukan PE sah (fixture dari uji unggahan): berkasnya ADA dan
+        terbuka, formatnya yang ditolak. Dulu pesannya 'tidak ditemukan atau tidak bisa dibuka' - menyesatkan."""
+        err = load_fixture("error_bad_pe.json")
+        self.assertTrue(rea._is_error_json(err))
+        title, lines = rea._explain_error(err, "inspect-artifact")
+        self.assertIn("formatnya tidak valid", title)
+        self.assertIn("invalid or truncated PE header", title)
+        self.assertNotIn("tidak ditemukan", title)
+        self.assertTrue(any("Pesan REA" in line for line in lines))
+
+    def test_genuinely_missing_target_keeps_the_not_found_message(self):
+        err = {"error": "Analysis failed", "code": "target_unavailable", "category": "unavailable",
+               "message": "No such file", "details": {"path": "C:\\x\\hilang.exe"}}
+        title, _ = rea._explain_error(err, "inspect-artifact")
+        self.assertIn("tidak ditemukan", title)
+        self.assertIn("hilang.exe", title)
+
     def test_successful_evidence_is_not_an_error(self):
         self.assertFalse(rea._is_error_json(load_fixture("inspect_artifact_pe.json")))
 
@@ -706,6 +724,99 @@ class AnalyzeTest(JobBase):
         ok, text = rea.hasil(j["id"])
         self.assertTrue(ok)
         self.assertIn("notepad.exe", text)
+
+
+class UploadJobTest(JobBase):
+    """Job REA untuk berkas yang diunggah lewat dashboard: nama asli tampil, path penyimpanan internal tidak."""
+
+    def setUp(self):
+        super().setUp()
+        self.stored = os.path.join(self.dir, "rea-uploads", "0123456789ab", "content", "Setup Aplikasiku.exe")
+        os.makedirs(os.path.dirname(self.stored))
+        with open(self.stored, "wb") as f:
+            f.write(b"MZ")
+        self.upload = {"id": "0123456789ab", "name": "Setup Aplikasiku.exe", "kind": "file", "size": 2,
+                       "sha256": "ab" * 32, "file": None, "rel": None, "label": "Setup Aplikasiku.exe"}
+
+    def fake_echoing_target(self):
+        """REA tiruan yang mencetak hasil fixture TETAPI dengan local_path = target yang ia terima (seperti REA asli)."""
+        script = ("import sys, json; d = json.load(open(%r, encoding='utf-8')); "
+                  "d['subject']['local_path'] = sys.argv[1]; d['subject']['name'] = 'x'; "
+                  "sys.stdout.write(json.dumps(d))" % fixture("inspect_artifact_pe.json"))
+        return mock.patch.object(rea, "_argv", lambda command, target: [sys.executable, "-c", script, target])
+
+    def test_summary_shows_the_original_name_never_the_internal_path(self):
+        with self.fake_echoing_target():
+            started = rea.start(self.stored, "inspect-artifact", upload=self.upload)
+            j = self.wait(started["id"])
+        self.assertEqual(j["state"], "done", j)
+        self.assertEqual(j["label"], "Setup Aplikasiku.exe")
+        self.assertEqual(j["upload"]["id"], "0123456789ab")
+        self.assertEqual(j["upload"]["sha256"], "ab" * 32)
+        blob = json.dumps(j["summary"]) + j["summary_text"]
+        self.assertNotIn("rea-uploads", blob)
+        self.assertNotIn("0123456789ab", blob)
+        self.assertIn(["Berkas", "Setup Aplikasiku.exe"], j["summary"]["facts"])
+        # hasil mentah REA (untuk diunduh) tidak diubah sama sekali
+        with open(rea.result_path(j["id"]), encoding="utf-8") as f:
+            self.assertIn("rea-uploads", f.read())
+
+    def test_failure_summary_uses_the_label_too(self):
+        with self.fake(script_cat("error_jadx.json", code=1)):
+            j = self.wait(rea.start(self.stored, "inspect-artifact", upload=self.upload)["id"])
+        self.assertEqual(j["state"], "failed")
+        self.assertIn(["Target", "Setup Aplikasiku.exe"], j["summary"]["facts"])
+        self.assertNotIn("rea-uploads", json.dumps(j["summary"]))
+
+    def test_cancelled_job_summary_uses_the_label(self):
+        with self.fake(SLEEPER):
+            jid = rea.start(self.stored, "inspect-artifact", upload=self.upload)["id"]
+            rea.cancel(jid)
+        j = rea.job(jid)
+        self.assertEqual(j["state"], "cancelled")
+        self.assertIn(["Target", "Setup Aplikasiku.exe"], j["summary"]["facts"])
+
+    def test_upload_is_reserved_only_while_the_job_runs(self):
+        self.assertEqual(rea.active_upload_ids(), set())
+        with self.fake(SLEEPER):
+            jid = rea.start(self.stored, "inspect-artifact", upload=self.upload)["id"]
+            self.assertEqual(rea.active_upload_ids(), {"0123456789ab"})
+            rea.cancel(jid)
+        self.assertEqual(rea.active_upload_ids(), set())
+
+    def test_label_and_upload_survive_a_restart(self):
+        with self.fake_echoing_target():
+            jid = self.wait(rea.start(self.stored, "inspect-artifact", upload=self.upload)["id"])["id"]
+        rea._JOBS.clear()                        # "It's Me menyala ulang": hanya disk yang tersisa
+        j = rea.job(jid)
+        self.assertEqual((j["state"], j["label"], j["upload"]["name"]), ("done", "Setup Aplikasiku.exe",
+                                                                         "Setup Aplikasiku.exe"))
+        self.assertTrue(j["suggest"])            # saran pemeriksaan lanjutan tetap dihitung dari path
+
+    def test_plain_path_jobs_are_unchanged(self):
+        with self.fake(script_cat("inspect_artifact_pe.json")):
+            j = self.wait(rea.start(self.exe, "inspect-artifact")["id"])
+        self.assertIsNone(j["label"])
+        self.assertIsNone(j["upload"])
+        self.assertEqual(rea.active_upload_ids(), set())
+
+    def test_upload_meta_is_coerced_to_plain_types(self):
+        meta = rea._upload_meta({"id": "abc", "name": "a\nb\x00c", "kind": "file", "size": True, "sha256": 5,
+                                 "file": "1", "rel": None, "label": "x\r\ny", "evil": "<script>"})
+        self.assertEqual(meta["name"], "a b c")
+        self.assertEqual(meta["label"], "x y")
+        self.assertIsNone(meta["size"])          # bool bukan ukuran
+        self.assertIsNone(meta["sha256"])        # bukan teks
+        self.assertIsNone(meta["file"])          # "1" bukan int
+        self.assertNotIn("evil", meta)
+        for junk in (None, "x", [], {"name": "tanpa id"}, {"id": 5}):
+            self.assertIsNone(rea._upload_meta(junk))
+
+    def test_path_variants_cover_windows_and_posix_spellings(self):
+        variants = rea._path_variants(r"C:\data\x.exe")
+        self.assertIn("C:/data/x.exe", variants)
+        self.assertIn("\\\\?\\C:\\data\\x.exe", variants)
+        self.assertEqual(variants, sorted(variants, key=len, reverse=True))
 
 
 if __name__ == "__main__":

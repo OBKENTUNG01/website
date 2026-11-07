@@ -417,7 +417,34 @@ bot (`analisis_rea`, hasilnya diambil dengan `hasil_rea <id>`). Butuh **Node.js*
 
 - **Yang bisa diperiksa:** berkas lokal (`.exe .dll .sys .apk .jar .zip .asar .so .dylib .msi`, dst.)
   dan **folder** aplikasi (JavaScript/Electron). **Alamat web (URL) belum didukung REA 6.7.0** —
-  unduh dulu berkasnya, lalu isi path-nya (dashboard & bot menolaknya sebelum minta persetujuan).
+  unduh dulu berkasnya, lalu masukkan ke kotak unggah di bawah (atau isi path-nya); dashboard & bot
+  menolak URL sebelum minta persetujuan.
+- **Masukkan aplikasinya langsung (unggah):** di kartu REA, **seret** berkas/folder aplikasi ke kotak
+  bergaris putus, atau tekan **Pilih berkas…** / **Pilih folder…** (di HP: pemilih berkas bawaan). Tidak perlu
+  tahu path-nya, dan bisa dari perangkat mana pun yang membuka dashboard (HP, laptop lain, lewat tunnel).
+  - **Bertahap & bisa dilanjutkan:** dikirim per **8 MiB** (`ITSME_REA_CHUNK_MB`), bukan satu permintaan raksasa
+    — Cloudflare membatasi badan permintaan **100 MB** (paket Free/Pro), jadi aplikasi 235 MB pun lewat. Tiap
+    potongan diperiksa **SHA-256**-nya (kalau browser mendukung `crypto.subtle`) dan ditulis semua-atau-tidak-
+    sama-sekali. Koneksi putus → mencoba lagi sendiri; halaman dimuat ulang atau It's Me menyala ulang → pilih
+    **berkas yang sama** lagi dan unggahan lanjut dari byte terakhir di disk (bukan dari awal). Berkas yang
+    sama persis yang sudah ada di server dipakai ulang tanpa diunggah lagi.
+  - **Satu berkas atau satu folder utuh:** folder diunggah dengan struktur persis sama (daftar berkas lalu
+    dikirim satu per satu; nama berbahaya seperti `..`, path mutlak, `CON`/`NUL`, `:` ditolak). Dari dalam
+    folder bisa dianalisis seluruh folder (aplikasi JS/Electron) atau satu berkas pilihan (daftar exe/dll/asar/apk).
+  - **ZIP/APK/JAR/ASAR** diunggah sebagai satu berkas dan isinya diinventaris oleh REA (`inspect-artifact`);
+    It's Me **tidak membongkarnya**. Browser HP tidak bisa memilih folder, jadi dari HP unggah berkas utamanya
+    (exe/apk/asar) saja; seluruh folder aplikasi bisa diunggah dari browser desktop (seret atau "Pilih folder…").
+  - **Disimpan sementara** di `data/rea-uploads/<id>/` (supaya "pemeriksaan lanjutan" tanpa unggah ulang):
+    paling banyak 10 unggahan / 4 GB / 7 hari (`ITSME_REA_UPLOAD_KEEP`, `_KEEP_MB`, `_DAYS`), dibersihkan
+    otomatis; unggahan yang sedang dipakai analisis tidak pernah dihapus; tombol **Hapus** per unggahan.
+  - **Batas:** 2 GB per unggahan (`ITSME_REA_UPLOAD_MAX_MB`), 5000 berkas per folder (`ITSME_REA_UPLOAD_FILES`),
+    cek ruang disk sebelum mulai. Berkas yang melebihi batas ditolak seketika di browser tanpa dikirim.
+  - **Keamanan:** hanya pemilik yang sudah login/bertoken (sama seperti rute lain; ditambah header anti-CSRF).
+    Berkas **tidak pernah dijalankan** dan tidak pernah disajikan balik ke browser. Nama dibersihkan (karakter
+    terlarang Windows, pembalik arah teks `U+202E`, nama perangkat), tiap unggahan di folder acaknya sendiri,
+    pembacaan badan punya batas waktu 60 dtk (HP yang kehilangan sinyal tidak menahan server). Antivirus
+    (Windows Defender) bisa mengarantina sampel malware yang diunggah — It's Me mendeteksinya dan memberi tahu.
+  - **Nama tampil:** hasil dan ringkasan memakai **nama asli berkas** (bukan path penyimpanan internal).
 - **Perintah:** dipilih otomatis (berkas → `inspect-artifact`, folder → `analyze-javascript-application`),
   atau pilih sendiri dari daftar putih yang diambil dari `rea --help` nyata: `inspect-artifact`,
   `inspect-pe-resources` (ikon/manifest/versi produk), `inspect-managed-artifact` (.NET),
@@ -706,6 +733,10 @@ Node di komputer ini mati, `/bersama` jatuh ke Ollama langsung di komputer ini.
 | `ITSME_REA_VERSION` | `6.7.0` | Versi paket `rea-agents` yang dijalankan (`latest` boleh). Dipatok karena `latest` pernah menarik 6.8.0 yang butuh Node >= 22.23.4 |
 | `ITSME_REA_TIMEOUT` / `ITSME_REA_TIMEOUT_JS` | `15` / `45` | Batas waktu analisis REA (menit): umum / analisis aplikasi JavaScript |
 | `ITSME_REA_NODE` / `ITSME_REA_NPX_CLI` | — | Path `node` / `npx-cli.js` kalau tidak ketemu otomatis (REA dijalankan tanpa shell) |
+| `ITSME_REA_UPLOAD_MAX_MB` | `2048` | Ukuran terbesar satu unggahan ke REA (MB), berkas atau seluruh folder |
+| `ITSME_REA_UPLOAD_KEEP` / `ITSME_REA_UPLOAD_KEEP_MB` / `ITSME_REA_UPLOAD_DAYS` | `10` / `4096` / `7` | Unggahan REA yang disimpan di `data/rea-uploads/`: jumlah / total MB / umur (hari) |
+| `ITSME_REA_UPLOAD_FILES` | `5000` | Berkas paling banyak dalam satu folder yang diunggah |
+| `ITSME_REA_CHUNK_MB` | `8` | Ukuran potongan unggahan (1–32 MB). Tetap di bawah 100 supaya lolos batas Cloudflare |
 | `ITSME_PUBLIC_URL` | — | Alamat publik dashboard ini (mis. `https://domainku.com`), dipakai `/pasang` agar komputer baru menyambung keluar ke sini **tanpa Tailscale**. Kosong = diambil dari domain pertama `ITSME_DASHBOARD_DOMAINS` |
 | `ITSME_TG_WEBHOOK` | `0` | `1` = pesan Telegram diterima lewat webhook ke alamat tunnel dashboard (bukan polling); lihat catatan di bawah tabel |
 | `ITSME_PASSPHRASE` | — | Kata sandi lapisan kedua sebelum bot bisa dipakai; salah selalu dibalas "minimal 20 karakter" (pengecoh). Kosong = mati |
