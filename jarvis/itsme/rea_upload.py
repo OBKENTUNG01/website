@@ -188,6 +188,8 @@ def _split_rel(path):
 _GLOBAL = threading.RLock()
 _LOCKS = {}          # id -> Lock penulis (satu potongan sekaligus per unggahan)
 _META_CACHE = {}     # id -> (mtime_ns, size, meta): meta.json folder besar tak perlu diurai tiap potongan
+_VIEW_CACHE = {}     # id -> (waktu monotonic, view): kemajuan unggahan berjalan untuk DAFTAR (lihat _list_view)
+_LIST_VIEW_TTL = 3.0   # detik; status()/resume tetap selalu membaca disk langsung
 
 
 def _root():
@@ -235,6 +237,7 @@ def _save_meta(meta):
         json.dump(meta, f, ensure_ascii=False)
     _replace(tmp, path)
     _META_CACHE.pop(meta["id"], None)
+    _VIEW_CACHE.pop(meta["id"], None)
 
 
 def _valid_meta(meta, uid):
@@ -521,17 +524,12 @@ def _intact(meta):
 
 
 def fmt_size(n):
-    """Ukuran manusiawi: '352.0 KB', '2.0 GB'."""
-    return _fmt(n or 0)
+    """Ukuran manusiawi ('352 KB', '2,4 MB'): satu pemformat dengan ringkasan REA (rea._fmt_size), supaya pesan
+    galat unggahan, teks persetujuan, dan ringkasan hasil tidak berbeda satuan/format."""
+    return rea._fmt_size(n or 0)
 
 
-def _fmt(n):
-    n = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} GB"
+_fmt = fmt_size
 
 
 # --- menerima potongan ----------------------------------------------------------------------------
@@ -662,7 +660,23 @@ def list_uploads():
             if meta:
                 out.append(meta)
     out.sort(key=lambda m: m.get("updated") or m.get("created") or 0, reverse=True)
-    return [view(m) for m in out]
+    return [_list_view(m) for m in out]
+
+
+def _list_view(meta):
+    """view() untuk DAFTAR (/api/rea/info, diminta tiap pindah tab dan tiap job selesai, oleh tiap tab terbuka).
+    Unggahan selesai tidak perlu stat per berkas (lihat view). Yang masih berjalan menghitung kemajuannya dengan
+    stat SETIAP berkas - untuk folder 5000 berkas itu 10 ribu stat per panggilan - jadi dipakai ulang sampai
+    _LIST_VIEW_TTL detik. Hanya untuk tampilan daftar: status() dan potongan selalu membaca disk."""
+    if meta["state"] != "uploading":
+        return view(meta)
+    now = time.monotonic()
+    hit = _VIEW_CACHE.get(meta["id"])
+    if hit and now - hit[0] < _LIST_VIEW_TTL:
+        return hit[1]
+    fresh = view(meta)
+    _VIEW_CACHE[meta["id"]] = (now, fresh)
+    return fresh
 
 
 def resolve(upload_id, index=None):
@@ -762,6 +776,7 @@ def delete(upload_id, protected=None):
 
 def _remove(uid):
     _META_CACHE.pop(uid, None)
+    _VIEW_CACHE.pop(uid, None)
     shutil.rmtree(_udir(uid), ignore_errors=True)
     if os.path.exists(_udir(uid)):   # berkas masih dipegang proses lain (Windows)
         raise UploadError("Sebagian berkas masih dipakai program lain dan belum bisa dihapus. Coba lagi nanti.", 409)

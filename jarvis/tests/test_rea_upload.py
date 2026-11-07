@@ -588,6 +588,56 @@ class IdsAndDeleteTest(Base):
         self.assertEqual([u["state"] for u in listing], ["uploading", "ready"])
 
 
+class ListViewCacheTest(Base):
+    """Daftar unggahan (/api/rea/info) sering diminta: kemajuan unggahan yang berjalan tidak boleh di-stat per
+    berkas pada setiap panggilan, tapi status() (dipakai melanjutkan) harus tetap persis."""
+
+    def make_partial(self):
+        files = [{"path": f"App/f{i}.bin", "size": 1500} for i in range(5)]
+        view, _ = rea_upload.create("dir", files=files)
+        return view["id"]
+
+    def test_running_upload_progress_is_reused_briefly_for_the_list_only(self):
+        uid = self.make_partial()
+        real = rea_upload._progress
+        with mock.patch.object(rea_upload, "_progress", side_effect=real) as spy:
+            first = rea_upload.list_uploads()
+            second = rea_upload.list_uploads()
+            self.assertEqual(spy.call_count, 1)               # panggilan kedua memakai hasil tadi
+            self.assertEqual(first, second)
+            rea_upload.write_chunk(uid, 0, 0, b"a" * 1024)
+            self.assertEqual(rea_upload.status(uid)["received"], 1024)   # status() selalu menghitung ulang dari disk
+            self.assertEqual(spy.call_count, 2)
+            self.assertEqual(rea_upload.list_uploads()[0]["received"], 0)  # daftar boleh tertinggal <= TTL
+            with mock.patch.object(rea_upload, "_LIST_VIEW_TTL", 0):
+                self.assertEqual(rea_upload.list_uploads()[0]["received"], 1024)   # TTL lewat: dihitung ulang
+
+    def test_cache_is_dropped_when_the_upload_changes_or_goes_away(self):
+        uid = self.make_partial()
+        rea_upload.list_uploads()
+        self.assertIn(uid, rea_upload._VIEW_CACHE)
+        rea_upload.create("dir", files=[{"path": "App/f0.bin", "size": 1500}, {"path": "App/f1.bin", "size": 1500},
+                                        {"path": "App/f2.bin", "size": 1500}, {"path": "App/f3.bin", "size": 1500},
+                                        {"path": "App/f4.bin", "size": 1500}], fingerprint=None)
+        rea_upload.delete(uid)
+        self.assertNotIn(uid, rea_upload._VIEW_CACHE)
+
+    def test_finished_uploads_are_never_served_from_the_progress_cache(self):
+        done = self.upload_file("a.exe", b"x" * 50)
+        listing = rea_upload.list_uploads()
+        self.assertEqual((listing[0]["id"], listing[0]["state"], listing[0]["received"]), (done["id"], "ready", 50))
+        self.assertNotIn(done["id"], rea_upload._VIEW_CACHE)
+
+    def test_size_text_uses_the_shared_formatter(self):
+        self.assertEqual(rea_upload.fmt_size(360448), rea._fmt_size(360448))
+        self.assertEqual(rea_upload.fmt_size(None), rea._fmt_size(0))
+        with mock.patch.object(rea_upload, "max_bytes", return_value=5000):
+            with self.assertRaises(UploadError) as cm:
+                rea_upload.create("file", name="big.bin", size=2 * 1024 ** 3)
+        self.assertIn(rea._fmt_size(2 * 1024 ** 3), cm.exception.message)
+        self.assertIn(rea._fmt_size(5000), cm.exception.message)
+
+
 class PruneTest(Base):
     def age(self, uid, seconds, key="last_used"):
         path = os.path.join(self.dir, "rea-uploads", uid, "meta.json")

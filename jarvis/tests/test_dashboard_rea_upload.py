@@ -277,8 +277,7 @@ class ChunkHardeningTest(UploadHttpBase):
         for k, v in {**self.headers, "Content-Type": "application/octet-stream",
                      "Transfer-Encoding": "chunked"}.items():
             c.putheader(k, v)
-        c.endheaders()
-        c.send(b"5\r\nhello\r\n0\r\n\r\n")
+        c.endheaders()    # hanya header: server menolak dari header, jadi tak ada badan tak terbaca (RST) yang membalap respons
         resp = c.getresponse()
         resp.read()
         self.assertEqual(resp.status, 411)
