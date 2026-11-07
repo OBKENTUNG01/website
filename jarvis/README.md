@@ -460,9 +460,28 @@ bot (`analisis_rea`, hasilnya diambil dengan `hasil_rea <id>`). Butuh **Node.js*
   (produk/perusahaan/versi); versi Go & dependensi; fuse Electron; dst. Galat REA dijelaskan ramah
   (mis. "butuh JADX: setel `REA_JADX_MCP_JAR`"), bukan traceback.
 - **Otaknya?** **REA tidak punya otak/AI sendiri** — ia alat analisis biasa; ringkasannya disusun
-  program. Untuk penjelasan bahasa manusia, tombol **🧠 Jelaskan dengan otak aktif** mengirim ringkasan ke
-  otak yang sedang aktif (Ollama/OpenRouter/DeepSeek/Claude — yang tampil di kartu); lewat bot, otak
-  yang sedang aktif itulah yang menafsirkan keluaran alatnya; lewat Claude (MCP), Claude-lah.
+  program. Untuk penjelasan bahasa manusia ada tiga tombol di bawah hasil:
+  - **🧠 Jelaskan dengan Claude-ku** — satu jawaban dari **akun Claude-mu** (kuota langganan Pro/Max, **bukan API
+    key berbayar**), tampil langsung di kartu dan disimpan di folder job (membuka riwayat tidak memakai kuota
+    lagi). Memakai otak "Claude di komputer" yang sudah ada: butuh login **sekali** (`python -m itsme.claude_login`
+    di komputer; browser terbuka, token ±1 tahun disimpan di `.env`). Belum login → tombolnya mati dan petunjuknya
+    tampil. Berbeda dari obrolan: **tanpa alat apa pun** (`tools=[]`, satu giliran, tanpa `CLAUDE.md`/pengaturan/MCP,
+    folder kerja kosong), karena teks di ringkasan berasal dari berkas yang dianalisis (tidak tepercaya) dan tidak
+    boleh sampai ke agen yang punya shell/berkas. Dari It's Me hanya **ringkasan teks** yang dikirim ke Anthropic,
+    tidak pernah berkasnya (Claude Code menambah keterangan biasa seperti sistem operasi). Satu penjelasan
+    sekaligus (kuota dihemat), batas 150 detik, galat kuota/login/filter keamanan dijelaskan. Variabel lingkungan
+    komputer yang bisa mengalihkan penagihan (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+    Bedrock/Vertex/Foundry) ditimpa kosong, jadi yang dipakai pasti akun Claude-mu. *Aplikasi Claude Desktop sendiri
+    tidak menyediakan cara bagi program lain memakai loginnya (dokumentasi Anthropic: Desktop memakai OAuth-nya
+    sendiri), jadi yang dipakai adalah AKUN yang sama lewat token resmi `claude setup-token` di Claude Code.*
+    Aturan Anthropic (code.claude.com/docs/en/legal-and-compliance): token langganan untuk pemakaian pribadi di
+    komputermu sendiri, dan batas kuota paket mengasumsikan pemakaian pribadi yang wajar; tamu tidak pernah sampai
+    ke jalur ini, dan jangan membagikan token.
+  - **📋 Salin untuk Claude Desktop** — menyalin teks siap tempel (aturan + data, tanpa token apa pun, melarang
+    alat) untuk ditempel di aplikasi Claude Desktop atau Claude di HP; memakai langgananmu langsung di aplikasi itu.
+  - **💬 Bahas di Ngobrol (otak aktif)** — mengirim ringkasan ke tab Ngobrol; otak yang aktif (Ollama/OpenRouter/
+    DeepSeek/Claude) menjawab dengan alatnya sendiri, cocok untuk tanya-jawab lanjutan.
+  Lewat bot, otak yang sedang aktif yang menafsirkan keluaran alatnya; lewat Claude (MCP), Claude-lah.
 - **Aman:** pemilik SELALU diminta konfirmasi lewat Telegram (juga saat akses penuh); berkas rahasia
   (`.env`, kunci, token) ditolak; tanpa shell (argumen dikirim sebagai daftar — nama berkas berisi `&`
   tidak bisa menyisipkan perintah); target berawalan `-` dan perintah di luar daftar putih ditolak.
