@@ -18,6 +18,9 @@ data/keypool.json.tmp
 data/wa_info.txt
 data/dashboard_token.txt
 data/hp_token.txt
+# Hasil analisis REA (bisa ratusan MB) dan berkas/folder yang diunggah ke REA (bisa berisi contoh malware).
+data/rea-jobs/
+data/rea-uploads/
 data/drive_token.json
 data/drive_credentials.json
 

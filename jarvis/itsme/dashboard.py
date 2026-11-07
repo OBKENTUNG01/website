@@ -88,6 +88,9 @@ _REDACT = re.compile(r"(sk-[a-z]+-[A-Za-z0-9_-]{6,}|\d{6,}:[A-Za-z0-9_-]{20,})")
 # Header yang hanya bisa dipasang oleh JavaScript dashboard sendiri (bukan oleh
 # form dari situs lain): penjaga sederhana terhadap CSRF.
 _GUARD_HEADER = "x-itsme-dashboard"
+# Batas diam (detik) saat membaca badan potongan unggahan REA dari klien: HP yang hilang sinyal di tengah
+# potongan tidak boleh menahan satu thread server selamanya.
+UPLOAD_IO_TIMEOUT = 60
 # Jalur dari aplikasi HP (long-poll): auth pakai token HP, tanpa header/sesi dashboard.
 _HP_INGRESS = {"/api/hp/poll", "/api/hp/result", "/api/hp/frame"}
 # Jalur komputer baru bergabung TANPA Tailscale: menukar kode undangan satu-kali
@@ -294,6 +297,45 @@ def ctx_cwd(app):
 
 
 # --- REA & Ollama (panel web, bukan cuma lewat bot - lihat tools.py untuk tool Telegram-nya) ---
+def _rea_analyze_upload(app, upload_id, file_index, command):
+    """Mulai REA pada berkas/folder yang DIUNGGAH lewat dashboard (rea_upload.py) -> (ok, pesan, job).
+
+    Berbeda dari path biasa: path-nya dibuat server sendiri di folder penyimpanan (tidak ada input path dari
+    pengguna, jadi tidak ada pemeriksaan berkas-rahasia), dan nama tampil/ringkasan memakai nama aslinya."""
+    from . import rea, rea_upload
+
+    command = (command or "").strip() or None
+    if isinstance(file_index, str) and file_index.strip().isdigit():
+        file_index = int(file_index.strip())
+    elif file_index in ("", None):
+        file_index = None
+    elif isinstance(file_index, bool) or not isinstance(file_index, int):
+        return False, "Nomor berkas di dalam folder tidak valid.", None
+    try:
+        info = rea_upload.resolve(upload_id, file_index)
+    except rea_upload.UploadError as exc:
+        return False, exc.message, None
+    up = info["upload"]
+    cmd_display = command or rea.pick_command(info["path"]) or "(REA akan menolak - sebut rea_command)"
+    sha = f", SHA-256 {up['sha256'][:16]}…" if up.get("sha256") else ""
+    teks = (
+        f"Jalankan REA ({cmd_display}) pada berkas yang diunggah lewat dashboard:\n\n{info['label']} "
+        f"({rea_upload.fmt_size(up.get('size'))}{sha})\n\n"
+        "Hanya untuk software milik sendiri / riset keamanan yang sah - REA bukan sandbox."
+    )
+    # Persetujuan Telegram bisa menunggu menit-menitan; selama itu unggahan ditahan supaya tidak dipangkas
+    # (job belum terdaftar, jadi rea.active_upload_ids() belum melindunginya).
+    with rea_upload.holding(up["id"]):
+        if not tools.approve(app.owner_ctx(), teks, always_ask=True):
+            return False, "Dibatalkan oleh pemilik.", None
+        try:
+            job = rea.start(info["path"], command, upload=up)
+        except rea.ReaError as exc:
+            return False, str(exc), None
+        rea_upload.touch(up["id"])
+    return True, f"REA ({job.get('command')}) dimulai di latar - kemajuan tampil di bawah.", job
+
+
 def _rea_analyze(app, target_in, command):
     """Validasi target, minta persetujuan pemilik, lalu mulai job REA di latar -> (ok, pesan, job).
 
@@ -729,6 +771,132 @@ def _make_handler(app, token):
             except (ValueError, OSError):
                 return {}
 
+        # -- unggahan REA (rea_upload.py): badan mentah per potongan --
+        def _upload_error(self, exc):
+            body = {"ok": False, "error": exc.message}
+            body.update(exc.extra)
+            return self._json(body, exc.status)
+
+        def _content_length(self):
+            """Content-Length yang sah (int >= 0), atau None kalau tidak ada / aneh / pakai chunked."""
+            if self.headers.get("Transfer-Encoding"):
+                return None
+            try:
+                n = int(self.headers.get("Content-Length"))
+            except (TypeError, ValueError):
+                return None
+            return n if n >= 0 else None
+
+        def _set_timeout(self, seconds):
+            try:
+                self.connection.settimeout(seconds)
+            except OSError:
+                pass
+
+        def _drain(self, n):
+            """Buang `n` byte badan permintaan yang tidak akan dipakai. Sambungan HTTP/1.1 dipakai ulang
+            (keep-alive): badan yang tidak terbaca akan dibaca sebagai permintaan BERIKUTNYA. Kalau badannya
+            terlalu besar / tak diketahui / macet, sambungan ditutup saja."""
+            from . import rea_upload
+
+            if n is None or n > rea_upload.chunk_bytes() + (1 << 20):
+                self.close_connection = True
+                return
+            self._set_timeout(UPLOAD_IO_TIMEOUT)
+            try:
+                left = n
+                while left > 0:
+                    got = self.rfile.read(min(65536, left))
+                    if not got:
+                        self.close_connection = True
+                        return
+                    left -= len(got)
+            except OSError:
+                self.close_connection = True
+            finally:
+                self._set_timeout(self.timeout)
+
+        def _reject_upload(self, code, message, drain=True, **extra):
+            """Tolak permintaan potongan dengan JSON yang terbaca browser, tanpa merusak sambungan."""
+            if drain:
+                self._drain(self._content_length())
+            else:
+                self.close_connection = True
+            payload = {"ok": False, "error": message}
+            payload.update(extra)
+            self._send(code, json.dumps(payload), headers={"Connection": "close"} if self.close_connection else None)
+
+        def _read_exact(self, length):
+            """Baca tepat `length` byte badan, dengan batas diam 60 dtk (klien HP yang hilang sinyal tidak
+            boleh menahan thread selamanya). None kalau terputus/macet."""
+            buf = bytearray()
+            self._set_timeout(UPLOAD_IO_TIMEOUT)
+            try:
+                while len(buf) < length:
+                    got = self.rfile.read(min(1 << 20, length - len(buf)))
+                    if not got:
+                        break
+                    buf += got
+            except OSError:
+                buf = bytearray()
+            finally:
+                self._set_timeout(self.timeout)
+            if len(buf) != length:
+                self.close_connection = True
+                return None
+            return buf   # bytearray: hashlib dan write() menerimanya, tanpa menyalin ulang 8 MiB
+
+        def _rea_upload_chunk(self):
+            """POST /api/rea/upload/chunk?id=&file=&offset= dengan badan = byte mentah satu potongan."""
+            from . import rea_upload
+
+            if not self._authed():
+                return self._reject_upload(401, "unauthorized")
+            length = self._content_length()
+            if length is None:
+                return self._reject_upload(411, "Potongan wajib membawa Content-Length (tanpa chunked).", drain=False)
+            if length > rea_upload.chunk_bytes():
+                return self._reject_upload(
+                    413, f"Potongan terlalu besar (maks. {rea_upload.chunk_bytes()} byte).", drain=False)
+            if length == 0:
+                return self._reject_upload(400, "Potongan kosong.")
+            q = self._query()
+            try:
+                index = int((q.get("file") or ["0"])[0])
+                offset = int((q.get("offset") or [""])[0])
+            except ValueError:
+                return self._reject_upload(400, "Parameter file dan offset harus berupa angka.")
+            sha = (self.headers.get("X-Chunk-Sha256") or "").strip() or None
+            data = self._read_exact(length)
+            if data is None:
+                return None   # klien putus / macet: tak ada yang bisa dibalas
+            try:
+                result = rea_upload.write_chunk((q.get("id") or [""])[0], index, offset, data, sha)
+            except rea_upload.UploadError as exc:
+                return self._upload_error(exc)
+            result["ok"] = True
+            return self._json(result)
+
+        def _rea_upload_json(self, path, data):
+            """Rute JSON unggahan: start / finish / delete."""
+            from . import rea_upload
+
+            if not isinstance(data, dict):
+                data = {}
+            try:
+                if path == "/api/rea/upload/start":
+                    view, reused = rea_upload.create(
+                        data.get("kind"), name=data.get("name"), size=data.get("size"), files=data.get("files"),
+                        fingerprint=data.get("fingerprint"))
+                    return self._json({"ok": True, "upload": view, "reused": reused,
+                                       "chunk": rea_upload.chunk_bytes(), "limits": rea_upload.limits()})
+                if path == "/api/rea/upload/finish":
+                    return self._json({"ok": True, "upload": rea_upload.finish(data.get("id"))})
+                rea_upload.delete(data.get("id"))
+                return self._json({"ok": True})
+            except rea_upload.UploadError as exc:
+                return self._upload_error(exc)
+
         # -- GET --
         def do_GET(self):
             path = urlparse(self.path).path
@@ -865,10 +1033,18 @@ def _make_handler(app, token):
                 return self._send(code, body, ctype, headers={"Content-Disposition": disp} if disp else None)
             # -- REA: info, job (kemajuan + ringkasan), unduh JSON lengkap --
             if path == "/api/rea/info":
-                from . import rea
-                return self._json({"version": rea.REA_VERSION, "commands": rea.COMMANDS,
+                from . import rea, rea_upload
+                return self._json({"version": rea.REA_VERSION, "commands": rea.COMMANDS, "labels": rea._LABELS,
                                    "brain": brain.current_backend(), "brain_desc": brain.describe(),
-                                   "jobs": rea.list_jobs(8)})
+                                   "jobs": rea.list_jobs(8), "uploads": rea_upload.list_uploads(),
+                                   "limits": rea_upload.limits()})
+            if path == "/api/rea/upload":   # keadaan satu unggahan (untuk melanjutkan yang terputus)
+                from . import rea_upload
+                try:
+                    return self._json({"ok": True, "upload": rea_upload.status((self._query().get("id") or [""])[0]),
+                                       "limits": rea_upload.limits()})
+                except rea_upload.UploadError as exc:
+                    return self._upload_error(exc)
             if path == "/api/rea/job":
                 from . import rea
                 job = rea.job((self._query().get("id") or [""])[0])
@@ -1002,10 +1178,17 @@ def _make_handler(app, token):
                 return self._hp_ingress(path)
             if path in _NODE_INGRESS:
                 return self._node_join_ingress(path)
+            is_chunk = path == "/api/rea/upload/chunk"   # badan mentah (bukan JSON): jangan lewat self._body()
             if self.headers.get(_GUARD_HEADER) != "1":
+                if is_chunk:   # badan potongan yang tak dibaca merusak sambungan keep-alive: buang/tutup dulu
+                    return self._reject_upload(403, "permintaan ditolak (tanpa header dashboard)")
                 return self._json({"error": "permintaan ditolak (tanpa header dashboard)"}, 403)
             if not self._host_ok():
+                if is_chunk:
+                    return self._reject_upload(403, "domain tidak diizinkan")
                 return self._json({"error": "domain tidak diizinkan"}, 403)
+            if is_chunk:
+                return self._rea_upload_chunk()
             data = self._body()
             if path in _DEVICE_PATHS:  # dari perangkat ke Hub (secret, bukan login)
                 obj, code = device_api(app, path, self.client_address[0], data)
@@ -1040,8 +1223,14 @@ def _make_handler(app, token):
                 ok, msg = _open_path(app, data.get("path", ""))
             elif path == "/api/fs/run":
                 ok, msg = _run_command(app, data.get("command", ""))
+            elif path in ("/api/rea/upload/start", "/api/rea/upload/finish", "/api/rea/upload/delete"):
+                return self._rea_upload_json(path, data)
             elif path == "/api/rea/analyze":
-                ok, msg, job = _rea_analyze(app, data.get("path_atau_url", ""), data.get("rea_command", ""))
+                if data.get("upload"):   # berkas/folder yang diunggah lewat dashboard
+                    ok, msg, job = _rea_analyze_upload(app, data.get("upload"), data.get("file"),
+                                                       data.get("rea_command", ""))
+                else:
+                    ok, msg, job = _rea_analyze(app, data.get("path_atau_url", ""), data.get("rea_command", ""))
                 if ok:
                     return self._json({"ok": True, "message": msg, "job": job})
                 # "error" ikut dikirim: api() di halaman hanya menampilkan field itu untuk status !=200
@@ -1351,6 +1540,8 @@ textarea{width:100%;min-height:150px;resize:vertical;background:var(--bg2);color
 pre{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px;overflow:auto;max-height:320px;font-size:.8rem;margin:0;white-space:pre-wrap;word-break:break-word}
 .sub{font-size:.85rem;color:var(--muted);margin-top:6px}
 input,select{background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font:inherit}
+/* select selebar opsi terpanjangnya: tanpa ini satu opsi berteks panjang melebarkan seluruh halaman di HP */
+select{min-width:0;max-width:100%}
 input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:1px;border-color:var(--accent)}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(10px);background:var(--text);color:var(--bg);
   padding:12px 18px;border-radius:12px;opacity:0;transition:.25s;pointer-events:none;max-width:90%;box-shadow:var(--shadow);z-index:50;font-weight:600}
@@ -1372,6 +1563,21 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
 .fsrow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fsrow .sz{color:var(--muted);font-size:.78rem}
 .fsrow.secret{opacity:.55}
+.reaDrop{border:2px dashed var(--border);border-radius:14px;padding:16px 14px;text-align:center;background:var(--bg2);cursor:pointer;transition:.15s;margin-top:10px;outline:none}
+.reaDrop:hover,.reaDrop.over,.reaDrop:focus-visible{border-color:var(--accent);background:var(--accent-soft)}
+.reaDrop.over{border-style:solid}
+.reaDropIcon{font-size:1.7rem;line-height:1.2}
+.upRow{border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-top:8px;background:var(--card)}
+.upRow .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.upRow .nm{flex:1 1 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:650}
+.upRow .meta{font-size:.8rem;color:var(--muted);margin-top:3px;word-break:break-word}
+.upRow button{padding:6px 11px;font-size:.82rem}
+.upRow select{padding:6px 8px;font-size:.82rem;max-width:100%}
+.upBar{height:8px;border-radius:99px;background:var(--bg2);overflow:hidden;margin-top:8px;border:1px solid var(--border)}
+.upBar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s}
+.upRow.ok .upBar>i{background:var(--ok)}
+.upRow.err .upBar>i{background:var(--danger)}
+.upRow.err .meta{color:var(--danger)}
 </style>
 </head>
 <body>
@@ -1431,18 +1637,43 @@ input:focus,textarea:focus,select:focus{outline:2px solid color-mix(in srgb,var(
   <div class="card">
     <h2 class="spread">REA - bedah berkas / APK / aplikasi <button onclick="reaInfo()" style="padding:5px 11px;font-size:.8rem">Muat ulang</button></h2>
     <div class="sub">Memeriksa berkas (.exe/.dll/.apk/.jar/.zip/.asar) atau folder aplikasi dengan REA
-      (<span id="reaVer">?</span>). Langsung di sini - tidak perlu lewat Telegram. Alamat web belum didukung
-      REA: unduh dulu berkasnya. Hanya untuk software milik sendiri atau riset keamanan yang sah; REA bukan
-      sandbox. Pemilik tetap diminta konfirmasi lewat Telegram sebelum jalan.</div>
+      (<span id="reaVer">?</span>). <b>Masukkan aplikasinya langsung</b>: seret ke kotak di bawah atau pilih dari
+      perangkat ini (HP, laptop, di mana pun dashboard dibuka) - tidak perlu tahu path-nya. Alamat web belum
+      didukung REA: unduh dulu berkasnya. Hanya untuk software milik sendiri atau riset keamanan yang sah; REA
+      bukan sandbox dan berkas unggahan tidak pernah dijalankan. Pemilik tetap diminta konfirmasi lewat Telegram
+      sebelum jalan.</div>
     <div class="sub"><b>Otaknya?</b> REA <b>tidak punya otak/AI</b> - ia alat analisis biasa; ringkasan di bawah
       disusun program (tanpa AI). Kalau mau penjelasan dalam bahasa manusia, klik "Jelaskan dengan otak aktif":
       yang menafsirkan adalah otak yang sedang aktif sekarang (<b id="reaBrain">…</b>).</div>
-    <div class="row" style="margin-top:8px">
+    <div id="reaDrop" class="reaDrop" role="button" tabindex="0"
+         aria-label="Seret berkas atau folder aplikasi ke sini, atau tekan untuk memilih dari perangkat ini">
+      <div class="reaDropIcon" aria-hidden="true">📦</div>
+      <div><b>Seret aplikasi ke sini</b> - satu atau beberapa berkas, atau seluruh folder aplikasi</div>
+      <div class="sub" id="reaDropSub">atau tekan kotak ini untuk memilih dari perangkat. Dikirim bertahap dan
+        bisa dilanjutkan kalau koneksi putus.</div>
+      <div class="row" style="justify-content:center;margin-top:8px">
+        <button type="button" class="primary" id="reaPickBtn">Pilih berkas…</button>
+        <button type="button" id="reaPickDirBtn" hidden>Pilih folder…</button>
+      </div>
+    </div>
+    <input type="file" id="reaFileInput" multiple hidden>
+    <input type="file" id="reaDirInput" webkitdirectory hidden>
+    <label class="sub" style="display:block;margin-top:8px"><input type="checkbox" id="reaAuto" checked
+      style="width:auto;margin-right:6px">Langsung analisis begitu satu berkas selesai diunggah
+      (perintah dipilih di bawah)</label>
+    <div class="sub" id="reaLimits"></div>
+    <div id="reaUpList"></div>
+    <div class="sub" id="reaUploadsLbl" hidden style="margin-top:12px"><b>Tersimpan di server</b> (otomatis dibersihkan;
+      pemeriksaan lanjutan memakai berkas ini):</div>
+    <div id="reaUploads"></div>
+    <div class="sub" style="margin-top:12px">Atau tulis path berkas/folder yang sudah ada di komputer server:</div>
+    <div class="row" style="margin-top:6px">
       <input id="reaTarget" style="flex:1" placeholder="path berkas atau folder (C:\...\app.exe)" autocomplete="off">
     </div>
+    <div class="sub" style="margin-top:10px">Perintah REA untuk berkas yang dipilih/diunggah:</div>
     <div class="row" style="margin-top:6px">
       <select id="reaCmd" style="flex:1"><option value="">(otomatis sesuai jenis berkas)</option></select>
-      <button class="primary" id="reaGo" onclick="reaRun()">Jalankan</button>
+      <button class="primary" id="reaGo" onclick="reaRun()">Jalankan (path)</button>
     </div>
     <div id="reaJob" hidden style="margin-top:10px">
       <div id="reaState" class="sub" style="font-weight:600"></div>
@@ -1919,22 +2150,32 @@ async function reaInfo(){
     const d=await api('/api/rea/info');
     document.getElementById('reaVer').textContent='rea-agents '+d.version;
     document.getElementById('reaBrain').textContent=d.brain_desc||d.brain||'?';
+    if(d.limits){ reaUp.limits=d.limits; reaLimitsText(); }
+    reaRenderUploads(d.uploads||[]);
     const sel=document.getElementById('reaCmd'), keep=sel.value;
     sel.innerHTML=''; sel.appendChild(reaEl('option','(otomatis sesuai jenis berkas)')).value='';
-    Object.keys(d.commands||{}).forEach(c=>{ const o=reaEl('option',c+' - '+d.commands[c]); o.value=c; sel.appendChild(o); });
+    Object.keys(d.commands||{}).forEach(c=>{ const o=reaEl('option',c+' - '+((d.labels&&d.labels[c])||d.commands[c])); o.value=c; o.title=d.commands[c]; sel.appendChild(o); });
     sel.value=keep;
     const rc=document.getElementById('reaRecent'); rc.textContent='';
     const jobs=d.jobs||[];
     if(jobs.length){ rc.appendChild(reaEl('span','Riwayat: '));
-      jobs.forEach(j=>{ const b=reaEl('button',(j.state==='done'?'✅ ':j.state==='running'?'⏳ ':'❌ ')+j.command+' · '+String(j.target||'').split(/[\\/]/).pop().slice(0,28));
+      jobs.forEach(j=>{ const b=reaEl('button',(j.state==='done'?'✅ ':j.state==='running'?'⏳ ':'❌ ')+j.command+' · '+String(j.label||j.target||'').split(/[\\/]/).pop().slice(0,28));
         b.style.cssText='padding:3px 9px;font-size:.78rem;margin:2px'; b.onclick=()=>{ reaJobId=j.id; reaWatch(); }; rc.appendChild(b); });
       const run=jobs.find(j=>j.state==='running'); if(run && !reaJobId){ reaJobId=run.id; reaWatch(); } }
   }catch(e){}
 }
 async function reaRun(cmdOverride, targetOverride){
-  const target=(typeof targetOverride==='string'?targetOverride:document.getElementById('reaTarget').value).trim();
-  if(!target){ toast('Isi path berkas atau alamat dulu.'); return; }
+  // targetOverride: path (teks) ATAU {upload:id, file:nomor|null} untuk berkas/folder yang diunggah lewat halaman ini
+  const body={};
+  if(targetOverride && typeof targetOverride==='object'){
+    body.upload=targetOverride.upload; if(targetOverride.file!=null) body.file=targetOverride.file;
+  } else {
+    const target=(typeof targetOverride==='string'?targetOverride:document.getElementById('reaTarget').value).trim();
+    if(!target){ toast('Seret/pilih aplikasinya ke kotak unggah, atau isi path berkas dulu.'); return; }
+    body.path_atau_url=target;
+  }
   const cmd=(typeof cmdOverride==='string')?cmdOverride:document.getElementById('reaCmd').value;
+  body.rea_command=cmd;
   document.getElementById('reaJob').hidden=false;
   document.getElementById('reaState').textContent='Meminta persetujuan pemilik (Telegram)…';
   ['reaProg','reaErrs'].forEach(i=>document.getElementById(i).textContent='');
@@ -1942,7 +2183,7 @@ async function reaRun(cmdOverride, targetOverride){
   document.getElementById('reaSuggestLbl').hidden=true;
   document.getElementById('reaGo').disabled=true;
   try{
-    const d=await api('/api/rea/analyze',{method:'POST',body:JSON.stringify({path_atau_url:target,rea_command:cmd})});
+    const d=await api('/api/rea/analyze',{method:'POST',body:JSON.stringify(body)});
     reaJobId=d.job.id; reaWatch();
   }catch(e){ document.getElementById('reaState').textContent='⚠️ '+e.message; }
   document.getElementById('reaGo').disabled=false;
@@ -1957,7 +2198,7 @@ function reaFmtSec(s){ s=Math.round(s||0); return s<90 ? s+' dtk' : Math.floor(s
 function reaRender(j){
   reaLast=j; document.getElementById('reaJob').hidden=false;
   const st={running:'⏳ Berjalan',done:'✅ Selesai',failed:'❌ Gagal',cancelled:'⏹ Dibatalkan',timeout:'⏱️ Melebihi batas waktu'}[j.state]||j.state;
-  document.getElementById('reaState').textContent=st+' · '+j.command+' · '+reaFmtSec(j.elapsed)+' · '+String(j.target||'').slice(-60);
+  document.getElementById('reaState').textContent=st+' · '+j.command+' · '+reaFmtSec(j.elapsed)+' · '+String(j.label||j.target||'').slice(-60)+(j.upload?' (diunggah)':'');
   const pr=j.progress||{}; document.getElementById('reaProg').textContent=j.state==='running'?((pr.pct!=null?Math.round(pr.pct)+'% · ':'')+(pr.line||'')):'';
   const tb=document.getElementById('reaFacts'); tb.textContent='';
   const sm=j.summary||null;
@@ -1979,7 +2220,8 @@ function reaRender(j){
   const sg=document.getElementById('reaSuggest'); sg.textContent='';
   const sugg=(j.state==='done'?(j.suggest||[]):[]);
   document.getElementById('reaSuggestLbl').hidden=!sugg.length;
-  sugg.forEach(s=>{ const b=reaEl('button',s.label||s.command); b.title=s.command; b.onclick=()=>reaRun(s.command,j.target); sg.appendChild(b); });
+  sugg.forEach(s=>{ const b=reaEl('button',s.label||s.command); b.title=s.command;
+    b.onclick=()=>reaRun(s.command, j.upload ? {upload:j.upload.id, file:j.upload.file} : j.target); sg.appendChild(b); });
 }
 function reaExplain(){
   if(!reaLast||!reaLast.summary_text) return;
@@ -1990,6 +2232,284 @@ function reaExplain(){
     +reaLast.summary_text+'\nDATA>>>';
   sendChat();
 }
+// --- REA: unggah berkas / folder aplikasi (potongan bertahap + bisa dilanjutkan; sisi server: rea_upload.py) ---
+// Berkas dibaca browser per potongan lewat File.slice (tidak pernah dimuat utuh ke memori), dikirim satu per satu
+// dengan checksum SHA-256 per potongan, dan posisi lanjut SELALU ditanyakan ke server (sumber kebenarannya di disk).
+const reaUp={tasks:[], running:false, limits:null, seq:0};
+function reaHdr(extra){ return Object.assign({'X-Itsme-Dashboard':'1'}, TOKEN?{'X-Itsme-Token':TOKEN}:{}, extra||{}); }
+function reaPost(path, obj){ return api(path,{method:'POST',body:JSON.stringify(obj)}); }
+function reaHex(buf){ return Array.from(new Uint8Array(buf),b=>b.toString(16).padStart(2,'0')).join(''); }
+function reaSleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function reaAgo(ts){ const s=Math.max(0,Date.now()/1000-(ts||0));
+  return s<90?'baru saja':s<5400?Math.round(s/60)+' mnt lalu':s<129600?Math.round(s/3600)+' jam lalu':Math.round(s/86400)+' hari lalu'; }
+function reaLimitsText(){
+  const l=reaUp.limits; if(!l) return;
+  document.getElementById('reaLimits').textContent='Batas: '+fmtBytes(l.max_bytes)+' per unggahan, '+l.max_files
+    +' berkas per folder. Dikirim per '+fmtBytes(l.chunk_bytes)+'. Disimpan di server paling lama '+l.days
+    +' hari / '+l.keep+' unggahan.';
+}
+function reaFingerprint(t){
+  if(t.kind==='file') return t.name+'|'+t.total+'|'+(t.items[0].file.lastModified||0);
+  let m=0; t.items.forEach(i=>{ m=Math.max(m,i.file.lastModified||0); });
+  return t.name+'/|'+t.items.length+'|'+t.total+'|'+m;
+}
+function reaEnqueue(spec, batch){
+  const items=spec.items, total=items.reduce((a,i)=>a+i.size,0);
+  const t={id:++reaUp.seq, kind:spec.kind, name:spec.name, items:items, total:total, sent:0, state:'wait',
+           msg:'menunggu giliran…', batch:batch||1, prefix:[], cancelled:false, up:null, xhr:null, t0:0, base:0, chunk:8<<20};
+  let acc=0; items.forEach(i=>{ t.prefix.push(acc); acc+=i.size; });
+  const L=reaUp.limits;
+  if(!items.length){ t.state='err'; t.msg='Tidak ada berkas di dalamnya.'; }
+  else if(L && items.length>L.max_files){ t.state='err'; t.msg='Folder berisi '+items.length+' berkas; batasnya '+L.max_files+'.'; }
+  else if(L && total>L.max_bytes){ t.state='err'; t.msg='Terlalu besar: '+fmtBytes(total)+'; batasnya '+fmtBytes(L.max_bytes)+' per unggahan.'; }
+  reaUp.tasks.push(t); reaUpDraw();
+  if(t.state==='wait') reaPump();
+  return t;
+}
+function reaUpDraw(){
+  const box=document.getElementById('reaUpList'); box.textContent='';
+  reaUp.tasks.forEach(t=>{
+    const row=reaEl('div',null,'upRow'+(t.state==='err'?' err':'')), top=reaEl('div',null,'top');
+    const nm=reaEl('div',(t.kind==='dir'?'📁 ':'📎 ')+t.name+(t.kind==='dir'?'  ('+t.items.length+' berkas)':''),'nm');
+    nm.title=t.name; top.appendChild(nm);
+    if(t.state==='run'||t.state==='wait'){ const b=reaEl('button','Batalkan'); b.onclick=()=>reaCancel(t); top.appendChild(b); }
+    if(t.state==='err'){
+      const r=reaEl('button','Coba lagi'); r.className='primary';
+      r.onclick=()=>{ t.state='wait'; t.cancelled=false; t.msg='menunggu giliran…'; reaUpDraw(); reaPump(); };
+      const x=reaEl('button','Buang'); x.onclick=()=>reaDiscard(t); top.append(r,x);
+    }
+    row.appendChild(top);
+    const bar=reaEl('div',null,'upBar'), fill=document.createElement('i'); bar.appendChild(fill); row.appendChild(bar);
+    const meta=reaEl('div',null,'meta'); row.appendChild(meta);
+    t.fill=fill; t.metaEl=meta; box.appendChild(row); reaUpdate(t);
+  });
+}
+function reaUpdate(t){
+  if(!t.fill) return;
+  const pct=t.total>0?Math.min(100,t.sent/t.total*100):0;
+  t.fill.style.width=pct.toFixed(1)+'%';
+  let line=t.msg||'';
+  if(t.state==='run' && t.sent>0 && t.total>0){
+    const sec=Math.max(0.5,(performance.now()-t.t0)/1000), speed=(t.sent-t.base)/sec, eta=speed>0?(t.total-t.sent)/speed:0;
+    line=Math.floor(pct)+'% · '+fmtBytes(t.sent)+' / '+fmtBytes(t.total)+(speed>0?' · '+fmtBytes(speed)+'/dtk'+(eta>1?' · sisa '+reaFmtSec(eta):''):'')+(t.msg?' · '+t.msg:'');
+  }
+  t.metaEl.textContent=line;
+}
+async function reaPump(){
+  if(reaUp.running) return; reaUp.running=true;
+  try{ for(;;){ const t=reaUp.tasks.find(x=>x.state==='wait'); if(!t) break; await reaUploadTask(t); } }
+  finally{ reaUp.running=false; }
+}
+async function reaUploadTask(t){
+  t.state='run'; t.msg='menyiapkan…'; t.sent=0; reaUpDraw();
+  try{
+    const fp=reaFingerprint(t);
+    const body=t.kind==='file'?{kind:'file',name:t.name,size:t.total,fingerprint:fp}
+      :{kind:'dir',files:t.items.map(i=>({path:i.path,size:i.size})),fingerprint:fp};
+    const d=await reaPost('/api/rea/upload/start',body);
+    t.up=d.upload; t.chunk=d.chunk||(8<<20); t.cur=t.chunk; t.okRun=0;
+    if(d.limits){ reaUp.limits=d.limits; reaLimitsText(); }
+    if(t.cancelled){ reaPost('/api/rea/upload/delete',{id:t.up.id}).catch(()=>{}); return; }
+    if(d.reused && d.upload.state==='ready'){ t.sent=t.total; t.msg='sudah ada di server, dipakai ulang'; reaUpdate(t); return reaDone(t,d.upload,true); }
+    t.sent=d.upload.received||0; t.base=t.sent; t.t0=performance.now();
+    t.msg=t.sent>0?'melanjutkan dari '+fmtBytes(t.sent):'';
+    let pos=d.upload.next;
+    while(pos){
+      if(t.cancelled) return;
+      pos=reaAdvance(t,await reaSendChunk(t,pos));
+    }
+    if(t.cancelled) return;
+    t.msg='memeriksa & menyimpan…'; reaUpdate(t);
+    const f=await reaPost('/api/rea/upload/finish',{id:t.up.id});
+    reaDone(t,f.upload,false);
+  }catch(e){
+    if(t.cancelled || (e&&e.cancelled)) return;
+    t.state='err'; t.msg=(e&&e.message)||String(e); reaUpDraw();
+  }
+}
+function reaAdvance(t,r){
+  if(r.received<t.items[r.file].size) return {file:r.file,offset:r.received};
+  for(let i=r.file+1;i<t.items.length;i++) if(t.items[i].size>0) return {file:i,offset:0};
+  return null;
+}
+async function reaBackoff(n){
+  if(navigator.onLine===false){
+    await new Promise(r=>{ const f=()=>{ window.removeEventListener('online',f); r(); }; window.addEventListener('online',f); setTimeout(f,60000); });
+  }
+  await reaSleep(Math.min(30000,1000*Math.pow(2,n-1)));
+}
+function reaXhr(t,url,blob,hash,onprog){
+  return new Promise((resolve,reject)=>{
+    const x=new XMLHttpRequest(); t.xhr=x; x.open('POST',url);
+    const h=reaHdr({'Content-Type':'application/octet-stream'}); if(hash) h['X-Chunk-Sha256']=hash;
+    Object.keys(h).forEach(k=>x.setRequestHeader(k,h[k]));
+    // pengawas: tidak ada byte yang berjalan 45 dtk (sinyal HP macet tapi sambungan belum putus) -> batalkan & coba lagi
+    let last=Date.now(), stalled=false;
+    const watch=setInterval(()=>{ if(Date.now()-last>45000){ stalled=true; try{ x.abort(); }catch(_){} } },3000);
+    const end=()=>{ clearInterval(watch); t.xhr=null; };
+    x.upload.onprogress=e=>{ last=Date.now(); if(e.lengthComputable) onprog(e.loaded); };
+    x.onload=()=>{ end(); let j={}; try{ j=JSON.parse(x.responseText||'{}'); }catch(_){} resolve({status:x.status,json:j}); };
+    x.onerror=()=>{ end(); reject(new Error('koneksi terputus')); };
+    x.ontimeout=x.onerror;
+    x.onabort=()=>{ end(); reject(stalled?new Error('tidak ada kemajuan 45 dtk'):Object.assign(new Error('Dibatalkan'),{cancelled:true})); };
+    x.send(blob);
+  });
+}
+// Ukuran potongan menyesuaikan jaringan: gagal -> separuhnya (paling kecil 512 KB: jaringan buruk hanya mengulang
+// sedikit), tiga berhasil berturut-turut -> dua kali lipat sampai batas dari server.
+function reaShrink(t){ t.cur=Math.max(512<<10,Math.floor(t.cur/2)); t.okRun=0; }
+function reaGrow(t){ t.okRun=(t.okRun||0)+1; if(t.okRun>=3 && t.cur<t.chunk){ t.cur=Math.min(t.chunk,t.cur*2); t.okRun=0; } }
+async function reaSendChunk(t,pos){
+  const it=t.items[pos.file], url='/api/rea/upload/chunk?id='+encodeURIComponent(t.up.id)+'&file='+pos.file+'&offset='+pos.offset;
+  for(let attempt=0;;){
+    if(t.cancelled) throw Object.assign(new Error('Dibatalkan'),{cancelled:true});
+    const blob=it.file.slice(pos.offset,Math.min(it.size,pos.offset+t.cur));
+    let hash='';
+    try{ if(window.crypto && crypto.subtle && blob.arrayBuffer) hash=reaHex(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())); }
+    catch(_){ hash=''; }
+    let res=null, why='';
+    try{ res=await reaXhr(t,url,blob,hash,loaded=>{ t.sent=t.prefix[pos.file]+pos.offset+loaded; reaUpdate(t); }); }
+    catch(e){ if(e.cancelled) throw e; why=e.message||'jaringan putus'; }
+    if(res){
+      const j=res.json||{};
+      if(res.status===200){ reaGrow(t); t.sent=t.prefix[pos.file]+j.received; if(t.msg.indexOf('gangguan')===0) t.msg=''; reaUpdate(t); return {file:pos.file,received:j.received}; }
+      if(res.status===409 && typeof j.received==='number'){ t.sent=t.prefix[pos.file]+j.received; return {file:pos.file,received:j.received}; }
+      if(res.status===401) throw new Error('Sesi habis. Muat ulang halaman, masuk lagi, lalu pilih berkas yang sama untuk melanjutkan.');
+      if(res.status===404) throw new Error(j.error||'Unggahan ini sudah dihapus di server. Mulai lagi.');
+      if([400,403,411,413,507].indexOf(res.status)>=0) throw new Error(j.error||('HTTP '+res.status));
+      why=j.error||('HTTP '+res.status);   // 408, 409 tanpa posisi, 422 (rusak di jalan), 429, 5xx: coba lagi
+    }
+    attempt++; reaShrink(t);
+    if(attempt>8) throw new Error('Terputus terlalu lama ('+why+'). Tekan "Coba lagi" untuk melanjutkan dari posisi terakhir.');
+    t.msg='gangguan ('+why+'), mencoba lagi ke-'+attempt+' (potongan '+fmtBytes(t.cur)+')…'; reaUpdate(t);
+    await reaBackoff(attempt);
+    try{   // cocokkan dengan keadaan sebenarnya di server: potongan terakhir mungkin sudah masuk
+      const s=await api('/api/rea/upload?id='+encodeURIComponent(t.up.id)), nx=s.upload.next;
+      if(!nx) return {file:pos.file,received:it.size};
+      if(nx.file!==pos.file || nx.offset!==pos.offset) return {file:nx.file,received:nx.offset};
+    }catch(e){ if(/tidak ada|dihapus/i.test((e&&e.message)||'')) throw e; }
+  }
+}
+function reaDone(t,view,reused){
+  t.state='done'; reaUp.tasks=reaUp.tasks.filter(x=>x!==t); reaUpDraw();
+  // otomatis hanya untuk SATU BERKAS: folder memicu analisis JavaScript 15-45 menit, itu harus dipilih sengaja
+  const auto=document.getElementById('reaAuto').checked && t.batch===1 && t.kind==='file';
+  toast((reused?'Sudah ada di server: ':'Selesai diunggah: ')+t.name);
+  reaInfo();
+  if(auto) reaRun(undefined,{upload:view.id,file:null});
+}
+function reaCancel(t){
+  t.cancelled=true; if(t.xhr){ try{ t.xhr.abort(); }catch(_){} }
+  if(t.up) reaPost('/api/rea/upload/delete',{id:t.up.id}).catch(()=>{});
+  reaUp.tasks=reaUp.tasks.filter(x=>x!==t); reaUpDraw(); setTimeout(reaInfo,500);
+}
+function reaDiscard(t){
+  if(t.up) reaPost('/api/rea/upload/delete',{id:t.up.id}).catch(()=>{});
+  reaUp.tasks=reaUp.tasks.filter(x=>x!==t); reaUpDraw(); setTimeout(reaInfo,500);
+}
+async function reaDeleteUpload(u){
+  if(!confirm('Hapus "'+u.name+'" dari server?')) return;
+  try{ await reaPost('/api/rea/upload/delete',{id:u.id}); toast('Dihapus.'); }catch(e){ toast(e.message); }
+  reaInfo();
+}
+function reaRenderUploads(list){
+  const box=document.getElementById('reaUploads'), lbl=document.getElementById('reaUploadsLbl'); box.textContent='';
+  const busy=new Set(reaUp.tasks.filter(t=>t.up && (t.state==='run'||t.state==='wait')).map(t=>t.up.id));
+  const rows=list.filter(u=>!busy.has(u.id));
+  lbl.hidden=!rows.length;
+  rows.forEach(u=>{
+    const ready=u.state==='ready', row=reaEl('div',null,'upRow'+(ready?' ok':'')), top=reaEl('div',null,'top');
+    const nm=reaEl('div',(u.kind==='dir'?'📁 ':'📎 ')+u.name,'nm'); nm.title=u.name; top.appendChild(nm);
+    if(ready){
+      const b=reaEl('button',u.kind==='dir'?'Analisis folder':'Analisis'); b.className='primary';
+      b.title=u.kind==='dir'?'Seluruh folder sebagai aplikasi JavaScript/Electron (lambat); atau pilih satu berkas di bawah':'Jalankan REA dengan perintah di bawah';
+      b.onclick=()=>reaRun(undefined,{upload:u.id,file:null}); top.appendChild(b);
+    }
+    const del=reaEl('button','Hapus'); del.onclick=()=>reaDeleteUpload(u); top.appendChild(del);
+    row.appendChild(top);
+    const parts=[fmtBytes(u.size)];
+    if(u.kind==='dir') parts.push(u.files_total+' berkas');
+    if(u.sha256) parts.push('SHA-256 '+u.sha256.slice(0,16)+'…');
+    const pct=u.size?Math.floor(u.received/u.size*100):0;
+    parts.push(ready?reaAgo(u.last_used||u.updated):'belum selesai ('+pct+'%) - seret/pilih berkas yang sama untuk melanjutkan');
+    row.appendChild(reaEl('div',parts.join(' · '),'meta'));
+    if(!ready){ const bar=reaEl('div',null,'upBar'), f=document.createElement('i'); f.style.width=pct+'%'; bar.appendChild(f); row.appendChild(bar); }
+    if(ready && u.kind==='dir' && (u.candidates||[]).length){
+      const r2=reaEl('div',null,'top'); r2.style.marginTop='8px';
+      const sel=document.createElement('select'); sel.style.flex='1';
+      u.candidates.forEach(c=>{ const o=reaEl('option',c.path+' ('+fmtBytes(c.size)+')'); o.value=c.index; sel.appendChild(o); });
+      const go=reaEl('button','Analisis berkas ini'); go.onclick=()=>reaRun(undefined,{upload:u.id,file:parseInt(sel.value,10)});
+      r2.append(sel,go); row.appendChild(r2);
+    }
+    box.appendChild(row);
+  });
+}
+function reaPickFiles(){ document.getElementById('reaFileInput').click(); }
+function reaPickDir(){ document.getElementById('reaDirInput').click(); }
+function reaDropOver(on){ document.getElementById('reaDrop').classList.toggle('over',!!on); }
+function reaFromList(list,isDir){
+  const files=Array.from(list||[]); if(!files.length) return;
+  if(isDir){
+    const root=((files[0].webkitRelativePath||'').split('/')[0])||'folder';
+    reaEnqueue({kind:'dir',name:root,items:files.map(f=>({path:f.webkitRelativePath||(root+'/'+f.name),file:f,size:f.size}))},1);
+  } else files.forEach(f=>reaEnqueue({kind:'file',name:f.name,items:[{path:f.name,file:f,size:f.size}]},files.length));
+}
+async function reaWalk(entry,prefix,out){
+  const reader=entry.createReader(), cap=(reaUp.limits?reaUp.limits.max_files:5000);
+  for(;;){   // readEntries mengembalikan paling banyak ~100 butir per panggilan: ulangi sampai kosong
+    const batch=await new Promise((res,rej)=>reader.readEntries(res,rej));
+    if(!batch.length) break;
+    for(const e of batch){
+      if(e.isFile){
+        const f=await new Promise((res,rej)=>e.file(res,rej));
+        out.push({path:prefix+'/'+e.name,file:f,size:f.size});
+        if(out.length>cap) throw new Error('Folder berisi lebih dari '+cap+' berkas - terlalu banyak. Unggah berkas utamanya saja.');
+      } else if(e.isDirectory) await reaWalk(e,prefix+'/'+e.name,out);
+    }
+  }
+}
+function reaDrop(ev){
+  ev.preventDefault(); ev.stopPropagation(); reaDropOver(false);
+  const dt=ev.dataTransfer; if(!dt) return;
+  // webkitGetAsEntry/getAsFile HARUS dipanggil sekarang (sinkron di dalam peristiwa drop), sebelum await apa pun
+  const picked=[];
+  Array.from(dt.items||[]).forEach(it=>{ if(it.kind!=='file') return;
+    picked.push({entry:it.webkitGetAsEntry?it.webkitGetAsEntry():null, file:it.getAsFile?it.getAsFile():null}); });
+  if(!picked.length){ reaFromList(dt.files,false); return; }
+  reaHandleDropped(picked);
+}
+async function reaHandleDropped(picked){
+  for(const p of picked){
+    try{
+      if(p.entry && p.entry.isDirectory){
+        const list=[]; await reaWalk(p.entry,p.entry.name,list);
+        reaEnqueue({kind:'dir',name:p.entry.name,items:list},picked.length);
+      } else {
+        const f=(p.entry && p.entry.isFile)?await new Promise((res,rej)=>p.entry.file(res,rej)):p.file;
+        if(f) reaEnqueue({kind:'file',name:f.name,items:[{path:f.name,file:f,size:f.size}]},picked.length);
+      }
+    }catch(e){ toast('Gagal membaca yang diseret: '+((e&&e.message)||e)); }
+  }
+}
+(function reaUploadInit(){
+  const zone=document.getElementById('reaDrop'); if(!zone) return;
+  const fin=document.getElementById('reaFileInput'), din=document.getElementById('reaDirInput');
+  const desktop=!(window.matchMedia && matchMedia('(pointer:coarse)').matches) && ('webkitdirectory' in din);
+  document.getElementById('reaPickDirBtn').hidden=!desktop;
+  document.getElementById('reaPickBtn').onclick=e=>{ e.stopPropagation(); reaPickFiles(); };
+  document.getElementById('reaPickDirBtn').onclick=e=>{ e.stopPropagation(); reaPickDir(); };
+  zone.addEventListener('click',()=>reaPickFiles());
+  zone.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); reaPickFiles(); } });
+  ['dragenter','dragover'].forEach(n=>zone.addEventListener(n,e=>{ e.preventDefault(); reaDropOver(true); }));
+  zone.addEventListener('dragleave',e=>{ if(!zone.contains(e.relatedTarget)) reaDropOver(false); });
+  zone.addEventListener('drop',reaDrop);
+  fin.addEventListener('change',()=>{ reaFromList(fin.files,false); fin.value=''; });
+  din.addEventListener('change',()=>{ reaFromList(din.files,true); din.value=''; });
+  // berkas yang meleset dari kotak tidak boleh dibuka browser (halaman diganti = unggahan yang berjalan hilang)
+  ['dragover','drop'].forEach(n=>window.addEventListener(n,e=>{
+    const ty=(e.dataTransfer&&e.dataTransfer.types)?Array.from(e.dataTransfer.types):[]; if(ty.indexOf('Files')>=0) e.preventDefault(); }));
+  window.addEventListener('beforeunload',e=>{ if(reaUp.tasks.some(t=>t.state==='run')){ e.preventDefault(); e.returnValue=''; } });
+})();
 function ollamaUninstall(){
   if(!confirm('Copot Ollama dari komputer ini sekarang?\n\nOtak lokal tidak bisa dipakai lagi sampai dipasang ulang. '
     + 'Pemilik akan diminta konfirmasi lagi lewat Telegram.')) return;

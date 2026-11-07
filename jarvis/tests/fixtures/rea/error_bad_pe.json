@@ -1,0 +1,15 @@
+{
+  "error": "Analysis failed",
+  "code": "target_unavailable",
+  "category": "unsupported_target",
+  "message": "Cannot open artifact: invalid or truncated PE header.",
+  "retryable": false,
+  "remediation": {
+    "action": "Review the reported file-format reason and select a supported, well-formed target."
+  },
+  "details": {
+    "path": "C:\\data\\rea-uploads\\0123456789ab\\content\\rusak.exe",
+    "reason": "invalid or truncated PE header",
+    "constraint": "file_format_rejected"
+  }
+}

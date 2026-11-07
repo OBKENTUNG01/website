@@ -30,8 +30,11 @@ Cara kerja (hasil uji nyata di komputer ini, bukan tebakan):
   - Hasil bisa SANGAT besar (291 MB nyata): berkas <=30 MB dibaca biasa, yang lebih besar
     dipindai sebagai aliran (scan_json) dengan memori kecil.
 
+  - Berkas/folder yang DIUNGGAH lewat dashboard (rea_upload.py) dianalisis dari folder penyimpanannya; job mencatat
+    nama aslinya (`label`) dan ringkasan menampilkan nama itu, bukan path internal. start(..., upload=info).
+
 API publik: REA_VERSION, COMMANDS, ReaError, pick_command, suggest, start, job, list_jobs,
-result_path, cancel, analyze, hasil, scan_json/Besar.
+result_path, cancel, analyze, hasil, active_upload_ids, scan_json/Besar.
 """
 
 import atexit
@@ -971,6 +974,43 @@ def _clean_summary(summary):
     }
 
 
+def _path_variants(path):
+    """Penulisan lain dari path yang sama yang bisa tercetak di keluaran REA (garis miring maju/mundur, awalan
+    \\\\?\\ Windows), yang terpanjang dulu supaya penggantian tidak meninggalkan sisa."""
+    text = str(path)
+    found = {text, text.replace("\\", "/"), text.replace("/", "\\")}
+    for item in list(found):
+        found.add(item[4:] if item.startswith("\\\\?\\") else "\\\\?\\" + item)
+    return sorted((v for v in found if v), key=len, reverse=True)
+
+
+def _relabel_text(text, target, label):
+    """Ganti path penyimpanan internal `target` di `text` dengan nama tampilan `label` (nama asli berkas yang
+    diunggah): pemilik tidak perlu melihat path folder data It's Me."""
+    if not isinstance(text, str) or not target or not label:
+        return text
+    for variant in _path_variants(target):
+        if variant in text:
+            text = text.replace(variant, label)
+    return text
+
+
+def _relabel(summary, target, label):
+    """Salinan ringkasan dengan path internal diganti nama tampilan (lihat _relabel_text)."""
+    if not isinstance(summary, dict) or not target or not label:
+        return summary
+
+    def swap(value):
+        return _relabel_text(value, target, label)
+
+    return {
+        "title": swap(summary.get("title") or ""),
+        "facts": [[swap(k), swap(v)] for k, v in summary.get("facts") or []],
+        "notes": [swap(n) for n in summary.get("notes") or []],
+        "errors": [swap(e) for e in summary.get("errors") or []],
+    }
+
+
 class _Sum:
     """Penyusun ringkasan: judul + fakta [label, nilai] + catatan + galat."""
 
@@ -1580,6 +1620,14 @@ def _explain_error(err, command):
     elif details.get("constraint") == "directory_requires_file":
         title = ("Perintah ini butuh berkas, bukan folder. Untuk folder aplikasi JavaScript/Electron pakai "
                  "analyze-javascript-application.")
+    elif details.get("constraint") == "file_format_rejected":
+        # Ditemukan lewat uji nyata: REA membuka berkasnya TAPI menolak formatnya (mis. ".exe" yang bukan PE sah,
+        # unduhan terpotong). Dulu jatuh ke "tidak ditemukan/tidak bisa dibuka", yang menyesatkan.
+        reason = str(details.get("reason") or "")
+        title = ("REA menolak berkas ini karena formatnya tidak valid atau tidak sesuai jenisnya"
+                 + (f" ({_short(reason, 120)})" if reason else "")
+                 + ". Biasanya berkasnya rusak/terpotong (unduhan belum lengkap), ekstensinya tidak sesuai "
+                 "isinya, atau bukan program dari jenis itu.")
     elif code == "target_unavailable" or category == "unavailable":
         where = details.get("path") or ""
         title = "Berkas atau folder target tidak ditemukan atau tidak bisa dibuka" + (f": {where}" if where else ".")
@@ -1808,7 +1856,7 @@ def _load_meta(jid):
                       "Jalankan lagi.",
                 progress={"line": "Terputus", "pct": None})
             meta["summary"] = {"title": "REA terputus", "facts": [["Perintah", meta.get("command")],
-                                                                  ["Target", meta.get("target")]],
+                                                                  ["Target", meta.get("label") or meta.get("target")]],
                                "notes": [], "errors": [meta["error"]]}
             meta["summary_text"] = _render(meta["summary"])
             _save_meta(meta)
@@ -1839,6 +1887,7 @@ def _view(meta):
             pass
     return {
         "id": meta["id"], "state": meta.get("state"), "command": meta.get("command"), "target": meta.get("target"),
+        "label": meta.get("label"), "upload": meta.get("upload"),
         "started": started, "ended": ended, "elapsed": round((ended or now) - started, 1),
         "progress": {"line": progress.get("line", ""), "pct": progress.get("pct")},
         "summary": meta.get("summary"), "summary_text": meta.get("summary_text"), "error": meta.get("error"),
@@ -1932,9 +1981,12 @@ def _final(jid, state, error=None, summary=None, progress=None, **extra):
         meta = _JOBS.get(jid) or {}
         summary = {"title": {"cancelled": "REA dibatalkan", "timeout": "REA melebihi batas waktu"}
                    .get(state, "REA gagal"),
-                   "facts": [["Perintah", meta.get("command")], ["Target", meta.get("target")]],
+                   "facts": [["Perintah", meta.get("command")], ["Target", meta.get("label") or meta.get("target")]],
                    "notes": [], "errors": [error]}
-    summary = _clean_summary(summary)
+    meta = _JOBS.get(jid) or {}
+    summary = _relabel(_clean_summary(summary), meta.get("target"), meta.get("label"))
+    if error and meta.get("label") and meta.get("target"):
+        error = _relabel_text(error, meta["target"], meta["label"])
     _update(jid, state=state, ended=time.time(), error=error, summary=summary,
             summary_text=_render(summary) if summary else None,
             progress=progress or {"line": {"done": "Selesai", "cancelled": "Dibatalkan",
@@ -1965,7 +2017,7 @@ def _finish(jid, run, returncode):
     size = os.path.getsize(result) if os.path.exists(result) else 0
     stderr_text = _read_tail(os.path.join(jdir, "stderr.log"), 16384).decode("utf-8", "replace")
     _trim_log(os.path.join(jdir, "stderr.log"))
-    facts = [["Perintah", command], ["Target", target]]
+    facts = [["Perintah", command], ["Target", meta.get("label") or target]]
     if size == 0:
         headline = _explain_stderr(stderr_text, returncode)
         errors = [headline]
@@ -2010,12 +2062,32 @@ def _trim_log(path, keep=262144):
         pass
 
 
-def start(target, command=None):
+def _upload_meta(upload):
+    """Bagian info unggahan (rea_upload.resolve) yang disimpan di meta job: {'id','name','kind','size','sha256',
+    'file','rel','label'} dengan semua nilai dipaksa ke tipe sederhana, atau None."""
+    if not isinstance(upload, dict) or not isinstance(upload.get("id"), str):
+        return None
+    out = {}
+    for key in ("id", "name", "kind", "sha256", "rel", "label"):
+        value = upload.get(key)
+        out[key] = _oneline(value)[:300] if isinstance(value, str) else None
+    for key in ("size", "file"):
+        value = upload.get(key)
+        out[key] = value if isinstance(value, int) and not isinstance(value, bool) else None
+    return out
+
+
+def start(target, command=None, upload=None):
     """Mulai analisis REA di latar belakang dan kembalikan job() awalnya.
 
     ReaError kalau: target kosong/berawalan '-'/URL, perintah tidak ada di COMMANDS, Node/npx tidak ada,
-    atau sudah ada MAX_RUNNING job yang berjalan. Argumen tambahan hanya dari tabel internal (_EXTRA_ARGS)."""
+    atau sudah ada MAX_RUNNING job yang berjalan. Argumen tambahan hanya dari tabel internal (_EXTRA_ARGS).
+
+    `upload` (opsional): info berkas yang diunggah lewat dashboard (rea_upload.resolve()['upload'] ditambah
+    'label'). Job lalu memakai nama aslinya di tampilan/ringkasan (bukan path penyimpanan internal) dan
+    unggahannya tidak dipangkas selama job berjalan."""
     clean = _clean_target(target)
+    up = _upload_meta(upload)
     name = _resolve_command(command, clean)
     argv = _argv(name, clean)
     timeout_s = _timeout_for(name)   # dihitung SEBELUM proses dijalankan (isian env aneh tak boleh meninggalkan yatim)
@@ -2048,7 +2120,8 @@ def start(target, command=None):
                 "updated": now, "pid": proc.pid, "owner_pid": os.getpid(), "exit_code": None,
                 "rea_version": REA_VERSION, "extra_args": list(_EXTRA_ARGS.get(name, ())),
                 "timeout_s": timeout_s, "error": None, "summary": None, "summary_text": None,
-                "result_bytes": None, "progress": {"line": "Memulai…", "pct": None}}
+                "result_bytes": None, "progress": {"line": "Memulai…", "pct": None},
+                "upload": up, "label": (up or {}).get("label")}
         run = _Run(proc, _winjob_new(proc.pid))
         _JOBS[jid] = meta
         _RUN[jid] = run
@@ -2060,6 +2133,13 @@ def start(target, command=None):
     except OSError:
         pass
     return job(jid)
+
+
+def active_upload_ids():
+    """Id unggahan (rea_upload) yang dipakai job REA yang masih berjalan: tidak boleh dihapus atau dipangkas."""
+    with _LOCK:
+        return {m["upload"]["id"] for m in _JOBS.values()
+                if m.get("state") == "running" and isinstance(m.get("upload"), dict) and m["upload"].get("id")}
 
 
 def job(job_id):
